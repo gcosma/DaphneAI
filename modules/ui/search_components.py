@@ -1,13 +1,15 @@
 # ===============================================
-# FILE: modules/ui/search_components.py
+# FILE: modules/ui/search_components.py (COMPLETE ENHANCED VERSION)
 # ===============================================
 
 import streamlit as st
 import pandas as pd
 import json
 import logging
+import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+from collections import Counter
 
 # Import required modules with error handling
 try:
@@ -21,17 +23,18 @@ except ImportError as e:
     # Create mock classes for development
     class VectorStoreManager:
         def similarity_search(self, query, k=5): return []
+        def similarity_search_with_score(self, query, k=5, filter_dict=None): return []
         def get_collection_stats(self): return {'total_documents': 0}
     class RAGQueryEngine:
         def query(self, question): return {'answer': 'Mock response', 'sources': []}
 
 def render_smart_search_tab():
-    """Render the smart search tab"""
+    """Render the smart search tab with enhanced concern search"""
     st.header("🔎 Smart Search Engine")
     
     st.markdown("""
     Search across all your uploaded documents using AI-powered semantic search. 
-    Find relevant content, recommendations, and responses using natural language queries.
+    Find relevant content, recommendations, responses, and **coroner concerns** using natural language queries.
     """)
     
     # Check if search is available
@@ -49,6 +52,9 @@ def render_smart_search_tab():
     
     # Display search results
     display_search_results()
+    
+    # ADD CONCERN SEARCH FUNCTIONALITY
+    render_concern_search_section()
 
 def check_search_availability():
     """Check if search functionality is available"""
@@ -67,8 +73,8 @@ def check_search_availability():
         st.info("Please go to the 'Find Responses' tab and index your documents first.")
         return False
     
-    # Show search status
-    col1, col2, col3 = st.columns(3)
+    # Enhanced status display
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.metric("📚 Indexed Documents", indexed_docs)
@@ -78,6 +84,10 @@ def check_search_availability():
         st.metric("📁 Available Documents", available_docs)
     
     with col3:
+        extracted_concerns = len(st.session_state.get('extracted_concerns', []))
+        st.metric("⚠️ Extracted Concerns", extracted_concerns)
+    
+    with col4:
         search_ready = "✅ Ready" if indexed_docs > 0 else "❌ Not Ready"
         st.metric("🔍 Search Status", search_ready)
     
@@ -242,6 +252,280 @@ def render_advanced_search():
                 help="Include document metadata in results",
                 key="include_search_metadata"
             )
+
+# ===============================================
+# ENHANCED CONCERN SEARCH FUNCTIONALITY
+# ===============================================
+
+def render_concern_search_section():
+    """Add concern search functionality to existing search tab"""
+    
+    concerns = st.session_state.get('extracted_concerns', [])
+    if not concerns:
+        return
+    
+    st.markdown("---")
+    st.subheader("⚠️ Concern Search & Analysis")
+    st.write(f"📊 **{len(concerns)} concerns** available for analysis")
+    
+    # Simple tabs for concern functionality
+    concern_tabs = st.tabs(["🔍 Find Similar", "🔄 Query Reformulation", "📊 Browse Concerns"])
+    
+    with concern_tabs[0]:
+        render_simple_concern_search(concerns)
+    
+    with concern_tabs[1]:
+        render_query_reformulation(concerns)
+    
+    with concern_tabs[2]:
+        render_browse_concerns(concerns)
+
+def render_simple_concern_search(concerns):
+    """Simple concern similarity search"""
+    if len(concerns) < 2:
+        st.info("Need at least 2 concerns for similarity search")
+        return
+    
+    # Select reference concern
+    concern_options = []
+    for i, concern in enumerate(concerns):
+        text = concern.get('text', '')[:80] + "..."
+        source = concern.get('document_source', 'Unknown')
+        confidence = concern.get('confidence_score', 0)
+        concern_options.append(f"[{source}] {text} (conf: {confidence:.2f})")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        selected_idx = st.selectbox("Select concern to find similar ones:", range(len(concern_options)), 
+                                   format_func=lambda x: concern_options[x], key="concern_search_select")
+    
+    with col2:
+        similarity_threshold = st.slider("Similarity Threshold:", 0.0, 1.0, 0.15, 0.05, key="concern_sim_threshold")
+    
+    if st.button("🔍 Find Similar Concerns", use_container_width=True):
+        reference = concerns[selected_idx]
+        similar = find_similar_concerns_simple(reference, concerns, similarity_threshold)
+        
+        if similar:
+            st.success(f"Found {len(similar)} similar concerns:")
+            for sim in similar[:5]:  # Show top 5
+                with st.expander(f"Similarity: {sim['similarity']:.2f} - {sim.get('document_source', 'Unknown')}"):
+                    st.write("**Text:**", sim.get('text', ''))
+                    st.write("**Source:**", sim.get('document_source', 'Unknown'))
+                    st.write("**Method:**", sim.get('extraction_method', 'Unknown'))
+                    if sim.get('metadata'):
+                        st.write("**Metadata:**", sim['metadata'])
+        else:
+            st.info("No similar concerns found with the current threshold")
+
+def render_query_reformulation(concerns):
+    """Simple query reformulation from selected concerns"""
+    
+    # Multi-select concerns
+    concern_options = {}
+    for i, concern in enumerate(concerns):
+        text = concern.get('text', '')[:60] + "..."
+        source = concern.get('document_source', 'Unknown')
+        key = f"[{source}] {text}"
+        concern_options[key] = i
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        selected_keys = st.multiselect("Select concerns for query reformulation:", 
+                                      list(concern_options.keys()), key="concern_query_select")
+    
+    with col2:
+        query_type = st.selectbox("Query Type:", ["Keywords", "Boolean", "Phrases"], key="query_type_select")
+    
+    if len(selected_keys) >= 1 and st.button("🔄 Generate Search Queries", use_container_width=True):
+        selected_concerns = [concerns[concern_options[key]] for key in selected_keys]
+        queries = generate_search_queries(selected_concerns, query_type)
+        
+        st.write("**Generated Search Queries:**")
+        for i, query in enumerate(queries, 1):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.code(f"Query {i}: {query}")
+            with col2:
+                if st.button(f"🔍 Search", key=f"execute_query_{i}"):
+                    # Use existing search function
+                    st.session_state.search_query_input = query
+                    st.rerun()
+
+def render_browse_concerns(concerns):
+    """Browse and filter concerns"""
+    
+    # Filter options
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        min_confidence = st.slider("Min Confidence:", 0.0, 1.0, 0.0, 0.05, key="browse_confidence")
+        sources = list(set(c.get('document_source', 'Unknown') for c in concerns))
+        selected_sources = st.multiselect("Sources:", sources, default=sources, key="browse_sources")
+    
+    with col2:
+        methods = list(set(c.get('extraction_method', 'Unknown') for c in concerns))
+        selected_methods = st.multiselect("Methods:", methods, default=methods, key="browse_methods")
+        min_length = st.slider("Min Length:", 0, 1000, 50, key="browse_length")
+    
+    with col3:
+        sort_options = ["Confidence ↓", "Confidence ↑", "Length ↓", "Length ↑", "Source"]
+        sort_by = st.selectbox("Sort by:", sort_options, key="browse_sort")
+        show_metadata = st.checkbox("Show Metadata", value=True, key="browse_metadata")
+    
+    # Apply filters
+    filtered = []
+    for concern in concerns:
+        if (concern.get('confidence_score', 0) >= min_confidence and
+            concern.get('document_source', 'Unknown') in selected_sources and
+            concern.get('extraction_method', 'Unknown') in selected_methods and
+            len(concern.get('text', '')) >= min_length):
+            filtered.append(concern)
+    
+    # Apply sorting
+    if sort_by == "Confidence ↓":
+        filtered.sort(key=lambda x: x.get('confidence_score', 0), reverse=True)
+    elif sort_by == "Confidence ↑":
+        filtered.sort(key=lambda x: x.get('confidence_score', 0))
+    elif sort_by == "Length ↓":
+        filtered.sort(key=lambda x: len(x.get('text', '')), reverse=True)
+    elif sort_by == "Length ↑":
+        filtered.sort(key=lambda x: len(x.get('text', '')))
+    elif sort_by == "Source":
+        filtered.sort(key=lambda x: x.get('document_source', ''))
+    
+    # Display results
+    if filtered:
+        st.success(f"Found {len(filtered)} concerns matching filters")
+        
+        # Pagination
+        per_page = 5
+        total_pages = (len(filtered) + per_page - 1) // per_page
+        
+        if total_pages > 1:
+            page = st.selectbox(f"Page (showing {per_page} per page):", range(1, total_pages + 1), key="browse_page") - 1
+            start_idx = page * per_page
+            end_idx = min(start_idx + per_page, len(filtered))
+            page_concerns = filtered[start_idx:end_idx]
+        else:
+            page_concerns = filtered
+        
+        # Display concerns
+        for i, concern in enumerate(page_concerns):
+            with st.expander(f"Concern {i+1} - {concern.get('document_source', 'Unknown')} (conf: {concern.get('confidence_score', 0):.2f})"):
+                st.write("**Text:**")
+                st.write(concern.get('text', ''))
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**Confidence:** {concern.get('confidence_score', 0):.2f}")
+                    st.write(f"**Method:** {concern.get('extraction_method', 'Unknown')}")
+                with col2:
+                    st.write(f"**Length:** {len(concern.get('text', ''))} chars")
+                    st.write(f"**Source:** {concern.get('document_source', 'Unknown')}")
+                
+                if show_metadata and concern.get('metadata'):
+                    st.write("**Metadata:**")
+                    for key, value in concern['metadata'].items():
+                        st.write(f"- **{key.replace('_', ' ').title()}:** {value}")
+    else:
+        st.warning("No concerns match the current filters")
+
+def find_similar_concerns_simple(reference, all_concerns, threshold=0.15):
+    """Simple similarity search using word overlap"""
+    ref_words = set(extract_keywords(reference.get('text', '')))
+    similar = []
+    
+    for concern in all_concerns:
+        if concern.get('id') == reference.get('id'):
+            continue
+        
+        concern_words = set(extract_keywords(concern.get('text', '')))
+        
+        # Jaccard similarity
+        intersection = len(ref_words & concern_words)
+        union = len(ref_words | concern_words)
+        similarity = intersection / union if union > 0 else 0
+        
+        if similarity >= threshold:
+            concern_copy = concern.copy()
+            concern_copy['similarity'] = similarity
+            concern_copy['matching_words'] = list(ref_words & concern_words)
+            similar.append(concern_copy)
+    
+    return sorted(similar, key=lambda x: x['similarity'], reverse=True)
+
+def extract_keywords(text):
+    """Extract meaningful keywords from text"""
+    words = re.findall(r'\b[a-zA-Z]{4,}\b', text.lower())
+    stopwords = {
+        'this', 'that', 'with', 'have', 'will', 'from', 'they', 'been', 'were', 'said', 
+        'each', 'which', 'their', 'time', 'more', 'very', 'when', 'much', 'some', 'what', 
+        'know', 'just', 'first', 'into', 'over', 'think', 'also', 'your', 'work', 'life', 
+        'only', 'could', 'should', 'would', 'there', 'where', 'these', 'those'
+    }
+    return [word for word in words if word not in stopwords]
+
+def generate_search_queries(concerns, query_type="Keywords"):
+    """Generate search queries from selected concerns"""
+    
+    # Extract keywords from all selected concerns
+    all_words = []
+    for concern in concerns:
+        words = extract_keywords(concern.get('text', ''))
+        all_words.extend(words)
+    
+    # Get most common words
+    word_counts = Counter(all_words)
+    top_words = [word for word, count in word_counts.most_common(10)]
+    
+    queries = []
+    
+    if query_type == "Keywords":
+        # Simple keyword queries
+        if len(top_words) >= 3:
+            queries.append(' '.join(top_words[:3]))
+            queries.append(' '.join(top_words[:5]))
+        
+        # Category-specific queries
+        safety_words = [w for w in top_words if any(s in w for s in ['safety', 'safe', 'risk', 'danger', 'hazard'])]
+        if safety_words:
+            queries.append(' '.join(safety_words[:3]))
+        
+        process_words = [w for w in top_words if any(s in w for s in ['process', 'procedure', 'method', 'system'])]
+        if process_words:
+            queries.append(' '.join(process_words[:3]))
+    
+    elif query_type == "Boolean":
+        # Boolean queries
+        if len(top_words) >= 3:
+            queries.append(f"{top_words[0]} AND {top_words[1]}")
+            queries.append(f"{top_words[0]} OR {top_words[1]} OR {top_words[2]}")
+            queries.append(f"({top_words[0]} OR {top_words[1]}) AND {top_words[2]}")
+    
+    elif query_type == "Phrases":
+        # Extract phrases from concerns
+        for concern in concerns[:3]:  # First 3 concerns
+            text = concern.get('text', '')
+            sentences = re.split(r'[.!?]', text)
+            for sentence in sentences:
+                sentence = sentence.strip()
+                if 20 < len(sentence) < 80:  # Good phrase length
+                    queries.append(f'"{sentence}"')
+                    break
+    
+    # Add contextual queries
+    if top_words:
+        queries.append(f"concerns about {top_words[0]}")
+        queries.append(f"issues with {' '.join(top_words[:2])}")
+    
+    return queries[:6]  # Return top 6 queries
+
+# ===============================================
+# EXISTING SEARCH FUNCTIONS (UNCHANGED)
+# ===============================================
 
 def execute_search(query: str):
     """Execute search query and store results"""
