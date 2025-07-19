@@ -4,9 +4,8 @@
 from pathlib import Path
 import pdfplumber
 import fitz
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, List, Any, Optional
 import logging
-from pathlib import Path
 from datetime import datetime
 import gc
 
@@ -31,7 +30,12 @@ class DocumentProcessor:
             }
         except Exception as e:
             self.logger.error(f"Error processing {pdf_path}: {e}")
-            return None
+            # Return dictionary with error info instead of None
+            return {
+                "content": "",
+                "metadata": {"error": str(e), "processed_at": datetime.now().isoformat()},
+                "source": Path(pdf_path).name
+            }
     
     def _extract_with_pdfplumber(self, pdf_path: str) -> str:
         """Extract text using pdfplumber"""
