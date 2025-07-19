@@ -177,8 +177,8 @@ Return as valid JSON array only:
                                 is_duplicate = True
                                 break
                         
-                        if not is_duplicate:
-                            unique_recs.append(rec)
-                            seen_texts.add(normalized_text)
-                    
-                    return unique_recs
+                            if not is_duplicate:
+                                unique_recs.append(rec)
+                                seen_texts.add(normalized_text)
+                        
+                        return unique_recs
