@@ -181,4 +181,4 @@ Return as valid JSON array only:
                                 unique_recs.append(rec)
                                 seen_texts.add(normalized_text)
                         
-                        return unique_recs
+        return unique_recs
