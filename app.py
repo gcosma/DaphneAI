@@ -54,7 +54,7 @@ def main():
         render_header()
         
         # Navigation tabs
-        tab1, tab2, tab3, tab4, tab5 = render_navigation_tabs()
+        tab1, tab2, tab3, tab4, tab5, tab6 = render_navigation_tabs()
         
         # Render tab content
         with tab1:
