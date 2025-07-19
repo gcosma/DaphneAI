@@ -7,17 +7,6 @@ import sys
 import logging
 from pathlib import Path
 import os
-from modules.ui import (
-    initialize_session_state,
-    render_header,
-    render_navigation_tabs,
-    render_upload_tab,
-    render_extraction_tab,
-    render_annotation_tab,
-    render_matching_tab,
-    render_smart_search_tab,
-    render_dashboard_tab
-)
 
 # Configure page
 st.set_page_config(
