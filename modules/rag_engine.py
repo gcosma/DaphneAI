@@ -1,371 +1,589 @@
 # ===============================================
-# FILE: modules/rag_engine.py
+# FILE: modules/rag_engine.py - CORRECTED VERSION
 # ===============================================
 
 import os
 import logging
 from typing import List, Dict, Any, Tuple, Optional
+import time
 
+# LangChain imports with version compatibility
 try:
-    from langchain.chains import RetrievalQA
-    from langchain_openai import OpenAI
-    from langchain.prompts import PromptTemplate
-    LANGCHAIN_FULL_AVAILABLE = True
+    # Try new LangChain 0.1.0+ imports first
+    from langchain_openai import ChatOpenAI
+    from langchain_core.prompts import PromptTemplate
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.runnables import RunnablePassthrough
+    LANGCHAIN_NEW = True
 except ImportError:
     try:
-        from langchain.chains import RetrievalQA
-        from langchain.llms import OpenAI
+        # Fallback to older LangChain imports
+        from langchain.chat_models import ChatOpenAI
         from langchain.prompts import PromptTemplate
-        LANGCHAIN_FULL_AVAILABLE = True
+        from langchain.schema.output_parser import StrOutputParser
+        from langchain.schema.runnable import RunnablePassthrough
+        LANGCHAIN_NEW = False
     except ImportError:
-        LANGCHAIN_FULL_AVAILABLE = False
+        # No LangChain available
+        ChatOpenAI = None
+        PromptTemplate = None
+        StrOutputParser = None
+        RunnablePassthrough = None
+        LANGCHAIN_NEW = None
+
+# OpenAI imports with version compatibility
+try:
+    from openai import OpenAI as OpenAIClient
+    OPENAI_NEW = True
+except ImportError:
+    try:
+        import openai
+        OpenAIClient = None
+        OPENAI_NEW = False
+    except ImportError:
+        OpenAIClient = None
+        OPENAI_NEW = None
 
 from core_utils import Recommendation
-from vector_store import VectorStoreManager
 
 class MockLLM:
-    """Mock LLM for testing"""
-    def __call__(self, prompt: str) -> str:
-        return "This is a mock response. Please configure your API key for full functionality."
+    """Mock LLM for testing when API keys or libraries are unavailable"""
+    
+    def __init__(self, model_name="mock-model"):
+        self.model_name = model_name
+        self.logger = logging.getLogger(__name__)
     
     def predict(self, text: str) -> str:
-        return self.__call__(text)
+        """Mock prediction method"""
+        self.logger.info("Using mock LLM response")
+        return "This is a mock response. Please configure your OpenAI API key for full functionality."
+    
+    def __call__(self, prompt: str) -> str:
+        return self.predict(prompt)
+    
+    def invoke(self, input_data) -> str:
+        """For compatibility with new LangChain interfaces"""
+        if isinstance(input_data, dict):
+            return self.predict(str(input_data))
+        return self.predict(str(input_data))
 
 class RAGQueryEngine:
-    def __init__(self, vector_store_manager: VectorStoreManager, llm_model="gpt-3.5-turbo"):
+    """Enhanced RAG Query Engine with fallback mechanisms"""
+    
+    def __init__(self, vector_store_manager, llm_model="gpt-3.5-turbo"):
         self.vector_store = vector_store_manager
-        self.llm = None
         self.llm_model = llm_model
+        self.llm = None
         self.logger = logging.getLogger(__name__)
         
+        # Initialize LLM with fallbacks
         self._initialize_llm()
         
-        if LANGCHAIN_FULL_AVAILABLE:
-            self.rag_prompt = PromptTemplate(
-                template="""
-                You are an expert at analyzing recommendations and their responses.
-                
-                Use the following context to answer questions about recommendations and responses:
-                
-                Context: {context}
-                
-                Question: {question}
-                
-                Provide a detailed answer based on the context. If you cannot find relevant information
-                in the context, say so clearly. Include confidence scores and source references where possible.
-                
-                Answer:
-                """,
-                input_variables=["context", "question"]
-            )
-            
-            self.qa_chain = None
-            self._initialize_qa_chain()
+        # Define RAG prompt template
+        self.rag_prompt_template = """
+You are an expert at analyzing recommendations and their responses.
+
+Use the following context to answer questions about recommendations and responses:
+
+Context: {context}
+
+Question: {question}
+
+Provide a detailed answer based on the context. If you cannot find relevant information
+in the context, say so clearly. Include confidence scores and source references where possible.
+
+Focus on:
+1. Direct answers to the question
+2. Relevant details from the context
+3. Any implementation status or progress mentioned
+4. Connections between recommendations and responses
+
+Answer:
+"""
+        
+        # Initialize processing chain
+        self._initialize_chain()
     
     def _initialize_llm(self):
-        """Initialize LLM"""
+        """Initialize LLM with comprehensive fallbacks"""
         try:
-            if LANGCHAIN_FULL_AVAILABLE and os.getenv("OPENAI_API_KEY"):
-                self.llm = OpenAI(model_name=self.llm_model, temperature=0)
-                self.logger.info("LLM initialized successfully")
-            else:
-                self.logger.warning("Using mock LLM - OpenAI key not found or LangChain unavailable")
-                self.llm = MockLLM()
+            api_key = os.getenv("OPENAI_API_KEY")
+            
+            if not api_key:
+                self.logger.warning("OpenAI API key not found - using mock LLM")
+                self.llm = MockLLM(self.llm_model)
+                return
+            
+            # Try new OpenAI client first
+            if OPENAI_NEW and OpenAIClient:
+                try:
+                    # Test the API key works
+                    client = OpenAIClient(api_key=api_key)
+                    # Simple test call
+                    response = client.chat.completions.create(
+                        model=self.llm_model,
+                        messages=[{"role": "user", "content": "test"}],
+                        max_tokens=5
+                    )
+                    
+                    # If test successful, create LangChain wrapper if available
+                    if ChatOpenAI and LANGCHAIN_NEW is not None:
+                        self.llm = ChatOpenAI(
+                            model_name=self.llm_model,
+                            temperature=0.1,
+                            openai_api_key=api_key
+                        )
+                        self.logger.info(f"Initialized ChatOpenAI with model: {self.llm_model}")
+                    else:
+                        # Use direct OpenAI client
+                        self.llm = OpenAIDirectWrapper(client, self.llm_model)
+                        self.logger.info(f"Initialized direct OpenAI client with model: {self.llm_model}")
+                    
+                    return
+                    
+                except Exception as e:
+                    self.logger.warning(f"New OpenAI client initialization failed: {e}")
+            
+            # Try older OpenAI API
+            if not OPENAI_NEW and 'openai' in globals():
+                try:
+                    openai.api_key = api_key
+                    # Test old API
+                    response = openai.ChatCompletion.create(
+                        model=self.llm_model,
+                        messages=[{"role": "user", "content": "test"}],
+                        max_tokens=5
+                    )
+                    
+                    if ChatOpenAI:
+                        self.llm = ChatOpenAI(
+                            model_name=self.llm_model,
+                            temperature=0.1,
+                            openai_api_key=api_key
+                        )
+                        self.logger.info(f"Initialized ChatOpenAI (legacy) with model: {self.llm_model}")
+                    else:
+                        self.llm = OpenAILegacyWrapper(self.llm_model)
+                        self.logger.info(f"Initialized legacy OpenAI wrapper with model: {self.llm_model}")
+                    
+                    return
+                    
+                except Exception as e:
+                    self.logger.warning(f"Legacy OpenAI initialization failed: {e}")
+            
+            # If all else fails, use mock
+            self.logger.warning("All LLM initialization attempts failed - using mock LLM")
+            self.llm = MockLLM(self.llm_model)
+            
         except Exception as e:
-            self.logger.error(f"Error initializing LLM: {e}")
-            self.llm = MockLLM()
+            self.logger.error(f"Error during LLM initialization: {e}")
+            self.llm = MockLLM(self.llm_model)
     
-    def _initialize_qa_chain(self):
-        """Initialize QA chain"""
+    def _initialize_chain(self):
+        """Initialize the RAG processing chain"""
         try:
-            if (LANGCHAIN_FULL_AVAILABLE and 
-                self.llm and 
-                hasattr(self.vector_store.vector_store, 'as_retriever')):
+            if PromptTemplate and self.llm and not isinstance(self.llm, MockLLM):
+                self.prompt = PromptTemplate.from_template(self.rag_prompt_template)
                 
-                self.qa_chain = RetrievalQA.from_chain_type(
-                    llm=self.llm,
-                    chain_type="stuff",
-                    retriever=self.vector_store.vector_store.as_retriever(search_kwargs={"k": 5}),
-                    chain_type_kwargs={"prompt": self.rag_prompt},
-                    return_source_documents=True
-                )
-                self.logger.info("QA chain initialized successfully")
+                # Try to create modern LangChain chain
+                if LANGCHAIN_NEW and hasattr(self.llm, 'invoke'):
+                    try:
+                        if StrOutputParser and RunnablePassthrough:
+                            self.chain = (
+                                {"context": RunnablePassthrough(), "question": RunnablePassthrough()}
+                                | self.prompt
+                                | self.llm
+                                | StrOutputParser()
+                            )
+                            self.logger.info("Initialized modern LangChain chain")
+                        else:
+                            self.chain = None
+                            self.logger.warning("LangChain components missing - using direct method")
+                    except Exception as e:
+                        self.logger.warning(f"Modern chain creation failed: {e}")
+                        self.chain = None
+                else:
+                    self.chain = None
+                    self.logger.info("Using legacy LLM interface")
             else:
-                self.logger.warning("Cannot initialize QA chain - using fallback method")
+                self.chain = None
+                self.logger.warning("Chain initialization skipped - using fallback methods")
+                
         except Exception as e:
-            self.logger.error(f"Error initializing QA chain: {e}")
+            self.logger.error(f"Error initializing chain: {e}")
+            self.chain = None
     
     def query(self, question: str, include_sources: bool = True) -> Dict[str, Any]:
-        """Process RAG query"""
+        """Process RAG query with comprehensive error handling"""
         try:
-            if self.qa_chain:
-                result = self.qa_chain({"query": question})
-                
-                response = {
-                    "answer": result.get("result", "No answer generated"),
-                    "confidence": self._calculate_confidence(result),
+            if not question or not question.strip():
+                return {
+                    "answer": "Please provide a valid question.",
+                    "confidence": 0.0,
                     "sources": []
                 }
-                
-                if include_sources and "source_documents" in result:
-                    response["sources"] = self._format_sources(result["source_documents"])
-                
-                return response
-            else:
-                docs = self.vector_store.similarity_search(question, k=3)
-                return {
-                    "answer": f"Found {len(docs)} relevant documents. Please check the sources for details.",
-                    "confidence": 0.5,
-                    "sources": self._format_sources(docs)
-                }
+            
+            # Get relevant documents from vector store
+            relevant_docs = []
+            try:
+                if self.vector_store:
+                    relevant_docs = self.vector_store.similarity_search(question, k=5)
+                    self.logger.info(f"Retrieved {len(relevant_docs)} relevant documents")
+                else:
+                    self.logger.warning("Vector store not available")
+            except Exception as e:
+                self.logger.error(f"Error retrieving documents: {e}")
+            
+            # Prepare context from retrieved documents
+            context = self._prepare_context(relevant_docs)
+            
+            # Generate answer
+            answer = self._generate_answer(question, context)
+            
+            # Calculate confidence
+            confidence = self._calculate_confidence(answer, relevant_docs, question)
+            
+            # Prepare sources
+            sources = []
+            if include_sources:
+                sources = self._format_sources(relevant_docs)
+            
+            return {
+                "answer": answer,
+                "confidence": confidence,
+                "sources": sources,
+                "context_length": len(context),
+                "documents_retrieved": len(relevant_docs)
+            }
             
         except Exception as e:
             self.logger.error(f"Error processing RAG query: {e}")
             return {
-                "answer": "Sorry, I encountered an error processing your query.",
+                "answer": f"I encountered an error processing your query: {str(e)}",
                 "confidence": 0.0,
-                "sources": []
+                "sources": [],
+                "error": str(e)
             }
     
-    def find_responses_for_recommendation(self, recommendation: Recommendation) -> List[Dict[str, Any]]:
-        """Find responses for a specific recommendation"""
+    def _prepare_context(self, documents: List) -> str:
+        """Prepare context string from retrieved documents"""
         try:
-            query = f"response implementation action taken regarding: {recommendation.text}"
+            if not documents:
+                return "No relevant context found."
             
-            similar_docs = self.vector_store.similarity_search_with_score(query, k=10)
+            context_parts = []
+            for i, doc in enumerate(documents, 1):
+                content = getattr(doc, 'page_content', str(doc))
+                source = getattr(doc, 'metadata', {}).get('source', f'Document {i}')
+                
+                # Limit content length to prevent prompt overflow
+                max_content_length = 500
+                if len(content) > max_content_length:
+                    content = content[:max_content_length] + "..."
+                
+                context_parts.append(f"Source {i} ({source}):\n{content}")
             
-            responses = []
-            for doc, score in similar_docs:
-                if self._is_response_document(doc):
-                    response_info = {
-                        "text": doc.page_content,
-                        "source": doc.metadata.get('source', 'Unknown'),
-                        "similarity_score": float(score),
-                        "metadata": doc.metadata,
-                        "recommendation_id": recommendation.id
-                    }
-                    responses.append(response_info)
-            
-            responses.sort(key=lambda x: x['similarity_score'], reverse=True)
-            return responses
+            return "\n\n".join(context_parts)
             
         except Exception as e:
-            self.logger.error(f"Error finding responses: {e}")
-            return []
+            self.logger.error(f"Error preparing context: {e}")
+            return "Error preparing context from retrieved documents."
     
-    def _calculate_confidence(self, result: Dict) -> float:
-        """Calculate confidence score"""
+    def _generate_answer(self, question: str, context: str) -> str:
+        """Generate answer using LLM"""
         try:
-            answer = result.get("result", "")
-            sources = result.get("source_documents", [])
+            if isinstance(self.llm, MockLLM):
+                return self.llm.predict(f"Question: {question}\nContext: {context[:200]}...")
             
-            confidence = 0.5
+            # Try modern LangChain chain first
+            if self.chain and hasattr(self.chain, 'invoke'):
+                try:
+                    response = self.chain.invoke({
+                        "question": question,
+                        "context": context
+                    })
+                    return str(response)
+                except Exception as e:
+                    self.logger.warning(f"Modern chain invocation failed: {e}")
             
-            if len(answer) > 100:
-                confidence += 0.2
+            # Try direct LLM invocation
+            if hasattr(self.llm, 'invoke'):
+                try:
+                    prompt_text = self.rag_prompt_template.format(
+                        question=question,
+                        context=context
+                    )
+                    response = self.llm.invoke(prompt_text)
+                    return str(response.content if hasattr(response, 'content') else response)
+                except Exception as e:
+                    self.logger.warning(f"Direct LLM invoke failed: {e}")
             
-            if len(sources) > 1:
-                confidence += 0.1 * min(len(sources), 3)
+            # Try predict method
+            if hasattr(self.llm, 'predict'):
+                try:
+                    prompt_text = self.rag_prompt_template.format(
+                        question=question,
+                        context=context
+                    )
+                    response = self.llm.predict(prompt_text)
+                    return str(response)
+                except Exception as e:
+                    self.logger.warning(f"LLM predict failed: {e}")
             
-            uncertainty_phrases = ["i don't know", "unclear", "cannot determine", "not sure"]
-            if any(phrase in answer.lower() for phrase in uncertainty_phrases):
-                confidence -= 0.3
+            # Try call method
+            if callable(self.llm):
+                try:
+                    prompt_text = self.rag_prompt_template.format(
+                        question=question,
+                        context=context
+                    )
+                    response = self.llm(prompt_text)
+                    return str(response)
+                except Exception as e:
+                    self.logger.warning(f"LLM call failed: {e}")
             
-            return min(max(confidence, 0.0), 1.0)
+            # If all methods fail
+            return "I'm unable to generate a response at this time. Please check your API configuration."
+            
+        except Exception as e:
+            self.logger.error(f"Error generating answer: {e}")
+            return f"Error generating answer: {str(e)}"
+    
+    def _calculate_confidence(self, answer: str, documents: List, question: str) -> float:
+        """Calculate confidence score for the generated answer"""
+        try:
+            confidence = 0.5  # Base confidence
+            
+            # Factor 1: Answer length and completeness
+            if len(answer) > 50:
+                confidence += 0.1
+            if len(answer) > 150:
+                confidence += 0.1
+            
+            # Factor 2: Number of source documents
+            if len(documents) > 0:
+                confidence += 0.1
+            if len(documents) > 2:
+                confidence += 0.1
+            
+            # Factor 3: Check for uncertainty indicators
+            uncertainty_phrases = [
+                "i don't know", "unclear", "cannot determine", 
+                "not sure", "unable to", "no information", "error"
+            ]
+            
+            answer_lower = answer.lower()
+            uncertainty_count = sum(1 for phrase in uncertainty_phrases if phrase in answer_lower)
+            confidence -= (uncertainty_count * 0.2)
+            
+            # Factor 4: Question-answer relevance (simple keyword check)
+            question_words = set(question.lower().split())
+            answer_words = set(answer.lower().split())
+            overlap = len(question_words.intersection(answer_words))
+            if overlap > 2:
+                confidence += 0.1
+            
+            # Ensure confidence is between 0 and 1
+            return max(0.0, min(1.0, confidence))
             
         except Exception as e:
             self.logger.error(f"Error calculating confidence: {e}")
             return 0.5
     
-    def _format_sources(self, source_docs: List) -> List[Dict[str, Any]]:
-        """Format source documents"""
-        sources = []
-        for doc in source_docs:
-            try:
-                source = {
-                    "content": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content,
-                    "metadata": getattr(doc, 'metadata', {})
-                }
-                sources.append(source)
-            except Exception as e:
-                self.logger.error(f"Error formatting source: {e}")
-                continue
-        return sources
-    
-    def _is_response_document(self, doc) -> bool:
-        """Determine if document is a response"""
+    def _format_sources(self, documents: List) -> List[Dict[str, Any]]:
+        """Format source documents for response"""
         try:
-            doc_type = doc.metadata.get('document_type', '').lower()
-            if 'response' in doc_type:
-                return True
+            sources = []
+            for doc in documents:
+                try:
+                    content = getattr(doc, 'page_content', str(doc))
+                    metadata = getattr(doc, 'metadata', {})
+                    
+                    # Limit content for display
+                    display_content = content[:300] + "..." if len(content) > 300 else content
+                    
+                    source = {
+                        "content": display_content,
+                        "metadata": metadata,
+                        "source": metadata.get('source', 'Unknown'),
+                        "content_type": metadata.get('content_type', 'general')
+                    }
+                    sources.append(source)
+                    
+                except Exception as e:
+                    self.logger.error(f"Error formatting source document: {e}")
+                    continue
             
-            content = doc.page_content.lower()
-            response_indicators = [
-                "in response to", "responding to", "implementation", 
-                "accepted", "rejected", "under review", "action taken",
-                "following the recommendation", "as recommended",
-                "we have implemented", "steps taken"
+            return sources
+            
+        except Exception as e:
+            self.logger.error(f"Error formatting sources: {e}")
+            return []
+    
+    def find_responses_for_recommendation(self, recommendation: Recommendation) -> List[Dict[str, Any]]:
+        """Find responses for a specific recommendation using enhanced search"""
+        try:
+            # Create enhanced query for finding responses
+            query_parts = [
+                f"response to {recommendation.text}",
+                f"implementation of {recommendation.text[:100]}",
+                f"action taken regarding {recommendation.text[:100]}",
+                recommendation.text
             ]
             
-            return any(indicator in content for indicator in response_indicators)
+            all_responses = []
+            seen_sources = set()
             
+            # Try multiple query strategies
+            for query in query_parts:
+                try:
+                    if len(query.strip()) < 10:  # Skip very short queries
+                        continue
+                    
+                    # Get similar documents
+                    similar_docs = self.vector_store.similarity_search_with_score(query, k=8)
+                    
+                    for doc, score in similar_docs:
+                        source = getattr(doc, 'metadata', {}).get('source', 'Unknown')
+                        
+                        # Skip duplicates
+                        if source in seen_sources:
+                            continue
+                        
+                        # Check if this looks like a response document
+                        if self._is_response_document(doc):
+                            response_info = {
+                                "text": getattr(doc, 'page_content', ''),
+                                "source": source,
+                                "similarity_score": float(score),
+                                "metadata": getattr(doc, 'metadata', {}),
+                                "recommendation_id": recommendation.id,
+                                "query_used": query[:50] + "..." if len(query) > 50 else query
+                            }
+                            all_responses.append(response_info)
+                            seen_sources.add(source)
+                            
+                            # Limit total responses to prevent overflow
+                            if len(all_responses) >= 15:
+                                break
+                    
+                    if len(all_responses) >= 15:
+                        break
+                        
+                except Exception as e:
+                    self.logger.error(f"Error in query '{query[:30]}...': {e}")
+                    continue
+            
+            # Sort by similarity score and return top results
+            all_responses.sort(key=lambda x: x['similarity_score'], reverse=True)
+            return all_responses[:10]  # Return top 10 responses
+            
+        except Exception as e:
+            self.logger.error(f"Error finding responses for recommendation {recommendation.id}: {e}")
+            return []
+    
+    def _is_response_document(self, doc) -> bool:
+        """Enhanced method to determine if document is a response"""
+        try:
+            # Check metadata first
+            metadata = getattr(doc, 'metadata', {})
+            doc_type = metadata.get('document_type', '').lower()
+            content_type = metadata.get('content_type', '').lower()
+            
+            if 'response' in doc_type or 'response' in content_type:
+                return True
+            
+            # Check content for response indicators
+            content = getattr(doc, 'page_content', '').lower()
+            
+            # Strong response indicators
+            strong_indicators = [
+                "in response to", "responding to", "we have implemented",
+                "action taken", "actions completed", "implementation",
+                "following the recommendation", "as recommended",
+                "we accept", "we reject", "under review",
+                "progress report", "status update", "completion",
+                "addressed", "resolved", "actioned"
+            ]
+            
+            strong_matches = sum(1 for indicator in strong_indicators if indicator in content)
+            
+            # Weak response indicators
+            weak_indicators = [
+                "update", "progress", "status", "review", "assessment",
+                "evaluation", "outcome", "result", "measure", "step"
+            ]
+            
+            weak_matches = sum(1 for indicator in weak_indicators if indicator in content)
+            
+            # Decision logic
+            if strong_matches >= 1:
+                return True
+            elif strong_matches == 0 and weak_matches >= 3:
+                return True
+            else:
+                return False
+                
         except Exception as e:
             self.logger.error(f"Error checking if document is response: {e}")
             return False
 
-# ===============================================
-# FILE: modules/recommendation_matcher.py
-# ===============================================
 
-import logging
-from typing import List, Dict, Any, Tuple, Optional
-
-from core_utils import Recommendation
-from rag_engine import RAGQueryEngine
-from bert_annotator import BERTConceptAnnotator
-
-class RecommendationResponseMatcher:
-    def __init__(self, rag_engine: RAGQueryEngine, bert_annotator: BERTConceptAnnotator):
-        self.rag_engine = rag_engine
-        self.bert_annotator = bert_annotator
+class OpenAIDirectWrapper:
+    """Direct wrapper for new OpenAI client"""
+    
+    def __init__(self, client, model_name):
+        self.client = client
+        self.model_name = model_name
         self.logger = logging.getLogger(__name__)
     
-    def match_recommendation_to_responses(self, recommendation: Recommendation) -> List[Dict[str, Any]]:
-        """Match recommendation to responses using multi-modal approach"""
+    def predict(self, text: str) -> str:
+        """Predict method for compatibility"""
+        return self.invoke(text)
+    
+    def invoke(self, text: str) -> str:
+        """Invoke method for new LangChain compatibility"""
         try:
-            # RAG-based matching
-            rag_responses = self.rag_engine.find_responses_for_recommendation(recommendation)
-            
-            # Annotate recommendation if needed
-            if not recommendation.annotations:
-                rec_annotations, _ = self.bert_annotator.annotate_text(recommendation.text)
-                recommendation.annotations = rec_annotations
-            
-            # Enhanced matching with concept validation
-            enhanced_matches = []
-            
-            for rag_response in rag_responses:
-                try:
-                    # Annotate response text
-                    response_annotations, _ = self.bert_annotator.annotate_text(rag_response['text'])
-                    
-                    # Calculate concept overlap
-                    concept_overlap = self._calculate_concept_overlap(
-                        recommendation.annotations, 
-                        response_annotations
-                    )
-                    
-                    # Combined confidence score
-                    combined_confidence = self._calculate_combined_confidence(
-                        rag_response['similarity_score'],
-                        concept_overlap['overlap_score']
-                    )
-                    
-                    # Create enhanced match
-                    enhanced_match = {
-                        **rag_response,
-                        'response_annotations': response_annotations,
-                        'concept_overlap': concept_overlap,
-                        'combined_confidence': combined_confidence,
-                        'match_type': self._determine_match_type(combined_confidence)
-                    }
-                    
-                    enhanced_matches.append(enhanced_match)
-                    
-                except Exception as e:
-                    self.logger.error(f"Error processing individual match: {e}")
-                    enhanced_matches.append({
-                        **rag_response,
-                        'response_annotations': {},
-                        'concept_overlap': {'overlap_score': 0, 'shared_themes': []},
-                        'combined_confidence': rag_response['similarity_score'],
-                        'match_type': 'BASIC_MATCH'
-                    })
-            
-            enhanced_matches.sort(key=lambda x: x['combined_confidence'], reverse=True)
-            return enhanced_matches
-            
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": str(text)}],
+                temperature=0.1,
+                max_tokens=1000
+            )
+            return response.choices[0].message.content
         except Exception as e:
-            self.logger.error(f"Error matching recommendation to responses: {e}")
-            return []
+            self.logger.error(f"OpenAI direct wrapper error: {e}")
+            return f"Error generating response: {str(e)}"
     
-    def batch_match_recommendations(self, recommendations: List[Recommendation]) -> Dict[str, List[Dict[str, Any]]]:
-        """Match multiple recommendations to responses"""
-        matches = {}
-        
-        for recommendation in recommendations:
-            try:
-                matches[recommendation.id] = self.match_recommendation_to_responses(recommendation)
-            except Exception as e:
-                self.logger.error(f"Error matching recommendation {recommendation.id}: {e}")
-                matches[recommendation.id] = []
-        
-        return matches
+    def __call__(self, text: str) -> str:
+        return self.invoke(text)
+
+
+class OpenAILegacyWrapper:
+    """Wrapper for legacy OpenAI API"""
     
-    def _calculate_concept_overlap(self, rec_annotations: Dict, resp_annotations: Dict) -> Dict[str, Any]:
-        """Calculate concept overlap between recommendation and response"""
-        overlap_info = {
-            'shared_frameworks': [],
-            'shared_themes': [],
-            'overlap_score': 0.0,
-            'total_rec_concepts': 0,
-            'total_resp_concepts': 0
-        }
-        
-        if not rec_annotations or not resp_annotations:
-            return overlap_info
-        
+    def __init__(self, model_name):
+        self.model_name = model_name
+        self.logger = logging.getLogger(__name__)
+    
+    def predict(self, text: str) -> str:
+        """Predict method for compatibility"""
         try:
-            # Count total concepts
-            for framework, themes in rec_annotations.items():
-                overlap_info['total_rec_concepts'] += len(themes)
-            
-            for framework, themes in resp_annotations.items():
-                overlap_info['total_resp_concepts'] += len(themes)
-            
-            # Find overlapping frameworks and themes
-            shared_themes = []
-            
-            for framework in rec_annotations:
-                if framework in resp_annotations:
-                    overlap_info['shared_frameworks'].append(framework)
-                    
-                    rec_themes = {theme['theme'] for theme in rec_annotations[framework]}
-                    resp_themes = {theme['theme'] for theme in resp_annotations[framework]}
-                    
-                    framework_shared = rec_themes.intersection(resp_themes)
-                    for theme in framework_shared:
-                        shared_themes.append(f"{framework}: {theme}")
-            
-            overlap_info['shared_themes'] = shared_themes
-            
-            # Calculate overlap score
-            if overlap_info['total_rec_concepts'] > 0:
-                overlap_info['overlap_score'] = len(shared_themes) / overlap_info['total_rec_concepts']
-            
-            return overlap_info
-            
+            import openai
+            response = openai.ChatCompletion.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": str(text)}],
+                temperature=0.1,
+                max_tokens=1000
+            )
+            return response.choices[0].message.content
         except Exception as e:
-            self.logger.error(f"Error calculating concept overlap: {e}")
-            return overlap_info
+            self.logger.error(f"OpenAI legacy wrapper error: {e}")
+            return f"Error generating response: {str(e)}"
     
-    def _calculate_combined_confidence(self, semantic_score: float, concept_score: float) -> float:
-        """Calculate combined confidence"""
-        try:
-            weights = {'semantic': 0.7, 'concept': 0.3}
-            combined = (semantic_score * weights['semantic']) + (concept_score * weights['concept'])
-            return min(max(combined, 0.0), 1.0)
-        except Exception as e:
-            self.logger.error(f"Error calculating combined confidence: {e}")
-            return semantic_score
+    def invoke(self, text: str) -> str:
+        """Invoke method for compatibility"""
+        return self.predict(text)
     
-    def _determine_match_type(self, confidence: float) -> str:
-        """Determine match type based on confidence"""
-        if confidence >= 0.85:
-            return "HIGH_CONFIDENCE"
-        elif confidence >= 0.65:
-            return "MEDIUM_CONFIDENCE" 
-        elif confidence >= 0.45:
-            return "LOW_CONFIDENCE"
-        else:
-            return "POOR_MATCH"
+    def __call__(self, text: str) -> str:
+        return self.predict(text)
