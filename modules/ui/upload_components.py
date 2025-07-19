@@ -454,7 +454,11 @@ def show_document_statistics():
     # Calculate statistics
     total_docs = len(docs)
     total_size = sum(doc.get('file_size', 0) for doc in docs)
-    total_pages = sum(doc.get('metadata', {}).get('page_count', 0) for doc in docs if isinstance(doc.get('metadata', {}).get('page_count'), int))
+    total_pages = sum(
+        doc.get('metadata', {}).get('page_count', 0) 
+        for doc in docs 
+        if isinstance(doc.get('metadata', {}).get('page_count'), int)
+    )
     total_content = sum(len(doc.get('content', '')) for doc in docs)
     
     # Document type distribution
@@ -467,16 +471,12 @@ def show_document_statistics():
     st.markdown("### 📊 Document Statistics")
     
     col1, col2, col3, col4 = st.columns(4)
-    
     with col1:
         st.metric("Total Documents", total_docs)
-    
     with col2:
         st.metric("Total Size", f"{total_size / (1024*1024):.1f} MB")
-    
     with col3:
         st.metric("Total Pages", total_pages if total_pages > 0 else "N/A")
-    
     with col4:
         st.metric("Avg Size", f"{(total_size / total_docs) / 1024:.1f} KB" if total_docs > 0 else "0 KB")
     
@@ -492,24 +492,8 @@ def show_document_statistics():
     avg_content_length = sum(content_lengths) / len(content_lengths) if content_lengths else 0
     
     col1, col2 = st.columns(2)
-    
     with col1:
         st.metric("Avg Content Length", f"{avg_content_length:,.0f} chars")
-    
-    with col2:
-        st.metric("Total Content", f"{total_content:,.0f} chars")
-    
-    # Show content length histogram
-    if content_lengths:
-        content_df = pd.DataFrame({'Content Length': content_lengths})
-        st.bar_chart(content_df)
-    avg_content_length = sum(content_lengths) / len(content_lengths) if content_lengths else 0
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.metric("Avg Content Length", f"{avg_content_length:,.0f} chars")
-    
     with col2:
         st.metric("Total Content", f"{total_content:,.0f} chars")
     
