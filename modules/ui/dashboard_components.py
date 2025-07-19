@@ -1331,9 +1331,10 @@ def export_executive_summary():
     """Export executive summary"""
     st.info("📋 Executive summary export functionality coming soon!")
 
+
 def create_custom_export(include_documents, include_extractions, include_annotations, 
-                        include_matches, include_search_data, include_charts,
-                        include_config, include_logs, export_format):
+                         include_matches, include_search_data, include_charts,
+                         include_config, include_logs, export_format):
     """Create custom export based on user selections"""
     try:
         if export_format == "ZIP Package":
@@ -1407,9 +1408,13 @@ def create_custom_export(include_documents, include_extractions, include_annotat
         
         else:
             st.info(f"Export format '{export_format}' is not yet implemented.")
+
     except Exception as e:
+        match_type = response.get('match_type', 'UNKNOWN') if 'response' in locals() else 'N/A'
+        source = response.get('source', 'Unknown') if 'response' in locals() else 'N/A'
         st.error(f"❌ Failed to create custom export: {str(e)}")
-        logging.error(f"Custom export error: {e}", exc_info=True)
+        logging.error(f"Custom export error: {e}, match_type: {match_type}, source: {source}", exc_info=True)
+
                             
 
     
