@@ -1,1 +1,25 @@
+[tool.app]
+name = "Recommendation-Response Tracker"
+version = "1.0.0"
+description = "AI-powered document analysis for tracking recommendations and responses"
 
+[tool.models]
+bert_model = "emilyalsentzer/Bio_ClinicalBERT"
+llm_model = "gpt-3.5-turbo"
+embedding_model = "text-embedding-ada-002"
+
+[tool.processing]
+chunk_size = 1000
+chunk_overlap = 200
+max_file_size_mb = 100
+similarity_threshold = 0.65
+max_themes_per_framework = 10
+
+[tool.vector_store]
+persist_directory = "./data/vector_store"
+collection_name = "recommendations_responses"
+
+[tool.logging]
+level = "INFO"
+file = "app.log"
+format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
