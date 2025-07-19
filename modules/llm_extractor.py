@@ -7,6 +7,7 @@ import re
 import logging
 from typing import List, Dict, Any, Optional
 from core_utils import Recommendation
+import time
 
 try:
     import openai
@@ -21,21 +22,38 @@ class LLMRecommendationExtractor:
         self.model = model
         self.logger = logging.getLogger(__name__)
         
+        # Improved extraction prompt with concern extraction patterns
         self.extraction_prompt = """
-You are an expert at extracting recommendations from documents.
+You are an expert at extracting recommendations and concerns from documents.
 
-Analyze the following document text and extract all recommendations, suggestions,
-or required actions. Look for patterns like:
+Analyze the following document text and extract:
+1. RECOMMENDATIONS - explicit suggestions, required actions, or directives
+2. CONCERNS - issues, problems, risks, or areas of worry mentioned
+
+Look for patterns like:
+RECOMMENDATIONS:
 - "Recommendation 1:", "Recommendation 2:", etc.
 - "We recommend that..."
 - "Should implement..."
 - "Must establish..."
+- "It is recommended..."
+- "The following action should be taken..."
 
-For each recommendation found, extract:
-1. The full recommendation text
-2. Any recommendation ID or number
-3. The section it appears in
+CONCERNS:
+- "Concern about..."
+- "Issue with..."
+- "Problem identified..."
+- "Risk of..."
+- "Worried about..."
+- "Difficulty in..."
+- "Challenge faced..."
+
+For each item found, extract:
+1. The full text
+2. Type (recommendation or concern)
+3. Category/theme if identifiable
 4. Confidence level (0-1)
+5. Any reference numbers or IDs
 
 Document text:
 {text}
@@ -43,39 +61,75 @@ Document text:
 Return as valid JSON array only:
 [
     {{
-        "id": "recommendation_identifier",
+        "type": "recommendation",
+        "id": "rec_1",
         "text": "full recommendation text",
-        "section": "section name where found",
+        "category": "safety/quality/process/etc",
         "confidence": 0.95,
-        "page_number": 1
+        "page_number": 1,
+        "section": "section name"
+    }},
+    {{
+        "type": "concern", 
+        "id": "concern_1",
+        "text": "full concern text",
+        "category": "safety/quality/process/etc",
+        "confidence": 0.90,
+        "page_number": 1,
+        "section": "section name"
     }}
 ]
 """
     
-    def extract_recommendations(self, document_text: str, document_source: str = "") -> List[Recommendation]:
-        """Extract recommendations using LLM with fallback"""
+    def extract_recommendations_and_concerns(self, document_text: str, document_source: str = "") -> Dict[str, List]:
+        """Extract both recommendations and concerns using LLM with fallback"""
         try:
             if OPENAI_AVAILABLE:
                 response = self._call_openai(document_text)
                 
                 if response:
                     try:
-                        recommendations_data = json.loads(response)
+                        items_data = json.loads(response)
                         
                         recommendations = []
-                        for i, rec_data in enumerate(recommendations_data):
-                            rec = Recommendation(
-                                id=rec_data.get('id', f"REC-{i+1}"),
-                                text=rec_data.get('text', ''),
-                                document_source=document_source,
-                                section_title=rec_data.get('section', 'Unknown'),
-                                page_number=rec_data.get('page_number'),
-                                confidence_score=rec_data.get('confidence', 0.5)
-                            )
-                            recommendations.append(rec)
+                        concerns = []
                         
-                        self.logger.info(f"LLM extracted {len(recommendations)} recommendations")
-                        return recommendations
+                        for i, item_data in enumerate(items_data):
+                            item_type = item_data.get('type', 'recommendation').lower()
+                            
+                            if item_type == 'recommendation':
+                                rec = Recommendation(
+                                    id=item_data.get('id', f"REC-{len(recommendations)+1}"),
+                                    text=item_data.get('text', ''),
+                                    document_source=document_source,
+                                    section_title=item_data.get('section', 'Unknown'),
+                                    page_number=item_data.get('page_number'),
+                                    confidence_score=item_data.get('confidence', 0.5),
+                                    metadata={
+                                        'category': item_data.get('category', 'general'),
+                                        'extraction_method': 'llm'
+                                    }
+                                )
+                                recommendations.append(rec)
+                            
+                            elif item_type == 'concern':
+                                concern = {
+                                    'id': item_data.get('id', f"CONCERN-{len(concerns)+1}"),
+                                    'text': item_data.get('text', ''),
+                                    'document_source': document_source,
+                                    'section': item_data.get('section', 'Unknown'),
+                                    'page_number': item_data.get('page_number'),
+                                    'confidence_score': item_data.get('confidence', 0.5),
+                                    'category': item_data.get('category', 'general'),
+                                    'extraction_method': 'llm'
+                                }
+                                concerns.append(concern)
+                        
+                        self.logger.info(f"LLM extracted {len(recommendations)} recommendations and {len(concerns)} concerns")
+                        return {
+                            'recommendations': recommendations,
+                            'concerns': concerns
+                        }
                         
                     except json.JSONDecodeError as e:
                         self.logger.warning(f"Failed to parse LLM response: {e}")
@@ -87,8 +141,13 @@ Return as valid JSON array only:
         self.logger.info("Using pattern-based extraction fallback")
         return self._pattern_based_extraction(document_text, document_source)
     
+    def extract_recommendations(self, document_text: str, document_source: str = "") -> List[Recommendation]:
+        """Extract only recommendations (backward compatibility)"""
+        result = self.extract_recommendations_and_concerns(document_text, document_source)
+        return result.get('recommendations', [])
+    
     def _call_openai(self, text: str) -> Optional[str]:
-        """Call OpenAI API"""
+        """Call OpenAI API with retry logic"""
         try:
             import os
             if not os.getenv("OPENAI_API_KEY"):
@@ -96,89 +155,63 @@ Return as valid JSON array only:
                 return None
             
             # Truncate text if too long
-            max_chars = 30000
+            max_chars = 25000  # Reduced for better processing
             if len(text) > max_chars:
-                text = text[:max_chars] + "..."
+                # Smart truncation - try to keep complete sentences
+                truncated = text[:max_chars]
+                last_period = truncated.rfind('.')
+                if last_period > max_chars * 0.8:  # Keep if we don't lose too much
+                    text = truncated[:last_period + 1]
+                else:
+                    text = truncated + "..."
             
             client = OpenAIClient()
             
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "You are an expert at extracting recommendations from documents."},
-                    {"role": "user", "content": self.extraction_prompt.format(text=text)}
-                ],
-                temperature=0.1,
-                max_tokens=2000
-            )
-            
-            return response.choices[0].message.content.strip()
+            # Retry logic
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    response = client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {
+                                "role": "system", 
+                                "content": "You are an expert at extracting recommendations and concerns from documents. Always respond with valid JSON only."
+                            },
+                            {
+                                "role": "user", 
+                                "content": self.extraction_prompt.format(text=text)
+                            }
+                        ],
+                        temperature=0.1,
+                        max_tokens=2500,
+                        timeout=30
+                    )
+                    
+                    return response.choices[0].message.content.strip()
+                    
+                except Exception as e:
+                    self.logger.warning(f"OpenAI API attempt {attempt + 1} failed: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)  # Exponential backoff
+                    else:
+                        raise
             
         except Exception as e:
             self.logger.error(f"OpenAI API error: {e}")
             return None
     
-    def _pattern_based_extraction(self, text: str, source: str) -> List[Recommendation]:
-        """Fallback pattern-based extraction"""
+    def _pattern_based_extraction(self, text: str, source: str) -> Dict[str, List]:
+        """Enhanced pattern-based extraction for recommendations and concerns"""
         recommendations = []
+        concerns = []
         
-        patterns = [
-            (r"recommendation\s+(\d+)[:\.]?\s*([^.]+(?:\.[^.]*){0,2}\.)", "numbered"),
-            (r"(?:we\s+)?recommend\s+that\s+([^.]+(?:\.[^.]*){0,1}\.)", "recommend_that"),
+        # Recommendation patterns
+        rec_patterns = [
+            (r"recommendation\s+(\d+)[:\.]?\s*([^.]+(?:\.[^.]*){0,3}\.)", "numbered"),
+            (r"(?:we\s+)?recommend\s+that\s+([^.]+(?:\.[^.]*){0,2}\.)", "recommend_that"),
             (r"(?:should|must|ought\s+to)\s+([^.]+\.)", "modal_verbs"),
-            (r"it\s+is\s+(?:recommended|suggested)\s+that\s+([^.]+\.)", "passive_voice")
+            (r"it\s+is\s+(?:recommended|suggested)\s+that\s+([^.]+\.)", "passive_voice"),
+            (r"the\s+following\s+(?:action|step)s?\s+(?:should|must)\s+be\s+taken[:\s]+([^.]+\.)", "action_required"),
+            (r"(?:action|step)\s+(?:required|needed)[:\s]+([^.]+\.)", "action_needed")
         ]
-        
-        for pattern, pattern_type in patterns:
-            matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE)
-            
-            for match in matches:
-                if pattern_type == "numbered":
-                    rec_id = f"REC-{match.group(1)}"
-                    rec_text = match.group(2).strip()
-                else:
-                    rec_id = f"REC-{len(recommendations)+1}"
-                    rec_text = match.group(1).strip()
-                
-                rec_text = re.sub(r'\s+', ' ', rec_text)
-                
-                if len(rec_text) < 20 or not rec_text.endswith('.'):
-                    continue
-                
-                recommendation = Recommendation(
-                    id=rec_id,
-                    text=rec_text,
-                    document_source=source,
-                    section_title="Pattern-based extraction",
-                    confidence_score=0.6
-                )
-                recommendations.append(recommendation)
-        
-        recommendations = self._remove_duplicate_recommendations(recommendations)
-        
-        self.logger.info(f"Pattern-based extraction found {len(recommendations)} recommendations")
-        return recommendations
-    
-    def _remove_duplicate_recommendations(self, recommendations: List[Recommendation]) -> List[Recommendation]:
-        """Remove duplicate recommendations"""
-        if len(recommendations) <= 1:
-            return recommendations
-        
-        unique_recs = []
-        seen_texts = set()
-        
-        for rec in recommendations:
-            normalized_text = re.sub(r'\s+', ' ', rec.text.lower().strip())
-            
-            is_duplicate = False
-            
-            for seen_text in seen_texts:
-                            if len(set(normalized_text.split()) & set(seen_text.split())) / len(set(normalized_text.split()) | set(seen_text.split())) > 0.7:
-                                is_duplicate = True
-                                break
-                        
-                            if not is_duplicate:
-                                unique_recs.append(rec)
-                                seen_texts.add(normalized_text)
-                        
-        return unique_recs
