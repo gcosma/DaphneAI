@@ -1407,12 +1407,11 @@ def create_custom_export(include_documents, include_extractions, include_annotat
         
         else:
             st.info(f"Export format '{export_format}' is not yet implemented.")
-    
     except Exception as e:
         st.error(f"❌ Failed to create custom export: {str(e)}")
-        logging.error(f"Custom export error: {e}", exc_info=True): response.get('match_type', 'UNKNOWN'),
-                'Source': response.get('source', 'Unknown')
-            })
+        logging.error(f"Custom export error: {e}", exc_info=True)
+                            
+
     
     if confidence_data:
         conf_df = pd.DataFrame(confidence_data)
