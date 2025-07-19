@@ -46,7 +46,7 @@ def main():
             render_matching_tab,
             render_dashboard_tab
         )
-        
+        from ui.search_components import render_smart_search_tab
         # Initialize session state
         initialize_session_state()
         
