@@ -1,7 +1,7 @@
 # ===============================================
 # FILE: modules/document_processor.py
 # ===============================================
-
+from pathlib import Path
 import pdfplumber
 import fitz
 from typing import Dict, List, Tuple, Any, Optional
