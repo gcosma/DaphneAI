@@ -806,7 +806,611 @@ def render_matching_confidence_analysis(matching_results: Dict):
                 'Combined_Confidence': response.get('combined_confidence', response.get('similarity_score', 0)),
                 'Semantic_Similarity': response.get('similarity_score', 0),
                 'Concept_Overlap': response.get('concept_overlap', {}).get('overlap_score', 0),
+                'Match_Type': match_type,
+                'Count': count,
+                'Avg_Confidence': avg_confidence
+            })
+        
+        match_df = pd.DataFrame(match_analysis_data)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if PLOTLY_AVAILABLE:
+                fig = px.pie(
+                    match_df, 
+                    values='Count', 
+                    names='Match_Type',
+                    title="Match Type Distribution"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.bar_chart(match_df.set_index('Match_Type')['Count'])
+        
+        with col2:
+            if PLOTLY_AVAILABLE:
+                fig = px.bar(
+                    match_df, 
+                    x='Match_Type', 
+                    y='Avg_Confidence',
+                    title="Average Confidence by Match Type"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.bar_chart(match_df.set_index('Match_Type')['Avg_Confidence'])
+
+def render_search_analytics():
+    """Render search analytics section"""
+    st.subheader("🔍 Search Analytics")
+    
+    search_history = st.session_state.get('search_history', [])
+    search_results = st.session_state.get('search_results', {})
+    
+    if not search_history:
+        st.info("No search activity available for analysis.")
+        return
+    
+    # Search usage patterns
+    render_search_usage_patterns(search_history)
+    
+    # Query analysis
+    render_query_analysis(search_history, search_results)
+    
+    # Search effectiveness
+    render_search_effectiveness(search_results)
+
+def render_search_usage_patterns(search_history: List[Dict]):
+    """Render search usage patterns"""
+    st.markdown("### 📈 Search Usage Patterns")
+    
+    if not search_history:
+        st.info("No search history available.")
+        return
+    
+    # Time-based analysis
+    search_times = []
+    for search in search_history:
+        timestamp_str = search.get('timestamp', '')
+        try:
+            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            search_times.append(timestamp)
+        except:
+            pass
+    
+    if search_times:
+        # Daily search counts
+        daily_counts = {}
+        for timestamp in search_times:
+            date_key = timestamp.date()
+            daily_counts[date_key] = daily_counts.get(date_key, 0) + 1
+        
+        if daily_counts:
+            daily_df = pd.DataFrame([
+                {'Date': date, 'Searches': count} 
+                for date, count in sorted(daily_counts.items())
+            ])
+            
+            if PLOTLY_AVAILABLE:
+                fig = px.line(
+                    daily_df, 
+                    x='Date', 
+                    y='Searches',
+                    title="Daily Search Activity"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.line_chart(daily_df.set_index('Date'))
+    
+    # Search frequency metrics
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Total Searches", len(search_history))
+    
+    with col2:
+        if len(search_history) > 1 and search_times:
+            time_span = (max(search_times) - min(search_times)).days + 1
+            avg_daily = len(search_history) / time_span if time_span > 0 else 0
+            st.metric("Avg Searches/Day", f"{avg_daily:.1f}")
+    
+    with col3:
+        avg_results = sum(s.get('result_count', 0) for s in search_history) / len(search_history)
+        st.metric("Avg Results/Search", f"{avg_results:.1f}")
+
+def render_query_analysis(search_history: List[Dict], search_results: Dict):
+    """Render query analysis"""
+    st.markdown("### 🔤 Query Analysis")
+    
+    if not search_history:
+        return
+    
+    # Query length analysis
+    query_lengths = [len(search.get('query', '').split()) for search in search_history]
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if query_lengths:
+            length_df = pd.DataFrame({'Query Length (words)': query_lengths})
+            
+            if PLOTLY_AVAILABLE:
+                fig = px.histogram(
+                    length_df, 
+                    x='Query Length (words)',
+                    nbins=10,
+                    title="Query Length Distribution"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.histogram_chart(length_df, x='Query Length (words)')
+    
+    with col2:
+        # Most common query terms
+        all_terms = []
+        for search in search_history:
+            query = search.get('query', '').lower()
+            terms = [term.strip('.,!?') for term in query.split() if len(term.strip('.,!?')) > 2]
+            all_terms.extend(terms)
+        
+        if all_terms:
+            term_counts = pd.Series(all_terms).value_counts().head(10)
+            
+            if PLOTLY_AVAILABLE:
+                fig = px.bar(
+                    x=term_counts.values,
+                    y=term_counts.index,
+                    orientation='h',
+                    title="Top 10 Query Terms"
+                )
+                fig.update_yaxes(categoryorder="total ascending")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.bar_chart(term_counts)
+
+def render_search_effectiveness(search_results: Dict):
+    """Render search effectiveness analysis"""
+    st.markdown("### 🎯 Search Effectiveness")
+    
+    if not search_results:
+        st.info("No detailed search results available.")
+        return
+    
+    effectiveness_data = []
+    
+    for search_id, result in search_results.items():
+        semantic_results = result.get('semantic_results', [])
+        rag_response = result.get('rag_response', {})
+        
+        # Calculate effectiveness metrics
+        avg_semantic_score = 0
+        if semantic_results:
+            avg_semantic_score = sum(r.get('score', 0) for r in semantic_results) / len(semantic_results)
+        
+        rag_confidence = rag_response.get('confidence', 0) if rag_response else 0
+        
+        effectiveness_data.append({
+            'Search_ID': search_id,
+            'Query': result.get('query', ''),
+            'Semantic_Results': len(semantic_results),
+            'Avg_Semantic_Score': avg_semantic_score,
+            'RAG_Confidence': rag_confidence,
+            'Has_RAG_Response': bool(rag_response),
+            'Search_Mode': result.get('mode', 'Unknown')
+        })
+    
+    if effectiveness_data:
+        eff_df = pd.DataFrame(effectiveness_data)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if PLOTLY_AVAILABLE:
+                fig = px.scatter(
+                    eff_df, 
+                    x='Semantic_Results', 
+                    y='Avg_Semantic_Score',
+                    color='Search_Mode',
+                    title="Search Results vs Quality"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            mode_counts = eff_df['Search_Mode'].value_counts()
+            if PLOTLY_AVAILABLE:
+                fig = px.pie(
+                    values=mode_counts.values,
+                    names=mode_counts.index,
+                    title="Search Mode Usage"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.bar_chart(mode_counts)
+
+def render_export_center():
+    """Render comprehensive export center"""
+    st.subheader("📥 Export Center")
+    
+    st.markdown("""
+    Export your analysis data in various formats for further analysis or reporting.
+    Choose from individual components or comprehensive packages.
+    """)
+    
+    # Quick export options
+    render_quick_exports()
+    
+    # Comprehensive export packages
+    render_comprehensive_exports()
+    
+    # Custom export builder
+    render_custom_export_builder()
+
+def render_quick_exports():
+    """Render quick export options"""
+    st.markdown("### ⚡ Quick Exports")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        if st.button("📄 Export Documents List", use_container_width=True):
+            export_documents_list()
+    
+    with col2:
+        if st.button("💡 Export Recommendations", use_container_width=True):
+            export_recommendations_data()
+    
+    with col3:
+        if st.button("🏷️ Export Annotations", use_container_width=True):
+            export_annotations_data()
+    
+    with col4:
+        if st.button("🔗 Export Matches", use_container_width=True):
+            export_matches_data()
+
+def render_comprehensive_exports():
+    """Render comprehensive export packages"""
+    st.markdown("### 📦 Comprehensive Packages")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("📊 Analytics Package", use_container_width=True, type="primary"):
+            export_analytics_package()
+    
+    with col2:
+        if st.button("🔬 Research Package", use_container_width=True, type="primary"):
+            export_research_package()
+    
+    with col3:
+        if st.button("📋 Executive Summary", use_container_width=True, type="primary"):
+            export_executive_summary()
+
+def render_custom_export_builder():
+    """Render custom export builder"""
+    st.markdown("### 🔧 Custom Export Builder")
+    
+    with st.expander("Build Custom Export Package"):
+        st.markdown("Select the components you want to include in your export:")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            include_documents = st.checkbox("📁 Document metadata", value=True)
+            include_extractions = st.checkbox("🔍 Extracted content", value=True)
+            include_annotations = st.checkbox("🏷️ Concept annotations", value=True)
+            include_matches = st.checkbox("🔗 Response matches", value=True)
+        
+        with col2:
+            include_search_data = st.checkbox("🔎 Search analytics", value=False)
+            include_charts = st.checkbox("📊 Visualization data", value=False)
+            include_config = st.checkbox("⚙️ Configuration settings", value=False)
+            include_logs = st.checkbox("📝 Processing logs", value=False)
+        
+        # Export format selection
+        export_format = st.selectbox(
+            "Export Format:",
+            ["ZIP Package", "JSON", "CSV Bundle", "Excel Workbook"],
+            key="custom_export_format"
+        )
+        
+        if st.button("📦 Create Custom Export", use_container_width=True):
+            create_custom_export(
+                include_documents, include_extractions, include_annotations, 
+                include_matches, include_search_data, include_charts,
+                include_config, include_logs, export_format
+            )
+
+def export_documents_list():
+    """Export documents list as CSV"""
+    documents = st.session_state.get('uploaded_documents', [])
+    
+    if not documents:
+        st.warning("No documents to export.")
+        return
+    
+    export_data = []
+    for doc in documents:
+        export_data.append({
+            'Filename': doc.get('filename', ''),
+            'Document_Type': doc.get('document_type', ''),
+            'File_Size_KB': round(doc.get('file_size', 0) / 1024, 1),
+            'Upload_Time': doc.get('upload_time', ''),
+            'Page_Count': doc.get('metadata', {}).get('page_count', ''),
+            'Content_Length': len(doc.get('content', '')),
+            'Processing_Status': doc.get('processing_status', '')
+        })
+    
+    df = pd.DataFrame(export_data)
+    csv = df.to_csv(index=False).encode('utf-8')
+    
+    st.download_button(
+        label="📥 Download Documents List",
+        data=csv,
+        file_name=f"documents_list_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv"
+    )
+
+def export_recommendations_data():
+    """Export recommendations data"""
+    recommendations = st.session_state.get('extracted_recommendations', [])
+    
+    if not recommendations:
+        st.warning("No recommendations to export.")
+        return
+    
+    export_data = []
+    for rec in recommendations:
+        export_data.append({
+            'ID': rec.id,
+            'Text': rec.text,
+            'Document_Source': rec.document_source,
+            'Section_Title': rec.section_title,
+            'Page_Number': rec.page_number,
+            'Confidence_Score': rec.confidence_score,
+            'Text_Length': len(rec.text),
+            'Extraction_Method': getattr(rec, 'metadata', {}).get('extraction_method', 'Unknown')
+        })
+    
+    df = pd.DataFrame(export_data)
+    csv = df.to_csv(index=False).encode('utf-8')
+    
+    st.download_button(
+        label="📥 Download Recommendations",
+        data=csv,
+        file_name=f"recommendations_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv"
+    )
+
+def export_annotations_data():
+    """Export annotations data"""
+    annotation_results = st.session_state.get('annotation_results', {})
+    
+    if not annotation_results:
+        st.warning("No annotations to export.")
+        return
+    
+    export_data = []
+    for rec_id, result in annotation_results.items():
+        rec = result['recommendation']
+        annotations = result.get('annotations', {})
+        
+        for framework, themes in annotations.items():
+            for theme in themes:
+                export_data.append({
+                    'Recommendation_ID': rec_id,
+                    'Recommendation_Text': rec.text,
+                    'Document_Source': rec.document_source,
+                    'Framework': framework,
+                    'Theme': theme['theme'],
+                    'Confidence': theme['confidence'],
+                    'Semantic_Similarity': theme.get('semantic_similarity', 0),
+                    'Keyword_Count': theme.get('keyword_count', 0),
+                    'Matched_Keywords': ', '.join(theme.get('matched_keywords', [])),
+                    'Annotation_Time': result.get('annotation_time', '')
+                })
+    
+    df = pd.DataFrame(export_data)
+    csv = df.to_csv(index=False).encode('utf-8')
+    
+    st.download_button(
+        label="📥 Download Annotations",
+        data=csv,
+        file_name=f"annotations_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv"
+    )
+
+def export_matches_data():
+    """Export matching results data"""
+    matching_results = st.session_state.get('matching_results', {})
+    
+    if not matching_results:
+        st.warning("No matching results to export.")
+        return
+    
+    export_data = []
+    for rec_index, result in matching_results.items():
+        recommendation = result['recommendation']
+        responses = result.get('responses', [])
+        
+        for response in responses:
+            export_data.append({
+                'Recommendation_ID': recommendation.id,
+                'Recommendation_Text': recommendation.text,
+                'Recommendation_Source': recommendation.document_source,
+                'Response_Source': response.get('source', 'Unknown'),
+                'Response_Text': response.get('text', ''),
+                'Similarity_Score': response.get('similarity_score', 0),
+                'Combined_Confidence': response.get('combined_confidence', response.get('similarity_score', 0)),
                 'Match_Type': response.get('match_type', 'UNKNOWN'),
+                'Concept_Overlap_Score': response.get('concept_overlap', {}).get('overlap_score', 0),
+                'Shared_Themes': ', '.join(response.get('concept_overlap', {}).get('shared_themes', [])),
+                'Search_Time': result.get('search_time', '')
+            })
+    
+    df = pd.DataFrame(export_data)
+    csv = df.to_csv(index=False).encode('utf-8')
+    
+    st.download_button(
+        label="📥 Download Matching Results",
+        data=csv,
+        file_name=f"matching_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv"
+    )
+
+def export_analytics_package():
+    """Export comprehensive analytics package"""
+    try:
+        # Create ZIP file in memory
+        zip_buffer = io.BytesIO()
+        
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # Add overview metrics
+            metrics = calculate_overview_metrics()
+            metrics_json = json.dumps(metrics, indent=2)
+            zip_file.writestr("overview_metrics.json", metrics_json)
+            
+            # Add all data exports
+            documents = st.session_state.get('uploaded_documents', [])
+            if documents:
+                docs_data = []
+                for doc in documents:
+                    docs_data.append({
+                        'filename': doc.get('filename', ''),
+                        'document_type': doc.get('document_type', ''),
+                        'file_size': doc.get('file_size', 0),
+                        'upload_time': doc.get('upload_time', ''),
+                        'content_length': len(doc.get('content', ''))
+                    })
+                docs_csv = pd.DataFrame(docs_data).to_csv(index=False)
+                zip_file.writestr("documents.csv", docs_csv)
+            
+            # Add recommendations
+            recommendations = st.session_state.get('extracted_recommendations', [])
+            if recommendations:
+                recs_data = []
+                for rec in recommendations:
+                    recs_data.append({
+                        'id': rec.id,
+                        'text': rec.text,
+                        'document_source': rec.document_source,
+                        'confidence_score': rec.confidence_score
+                    })
+                recs_csv = pd.DataFrame(recs_data).to_csv(index=False)
+                zip_file.writestr("recommendations.csv", recs_csv)
+            
+            # Add package info
+            package_info = {
+                'package_type': 'Analytics Package',
+                'export_time': datetime.now().isoformat(),
+                'contents': ['overview_metrics.json', 'documents.csv', 'recommendations.csv'],
+                'total_documents': len(documents),
+                'total_recommendations': len(recommendations)
+            }
+            package_json = json.dumps(package_info, indent=2)
+            zip_file.writestr("package_info.json", package_json)
+        
+        zip_buffer.seek(0)
+        
+        st.download_button(
+            label="📥 Download Analytics Package",
+            data=zip_buffer.getvalue(),
+            file_name=f"analytics_package_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+            mime="application/zip"
+        )
+        
+        st.success("✅ Analytics package created successfully!")
+        
+    except Exception as e:
+        st.error(f"❌ Failed to create analytics package: {str(e)}")
+        logging.error(f"Analytics package export error: {e}", exc_info=True)
+
+def export_research_package():
+    """Export research-focused package"""
+    st.info("🔬 Research package export functionality coming soon!")
+
+def export_executive_summary():
+    """Export executive summary"""
+    st.info("📋 Executive summary export functionality coming soon!")
+
+def create_custom_export(include_documents, include_extractions, include_annotations, 
+                        include_matches, include_search_data, include_charts,
+                        include_config, include_logs, export_format):
+    """Create custom export based on user selections"""
+    try:
+        if export_format == "ZIP Package":
+            # Create ZIP package
+            zip_buffer = io.BytesIO()
+            
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                files_added = []
+                
+                if include_documents:
+                    documents = st.session_state.get('uploaded_documents', [])
+                    if documents:
+                        docs_data = [
+                            {
+                                'filename': doc.get('filename', ''),
+                                'document_type': doc.get('document_type', ''),
+                                'file_size': doc.get('file_size', 0),
+                                'upload_time': doc.get('upload_time', '')
+                            }
+                            for doc in documents
+                        ]
+                        docs_csv = pd.DataFrame(docs_data).to_csv(index=False)
+                        zip_file.writestr("documents.csv", docs_csv)
+                        files_added.append("documents.csv")
+                
+                if include_extractions:
+                    recommendations = st.session_state.get('extracted_recommendations', [])
+                    if recommendations:
+                        recs_data = [
+                            {
+                                'id': rec.id,
+                                'text': rec.text,
+                                'document_source': rec.document_source,
+                                'confidence_score': rec.confidence_score
+                            }
+                            for rec in recommendations
+                        ]
+                        recs_csv = pd.DataFrame(recs_data).to_csv(index=False)
+                        zip_file.writestr("recommendations.csv", recs_csv)
+                        files_added.append("recommendations.csv")
+                
+                # Add package manifest
+                manifest = {
+                    'export_type': 'Custom Export',
+                    'export_time': datetime.now().isoformat(),
+                    'files_included': files_added,
+                    'options_selected': {
+                        'documents': include_documents,
+                        'extractions': include_extractions,
+                        'annotations': include_annotations,
+                        'matches': include_matches,
+                        'search_data': include_search_data,
+                        'charts': include_charts,
+                        'config': include_config,
+                        'logs': include_logs
+                    }
+                }
+                manifest_json = json.dumps(manifest, indent=2)
+                zip_file.writestr("manifest.json", manifest_json)
+            
+            zip_buffer.seek(0)
+            
+            st.download_button(
+                label="📥 Download Custom Export",
+                data=zip_buffer.getvalue(),
+                file_name=f"custom_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                mime="application/zip"
+            )
+            
+            st.success("✅ Custom export package created successfully!")
+        
+        else:
+            st.info(f"Export format '{export_format}' is not yet implemented.")
+    
+    except Exception as e:
+        st.error(f"❌ Failed to create custom export: {str(e)}")
+        logging.error(f"Custom export error: {e}", exc_info=True): response.get('match_type', 'UNKNOWN'),
                 'Source': response.get('source', 'Unknown')
             })
     
