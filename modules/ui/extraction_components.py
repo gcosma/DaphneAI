@@ -316,7 +316,6 @@ class EnhancedConcernExtractor:
         if re.search(r'(?:should|must|ought to)', text, re.IGNORECASE): base_score += 0.05
         
         return min(base_score, 1.0)
-
 def render_extraction_tab():
     """Render the content extraction tab with enhanced concern extraction"""
     st.header("🔍 Enhanced Content Extraction")
@@ -354,6 +353,9 @@ def render_extraction_tab():
     
     # Display results
     display_extraction_results()
+    
+    # ADD THIS LINE:
+    render_emergency_extraction_fix()
 
 def render_document_status_check():
     """Check and display document status for extraction"""
