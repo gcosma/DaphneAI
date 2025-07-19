@@ -1,5 +1,5 @@
 # ===============================================
-# FILE: modules/ui/extraction_components.py (ENHANCED VERSION)
+# FILE: modules/ui/extraction_components.py (COMPLETE REVISED VERSION)
 # ===============================================
 from pathlib import Path
 import streamlit as st
@@ -30,6 +30,293 @@ except ImportError as e:
     def extract_concern_text(content): return ""
     def extract_metadata(content): return {}
 
+# Enhanced extraction utilities
+class EnhancedConcernExtractor:
+    """Enhanced concern extraction with multiple robust methods"""
+    
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+    
+    def extract_concerns_robust(self, content: str, document_name: str = "") -> Dict:
+        """Extract concerns using multiple robust methods"""
+        if not content or len(content.strip()) < 10:
+            return {
+                'concerns': [],
+                'debug_info': {
+                    'error': 'No content or content too short',
+                    'content_length': len(content) if content else 0
+                }
+            }
+        
+        # Normalize content
+        normalized_content = self._normalize_content(content)
+        
+        # Try different extraction methods
+        all_concerns = []
+        debug_info = {'methods_tried': [], 'results': {}}
+        
+        # Method 1: Standard patterns
+        try:
+            standard_concerns = self._extract_standard_patterns(normalized_content)
+            debug_info['methods_tried'].append('standard_patterns')
+            debug_info['results']['standard_patterns'] = len(standard_concerns)
+            all_concerns.extend(standard_concerns)
+        except Exception as e:
+            debug_info['results']['standard_patterns'] = f"Error: {e}"
+        
+        # Method 2: Flexible patterns
+        try:
+            flexible_concerns = self._extract_flexible_patterns(normalized_content)
+            debug_info['methods_tried'].append('flexible_patterns')
+            debug_info['results']['flexible_patterns'] = len(flexible_concerns)
+            all_concerns.extend(flexible_concerns)
+        except Exception as e:
+            debug_info['results']['flexible_patterns'] = f"Error: {e}"
+        
+        # Method 3: Section detection
+        try:
+            section_concerns = self._extract_section_patterns(normalized_content)
+            debug_info['methods_tried'].append('section_detection')
+            debug_info['results']['section_detection'] = len(section_concerns)
+            all_concerns.extend(section_concerns)
+        except Exception as e:
+            debug_info['results']['section_detection'] = f"Error: {e}"
+        
+        # Method 4: Keyword extraction
+        try:
+            keyword_concerns = self._extract_keyword_patterns(normalized_content)
+            debug_info['methods_tried'].append('keyword_extraction')
+            debug_info['results']['keyword_extraction'] = len(keyword_concerns)
+            all_concerns.extend(keyword_concerns)
+        except Exception as e:
+            debug_info['results']['keyword_extraction'] = f"Error: {e}"
+        
+        # Remove duplicates and add metadata
+        unique_concerns = self._process_concerns(all_concerns, document_name)
+        
+        debug_info['final_stats'] = {
+            'total_raw': len(all_concerns),
+            'unique': len(unique_concerns),
+            'duplicates_removed': len(all_concerns) - len(unique_concerns)
+        }
+        
+        return {
+            'concerns': unique_concerns,
+            'debug_info': debug_info
+        }
+    
+    def _normalize_content(self, content: str) -> str:
+        """Normalize content for better pattern matching"""
+        if not content:
+            return ""
+        
+        # Fix common OCR issues
+        content = re.sub(r'([a-z])([A-Z])', r'\1 \2', content)
+        content = re.sub(r'(\w)(\d)', r'\1 \2', content)
+        content = re.sub(r'(\d)(\w)', r'\1 \2', content)
+        
+        # Normalize whitespace
+        content = re.sub(r'\s+', ' ', content)
+        content = re.sub(r'\n\s*\n', '\n\n', content)
+        
+        return content.strip()
+    
+    def _extract_standard_patterns(self, content: str) -> List[Dict]:
+        """Standard coroner concern patterns"""
+        patterns = [
+            r"CORONER'S\s+CONCERNS?:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|$)",
+            r"MATTERS?\s+OF\s+CONCERN:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|$)",
+            r"The\s+MATTERS?\s+OF\s+CONCERN:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|$)",
+            r"CORONER'S\s+CONCERNS?\s+are:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|$)",
+            r"MATTERS?\s+OF\s+CONCERN\s+are:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|$)",
+            # Handle OCR issues
+            r"(?:CORONER'S|CORONERS)\s*(?:CONCERNS?|CONCERN):?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|$)",
+            r"(?:MATTERS?|MATTER)\s*OF\s*(?:CONCERNS?|CONCERN):?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|$)",
+        ]
+        
+        concerns = []
+        for pattern in patterns:
+            try:
+                matches = re.finditer(pattern, content, re.IGNORECASE | re.DOTALL)
+                for match in matches:
+                    concern_text = match.group(1).strip()
+                    if concern_text and len(concern_text) > 20:
+                        cleaned = self._clean_concern_text(concern_text)
+                        if cleaned:
+                            concerns.append({
+                                'text': cleaned,
+                                'type': 'coroner_concern',
+                                'method': 'standard_pattern',
+                                'pattern': pattern[:50] + "..."
+                            })
+            except re.error as e:
+                self.logger.warning(f"Regex error: {e}")
+                continue
+        
+        return concerns
+    
+    def _extract_flexible_patterns(self, content: str) -> List[Dict]:
+        """Flexible patterns for different document formats"""
+        sections = re.split(r'\n\s*\n', content)
+        concerns = []
+        
+        concern_indicators = [
+            r'concern.*?about', r'matter.*?of.*?concern', r'issue.*?identified',
+            r'problem.*?with', r'deficiency.*?in', r'failure.*?to',
+            r'inadequate.*?(?:provision|system|process)', r'insufficient.*?(?:resources|training)',
+            r'lack.*?of.*?(?:oversight|training|resources)', r'poor.*?(?:communication|coordination)'
+        ]
+        
+        for section in sections:
+            for indicator in concern_indicators:
+                if re.search(indicator, section, re.IGNORECASE):
+                    sentences = re.split(r'[.!?]+', section)
+                    for sentence in sentences:
+                        if (re.search(indicator, sentence, re.IGNORECASE) and 
+                            len(sentence.strip()) > 30):
+                            concerns.append({
+                                'text': sentence.strip(),
+                                'type': 'identified_concern',
+                                'method': 'flexible_pattern',
+                                'indicator': indicator
+                            })
+        
+        return concerns
+    
+    def _extract_section_patterns(self, content: str) -> List[Dict]:
+        """Extract from structured sections (lists, etc.)"""
+        concerns = []
+        
+        list_patterns = [
+            r'(\d+[\.\)])\s*([^0-9]+?)(?=\d+[\.\)]|$)',
+            r'([•\-\*])\s*([^•\-\*\n]+?)(?=[•\-\*]|$)',
+            r'([a-z][\.\)])\s*([^a-z\.\)]+?)(?=[a-z][\.\)]|$)',
+        ]
+        
+        for pattern in list_patterns:
+            try:
+                matches = re.finditer(pattern, content, re.MULTILINE | re.DOTALL)
+                for match in matches:
+                    item_text = match.group(2).strip()
+                    if (len(item_text) > 30 and 
+                        any(word in item_text.lower() for word in 
+                            ['concern', 'issue', 'problem', 'risk', 'deficiency', 'failure'])):
+                        concerns.append({
+                            'text': item_text,
+                            'type': 'structured_concern',
+                            'method': 'section_detection',
+                            'format': 'numbered' if match.group(1)[0].isdigit() else 'bulleted'
+                        })
+            except re.error:
+                continue
+        
+        return concerns
+    
+    def _extract_keyword_patterns(self, content: str) -> List[Dict]:
+        """Keyword-based extraction as fallback"""
+        concern_keywords = [
+            'inadequate', 'insufficient', 'failure', 'breach', 'deficient',
+            'lacking', 'poor', 'substandard', 'unsafe', 'risk', 'problem',
+            'issue', 'concern', 'deficiency', 'shortcoming', 'weakness'
+        ]
+        
+        sentences = re.split(r'[.!?]+', content)
+        concerns = []
+        
+        for sentence in sentences:
+            keyword_count = sum(1 for keyword in concern_keywords 
+                              if keyword in sentence.lower())
+            
+            if keyword_count >= 2 and len(sentence.strip()) > 40:
+                concerns.append({
+                    'text': sentence.strip(),
+                    'type': 'keyword_concern',
+                    'method': 'keyword_extraction',
+                    'keyword_matches': keyword_count
+                })
+        
+        return concerns
+    
+    def _clean_concern_text(self, text: str) -> str:
+        """Clean extracted concern text"""
+        if not text:
+            return ""
+        
+        # Remove extra whitespace
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Remove common footer text
+        text = re.sub(r'YOU ARE UNDER A DUTY.*$', '', text, re.IGNORECASE)
+        text = re.sub(r'COPIES.*$', '', text, re.IGNORECASE)
+        text = re.sub(r'SIGNED:.*$', '', text, re.IGNORECASE)
+        
+        return text.strip()
+    
+    def _process_concerns(self, concerns: List[Dict], document_name: str) -> List[Dict]:
+        """Process and deduplicate concerns"""
+        if not concerns:
+            return []
+        
+        # Add metadata
+        for i, concern in enumerate(concerns):
+            concern.update({
+                'id': f"{document_name}_{i}",
+                'document_source': document_name,
+                'confidence_score': self._calculate_confidence(concern['text']),
+                'text_length': len(concern['text']),
+                'word_count': len(concern['text'].split()),
+                'extracted_at': datetime.now().isoformat()
+            })
+        
+        # Remove duplicates
+        unique_concerns = []
+        for concern in concerns:
+            is_duplicate = False
+            concern_words = set(concern['text'].lower().split())
+            
+            for existing in unique_concerns:
+                existing_words = set(existing['text'].lower().split())
+                similarity = len(concern_words & existing_words) / len(concern_words | existing_words)
+                
+                if similarity > 0.7:  # 70% similarity threshold
+                    is_duplicate = True
+                    # Keep the one with higher confidence
+                    if concern['confidence_score'] > existing['confidence_score']:
+                        unique_concerns.remove(existing)
+                        unique_concerns.append(concern)
+                    break
+            
+            if not is_duplicate:
+                unique_concerns.append(concern)
+        
+        # Sort by confidence
+        unique_concerns.sort(key=lambda x: x['confidence_score'], reverse=True)
+        
+        return unique_concerns
+    
+    def _calculate_confidence(self, text: str) -> float:
+        """Calculate confidence score for extracted concern"""
+        if not text:
+            return 0.0
+        
+        base_score = 0.5
+        
+        # Length indicators
+        if len(text) > 100: base_score += 0.1
+        if len(text) > 300: base_score += 0.1
+        
+        # Content indicators
+        concern_words = ['concern', 'issue', 'problem', 'risk', 'deficiency', 'failure']
+        word_matches = sum(1 for word in concern_words if word in text.lower())
+        base_score += word_matches * 0.05
+        
+        # Structure indicators
+        if re.search(r'\d+\.', text): base_score += 0.05
+        if re.search(r'[A-Z][a-z]+:', text): base_score += 0.05
+        if re.search(r'(?:should|must|ought to)', text, re.IGNORECASE): base_score += 0.05
+        
+        return min(base_score, 1.0)
+
 def render_extraction_tab():
     """Render the content extraction tab with enhanced concern extraction"""
     st.header("🔍 Enhanced Content Extraction")
@@ -47,7 +334,11 @@ def render_extraction_tab():
     - 📄 **Enhanced PDF Processing**: Handles OCR issues and various document formats
     - 📊 **Confidence Scoring**: Advanced scoring for extraction quality
     - 🔍 **Metadata Extraction**: Automatically extract case refs, dates, and names
+    - 🔧 **Debug Tools**: Comprehensive debugging for extraction issues
     """)
+    
+    # Document status check first
+    render_document_status_check()
     
     # Extraction configuration
     render_extraction_configuration()
@@ -58,8 +349,341 @@ def render_extraction_tab():
     # Enhanced concern extraction section
     render_enhanced_concern_extraction()
     
+    # Debug extraction issues
+    render_extraction_debug_tools()
+    
     # Display results
     display_extraction_results()
+
+def render_document_status_check():
+    """Check and display document status for extraction"""
+    st.subheader("📋 Document Status Check")
+    
+    docs_with_content = []
+    docs_with_issues = []
+    
+    for doc in st.session_state.uploaded_documents:
+        content = doc.get('content', '')
+        content_length = len(content)
+        
+        if content_length == 0:
+            docs_with_issues.append((doc['filename'], "No content", "❌"))
+        elif content_length < 100:
+            docs_with_issues.append((doc['filename'], f"Very short ({content_length} chars)", "⚠️"))
+        else:
+            docs_with_content.append((doc['filename'], f"{content_length:,} characters", "✅"))
+    
+    # Summary metrics
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Total Documents", len(st.session_state.uploaded_documents))
+    
+    with col2:
+        st.metric("Ready for Extraction", len(docs_with_content))
+    
+    with col3:
+        st.metric("Need Attention", len(docs_with_issues))
+    
+    # Status details
+    if docs_with_issues:
+        with st.expander("⚠️ Documents with Issues", expanded=True):
+            for filename, issue, status in docs_with_issues:
+                st.write(f"{status} **{filename}**: {issue}")
+            
+            if st.button("🔧 Try Enhanced PDF Re-processing"):
+                st.info("Enhanced PDF re-processing would go here (requires original file access)")
+    
+    if docs_with_content:
+        with st.expander("✅ Documents Ready for Extraction"):
+            for filename, status, icon in docs_with_content:
+                st.write(f"{icon} **{filename}**: {status}")
+
+def render_extraction_debug_tools():
+    """Render debugging tools for extraction issues"""
+    st.markdown("---")
+    st.subheader("🔧 Extraction Debug Tools")
+    
+    if not st.session_state.get('uploaded_documents'):
+        st.info("Upload documents first to use debug tools.")
+        return
+    
+    # Debug options
+    with st.expander("🔍 Debug Document Content", expanded=False):
+        doc_options = [doc['filename'] for doc in st.session_state.uploaded_documents]
+        selected_debug_doc = st.selectbox("Select document to debug:", doc_options, key="debug_doc")
+        
+        if selected_debug_doc and st.button("🔍 Analyze Document Content"):
+            debug_document_content(selected_debug_doc)
+    
+    # Test extraction patterns
+    with st.expander("🧪 Test Extraction Patterns", expanded=False):
+        if st.button("🧪 Test Current Patterns on All Documents"):
+            test_extraction_patterns()
+    
+    # Enhanced extraction test
+    with st.expander("🚀 Enhanced Extraction Test", expanded=False):
+        st.markdown("Test the enhanced extraction methods on your documents:")
+        
+        test_confidence = st.slider("Test Confidence Threshold", 0.0, 1.0, 0.3, 0.05, key="test_confidence")
+        
+        if st.button("🚀 Run Enhanced Extraction Test"):
+            run_enhanced_extraction_test(test_confidence)
+
+def debug_document_content(document_name: str):
+    """Debug specific document content"""
+    doc = next((d for d in st.session_state.uploaded_documents 
+               if d['filename'] == document_name), None)
+    
+    if not doc:
+        st.error(f"Document {document_name} not found")
+        return
+    
+    st.write(f"**Debugging Document:** {document_name}")
+    
+    content = doc.get('content', '')
+    
+    # Basic info
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Content Length", f"{len(content):,} chars")
+    
+    with col2:
+        word_count = len(content.split()) if content else 0
+        st.metric("Word Count", f"{word_count:,}")
+    
+    with col3:
+        line_count = content.count('\n') if content else 0
+        st.metric("Line Count", line_count)
+    
+    if not content:
+        st.error("❌ **No content found in this document!**")
+        st.markdown("""
+        **Possible causes:**
+        - PDF is a scanned image (needs OCR)
+        - PDF is password protected
+        - PDF extraction failed during upload
+        - File is corrupted
+        """)
+        return
+    
+    # Content analysis
+    st.subheader("📊 Content Analysis")
+    
+    # Look for concern-related keywords
+    concern_keywords = ['concern', 'coroner', 'matter', 'issue', 'problem', 'recommendation', 'failure', 'inadequate']
+    found_keywords = []
+    
+    for keyword in concern_keywords:
+        count = content.lower().count(keyword)
+        if count > 0:
+            found_keywords.append(f"{keyword} ({count})")
+    
+    if found_keywords:
+        st.success(f"✅ **Found relevant keywords:** {', '.join(found_keywords)}")
+    else:
+        st.warning("⚠️ **No relevant keywords found**")
+    
+    # Sample content around concerns
+    concern_pos = content.lower().find('concern')
+    if concern_pos > -1:
+        st.subheader("📝 Sample Content Around 'Concern'")
+        start = max(0, concern_pos - 200)
+        end = min(len(content), concern_pos + 400)
+        sample = content[start:end]
+        st.text_area("", value=sample, height=150, disabled=True)
+    else:
+        st.subheader("📝 Document Preview (First 500 chars)")
+        st.text_area("", value=content[:500], height=150, disabled=True)
+    
+    # Pattern test
+    st.subheader("🔍 Pattern Matching Test")
+    
+    # Test standard extraction
+    try:
+        from core_utils import extract_concern_text
+        standard_result = extract_concern_text(content)
+        
+        if standard_result:
+            st.success(f"✅ **Standard extraction found:** {len(standard_result)} characters")
+            with st.expander("View extracted text"):
+                st.write(standard_result[:300] + "..." if len(standard_result) > 300 else standard_result)
+        else:
+            st.warning("⚠️ **Standard extraction found nothing**")
+    except Exception as e:
+        st.error(f"❌ **Standard extraction failed:** {e}")
+    
+    # Test enhanced extraction
+    try:
+        extractor = EnhancedConcernExtractor()
+        result = extractor.extract_concerns_robust(content, document_name)
+        concerns = result['concerns']
+        debug_info = result['debug_info']
+        
+        if concerns:
+            st.success(f"✅ **Enhanced extraction found:** {len(concerns)} concerns")
+            
+            for i, concern in enumerate(concerns[:3]):  # Show first 3
+                with st.expander(f"Enhanced Concern {i+1} (Confidence: {concern['confidence_score']:.2f})"):
+                    st.write(f"**Method:** {concern['method']}")
+                    st.write(f"**Type:** {concern['type']}")
+                    st.write(f"**Text:** {concern['text'][:200]}...")
+        else:
+            st.warning("⚠️ **Enhanced extraction found no concerns**")
+        
+        # Show debug info
+        with st.expander("🔍 Enhanced Extraction Debug Info"):
+            st.json(debug_info)
+            
+    except Exception as e:
+        st.error(f"❌ **Enhanced extraction failed:** {e}")
+
+def test_extraction_patterns():
+    """Test extraction patterns on all documents"""
+    st.write("**Testing extraction patterns on all documents...**")
+    
+    results = []
+    
+    for doc in st.session_state.uploaded_documents:
+        filename = doc['filename']
+        content = doc.get('content', '')
+        
+        result = {
+            'document': filename,
+            'content_length': len(content),
+            'has_content': len(content) > 0,
+            'standard_extraction': 'Not tested',
+            'enhanced_extraction': 'Not tested',
+            'keywords_found': []
+        }
+        
+        if not content:
+            result['standard_extraction'] = 'No content'
+            result['enhanced_extraction'] = 'No content'
+            results.append(result)
+            continue
+        
+        # Test keywords
+        keywords = ['concern', 'coroner', 'matter', 'issue', 'problem']
+        for keyword in keywords:
+            if keyword in content.lower():
+                result['keywords_found'].append(keyword)
+        
+        # Test standard extraction
+        try:
+            from core_utils import extract_concern_text
+            standard_result = extract_concern_text(content)
+            result['standard_extraction'] = f"Found {len(standard_result)} chars" if standard_result else "No concerns found"
+        except Exception as e:
+            result['standard_extraction'] = f"Error: {str(e)}"
+        
+        # Test enhanced extraction
+        try:
+            extractor = EnhancedConcernExtractor()
+            enhanced_result = extractor.extract_concerns_robust(content, filename)
+            concerns_count = len(enhanced_result['concerns'])
+            result['enhanced_extraction'] = f"Found {concerns_count} concerns" if concerns_count > 0 else "No concerns found"
+        except Exception as e:
+            result['enhanced_extraction'] = f"Error: {str(e)}"
+        
+        results.append(result)
+    
+    # Display results
+    for result in results:
+        with st.expander(f"📄 {result['document']} - {result['content_length']:,} chars"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write(f"**Standard Extraction:** {result['standard_extraction']}")
+                st.write(f"**Keywords Found:** {', '.join(result['keywords_found']) if result['keywords_found'] else 'None'}")
+            
+            with col2:
+                st.write(f"**Enhanced Extraction:** {result['enhanced_extraction']}")
+                st.write(f"**Has Content:** {'✅' if result['has_content'] else '❌'}")
+
+def run_enhanced_extraction_test(confidence_threshold: float):
+    """Run enhanced extraction test on all documents"""
+    st.write("**Running enhanced extraction test...**")
+    
+    extractor = EnhancedConcernExtractor()
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    all_concerns = []
+    doc_results = []
+    
+    docs_with_content = [doc for doc in st.session_state.uploaded_documents if doc.get('content')]
+    
+    for i, doc in enumerate(docs_with_content):
+        progress = (i + 1) / len(docs_with_content)
+        progress_bar.progress(progress)
+        status_text.text(f"Testing {doc['filename']}...")
+        
+        try:
+            result = extractor.extract_concerns_robust(doc['content'], doc['filename'])
+            concerns = result['concerns']
+            
+            # Filter by confidence
+            filtered_concerns = [c for c in concerns if c['confidence_score'] >= confidence_threshold]
+            
+            all_concerns.extend(filtered_concerns)
+            
+            doc_results.append({
+                'document': doc['filename'],
+                'total_concerns': len(concerns),
+                'filtered_concerns': len(filtered_concerns),
+                'methods_tried': len(result['debug_info'].get('methods_tried', [])),
+                'status': 'success'
+            })
+            
+        except Exception as e:
+            doc_results.append({
+                'document': doc['filename'],
+                'total_concerns': 0,
+                'filtered_concerns': 0,
+                'methods_tried': 0,
+                'status': f'Error: {str(e)}'
+            })
+    
+    # Clear progress
+    progress_bar.empty()
+    status_text.empty()
+    
+    # Show results
+    st.success(f"🎉 **Test Complete!** Found {len(all_concerns)} concerns (confidence ≥ {confidence_threshold})")
+    
+    # Results summary
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        successful_docs = len([r for r in doc_results if r['status'] == 'success'])
+        st.metric("Documents Processed", f"{successful_docs}/{len(docs_with_content)}")
+    
+    with col2:
+        st.metric("Total Concerns Found", len(all_concerns))
+    
+    with col3:
+        avg_per_doc = len(all_concerns) / successful_docs if successful_docs > 0 else 0
+        st.metric("Average per Document", f"{avg_per_doc:.1f}")
+    
+    # Results table
+    results_df = pd.DataFrame(doc_results)
+    st.dataframe(results_df, use_container_width=True)
+    
+    # Sample concerns
+    if all_concerns:
+        st.subheader("📋 Sample Extracted Concerns")
+        for i, concern in enumerate(all_concerns[:3]):
+            with st.expander(f"Sample {i+1} - {concern['document_source']} (Confidence: {concern['confidence_score']:.2f})"):
+                st.write(f"**Method:** {concern['method']}")
+                st.write(f"**Type:** {concern['type']}")
+                st.write(f"**Text:** {concern['text'][:300]}...")
+        
+        if st.button("💾 Save These Results to Session"):
+            st.session_state.extracted_concerns = all_concerns
+            st.success("✅ Results saved to session state!")
 
 def render_extraction_configuration():
     """Render extraction configuration options"""
@@ -177,8 +801,15 @@ def render_extraction_interface():
     
     # Extraction button
     if selected_docs:
-        if st.button("🚀 Start Extraction", type="primary", use_container_width=True):
-            extract_content_from_documents(selected_docs)
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🚀 Start Standard Extraction", type="primary", use_container_width=True):
+                extract_content_from_documents(selected_docs)
+        
+        with col2:
+            if st.button("🎯 Enhanced Extraction Only", type="secondary", use_container_width=True):
+                run_enhanced_extraction_only(selected_docs)
     else:
         st.info("Please select documents to extract from.")
 
@@ -240,6 +871,151 @@ def render_enhanced_concern_extraction():
     else:
         st.info("Upload documents first to use enhanced extraction")
 
+def run_enhanced_extraction_only(selected_docs: List[str]):
+    """Run only enhanced extraction on selected documents"""
+    if not selected_docs:
+        st.warning("No documents selected for extraction.")
+        return
+    
+    extractor = EnhancedConcernExtractor()
+    
+    # Get settings
+    confidence_threshold = st.session_state.get('confidence_threshold', 0.6)
+    max_extractions = st.session_state.get('max_extractions', 50)
+    
+    # Progress tracking
+    progress_container = st.container()
+    status_container = st.container()
+    
+    all_concerns = []
+    processing_results = []
+    
+    for i, doc_name in enumerate(selected_docs):
+        current_step = i + 1
+        
+        # Update progress
+        with progress_container:
+            show_progress_indicator(current_step, len(selected_docs), f"Enhanced extraction: {doc_name}")
+        
+        with status_container:
+            status_text = st.empty()
+            status_text.info(f"🎯 Processing: {doc_name}")
+        
+        try:
+            # Find document
+            doc = next((d for d in st.session_state.uploaded_documents if d['filename'] == doc_name), None)
+            if not doc:
+                status_text.error(f"❌ Document not found: {doc_name}")
+                continue
+            
+            content = doc.get('content', '')
+            if not content:
+                status_text.warning(f"⚠️ No content in {doc_name}")
+                processing_results.append({
+                    'document': doc_name,
+                    'concerns_found': 0,
+                    'status': 'no_content'
+                })
+                continue
+            
+            # Run enhanced extraction
+            result = extractor.extract_concerns_robust(content, doc_name)
+            concerns = result['concerns']
+            
+            # Filter by confidence and limit
+            filtered_concerns = [c for c in concerns if c['confidence_score'] >= confidence_threshold]
+            filtered_concerns = filtered_concerns[:max_extractions]
+            
+            all_concerns.extend(filtered_concerns)
+            
+            processing_results.append({
+                'document': doc_name,
+                'concerns_found': len(filtered_concerns),
+                'total_found': len(concerns),
+                'methods_tried': len(result['debug_info'].get('methods_tried', [])),
+                'status': 'success'
+            })
+            
+            status_text.success(f"✅ Found {len(filtered_concerns)} concerns in {doc_name}")
+            
+        except Exception as e:
+            error_msg = f"Enhanced extraction error for {doc_name}: {str(e)}"
+            add_error_message(error_msg)
+            processing_results.append({
+                'document': doc_name,
+                'concerns_found': 0,
+                'status': 'error',
+                'error': str(e)
+            })
+            status_text.error(f"❌ Error processing {doc_name}")
+            logging.error(f"Enhanced extraction error: {e}", exc_info=True)
+    
+    # Update session state
+    st.session_state.extracted_concerns = all_concerns
+    st.session_state.last_extraction_results = processing_results
+    st.session_state.last_processing_time = datetime.now().isoformat()
+    
+    # Clear progress displays
+    progress_container.empty()
+    status_container.empty()
+    
+    # Show results
+    show_enhanced_only_results(all_concerns, processing_results)
+
+def show_enhanced_only_results(concerns: List[Dict], processing_results: List[Dict]):
+    """Show results of enhanced-only extraction"""
+    st.success("🎯 Enhanced Extraction Complete!")
+    
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        successful_docs = len([r for r in processing_results if r['status'] == 'success'])
+        st.metric("Documents Processed", f"{successful_docs}/{len(processing_results)}")
+    
+    with col2:
+        st.metric("Concerns Found", len(concerns))
+    
+    with col3:
+        if concerns:
+            avg_confidence = sum(c['confidence_score'] for c in concerns) / len(concerns)
+            st.metric("Avg Confidence", f"{avg_confidence:.2f}")
+        else:
+            st.metric("Avg Confidence", "0.00")
+    
+    with col4:
+        docs_with_concerns = len([r for r in processing_results if r['concerns_found'] > 0])
+        st.metric("Docs with Concerns", docs_with_concerns)
+    
+    # Processing details
+    if processing_results:
+        st.subheader("📊 Processing Details")
+        results_df = pd.DataFrame(processing_results)
+        
+        # Add status icons
+        status_map = {
+            'success': '✅ Success',
+            'no_content': '⚠️ No Content',
+            'error': '❌ Error'
+        }
+        
+        if 'status' in results_df.columns:
+            results_df['Status'] = results_df['status'].map(status_map)
+        
+        st.dataframe(results_df, use_container_width=True)
+    
+    # Sample concerns
+    if concerns:
+        st.subheader("🎯 Sample Extracted Concerns")
+        for i, concern in enumerate(concerns[:5]):  # Show first 5
+            with st.expander(f"Concern {i+1} - {concern['document_source']} (Confidence: {concern['confidence_score']:.2f})"):
+                st.write(f"**Method:** {concern['method']}")
+                st.write(f"**Type:** {concern['type']}")
+                st.write(f"**Text:** {concern['text'][:300]}...")
+                
+                if 'indicator' in concern:
+                    st.write(f"**Indicator:** {concern['indicator']}")
+
 def run_enhanced_concern_extraction(documents: List[Dict]):
     """Run enhanced concern extraction using improved patterns"""
     
@@ -248,6 +1024,9 @@ def run_enhanced_concern_extraction(documents: List[Dict]):
     extract_metadata_flag = st.session_state.get('enhanced_metadata', True)
     show_debug = st.session_state.get('show_debug', False)
     only_concerns = st.session_state.get('only_concerns', False)
+    
+    # Initialize enhanced extractor
+    extractor = EnhancedConcernExtractor()
     
     # Initialize results
     extracted_concerns = []
@@ -276,52 +1055,54 @@ def run_enhanced_concern_extraction(documents: List[Dict]):
                 content = doc.get('content', '')
                 if not content:
                     status_text.warning(f"⚠️ No content in {doc_name}")
+                    extraction_debug.append({
+                        'document': doc_name,
+                        'extracted': False,
+                        'reason': 'No content'
+                    })
                     continue
                 
                 # Use enhanced concern extraction
-                concern_text = extract_concern_text(content)
+                result = extractor.extract_concerns_robust(content, doc_name)
+                concerns = result['concerns']
+                debug_info = result['debug_info']
                 
-                debug_info = {
-                    'document': doc_name,
-                    'content_length': len(content),
-                    'concern_found': bool(concern_text),
-                    'concern_length': len(concern_text) if concern_text else 0
-                }
+                # Filter by confidence
+                good_concerns = [c for c in concerns if c['confidence_score'] >= min_confidence]
                 
-                if concern_text and len(concern_text) > 20:  # Minimum meaningful length
-                    # Calculate confidence (simplified version)
-                    confidence = calculate_enhanced_confidence(concern_text)
-                    
-                    if confidence >= min_confidence:
-                        concern_data = {
-                            'id': f"enhanced_concern_{current_step}",
-                            'text': concern_text,
-                            'document_source': doc_name,
-                            'confidence_score': confidence,
-                            'extraction_method': 'enhanced_pattern',
-                            'timestamp': datetime.now().isoformat(),
-                            'type': 'concern'
-                        }
-                        
-                        # Add metadata if requested
+                if good_concerns:
+                    # Add metadata if requested
+                    for concern in good_concerns:
                         if extract_metadata_flag:
-                            metadata = extract_metadata(content)
-                            concern_data['metadata'] = metadata
-                            debug_info['metadata_extracted'] = len(metadata)
-                        
-                        extracted_concerns.append(concern_data)
-                        debug_info['extracted'] = True
-                        status_text.success(f"✅ Extracted concern from {doc_name} (Confidence: {confidence:.2f})")
-                    else:
-                        debug_info['extracted'] = False
-                        debug_info['reason'] = f"Low confidence: {confidence:.2f}"
-                        status_text.warning(f"⚠️ Low confidence extraction from {doc_name}")
+                            try:
+                                metadata = extract_metadata(content)
+                                concern['metadata'] = metadata
+                            except:
+                                concern['metadata'] = {}
+                    
+                    extracted_concerns.extend(good_concerns)
+                    
+                    extraction_debug.append({
+                        'document': doc_name,
+                        'content_length': len(content),
+                        'concerns_found': len(good_concerns),
+                        'total_found': len(concerns),
+                        'methods_tried': debug_info.get('methods_tried', []),
+                        'extracted': True
+                    })
+                    
+                    status_text.success(f"✅ Extracted {len(good_concerns)} concerns from {doc_name}")
                 else:
-                    debug_info['extracted'] = False
-                    debug_info['reason'] = "No concern text found or too short"
-                    status_text.warning(f"⚠️ No concerns found in {doc_name}")
-                
-                extraction_debug.append(debug_info)
+                    extraction_debug.append({
+                        'document': doc_name,
+                        'content_length': len(content),
+                        'concerns_found': 0,
+                        'total_found': len(concerns),
+                        'methods_tried': debug_info.get('methods_tried', []),
+                        'extracted': False,
+                        'reason': f"No concerns met confidence threshold ({min_confidence})"
+                    })
+                    status_text.warning(f"⚠️ No high-confidence concerns found in {doc_name}")
                 
             except Exception as e:
                 error_msg = f"Enhanced extraction error for {doc_name}: {str(e)}"
@@ -398,13 +1179,26 @@ def show_enhanced_extraction_results(concerns: List[Dict], debug_info: List[Dict
             with_metadata = len([c for c in concerns if c.get('metadata')])
             st.metric("With Metadata", f"{with_metadata}/{len(concerns)}")
         
+        # Method breakdown
+        method_counts = {}
+        for concern in concerns:
+            method = concern.get('method', 'Unknown')
+            method_counts[method] = method_counts.get(method, 0) + 1
+        
+        if method_counts:
+            st.write("**Extraction Methods Used:**")
+            method_cols = st.columns(len(method_counts))
+            for i, (method, count) in enumerate(method_counts.items()):
+                with method_cols[i]:
+                    st.metric(method.replace('_', ' ').title(), count)
+        
         # Preview concerns
         with st.expander("📋 Preview Extracted Concerns", expanded=True):
             for i, concern in enumerate(concerns[:3]):  # Show first 3
                 st.write(f"**Concern {i+1}** ({concern['document_source']}):")
                 preview_text = concern['text'][:200] + "..." if len(concern['text']) > 200 else concern['text']
                 st.write(preview_text)
-                st.write(f"*Confidence: {concern['confidence_score']:.2f}*")
+                st.write(f"*Method: {concern['method']}, Confidence: {concern['confidence_score']:.2f}*")
                 
                 if concern.get('metadata'):
                     metadata_preview = {k: v for k, v in list(concern['metadata'].items())[:3]}
@@ -451,8 +1245,9 @@ def extract_content_from_documents(selected_docs: List[str]):
     min_text_length = st.session_state.get('min_text_length', 50)
     use_enhanced_extraction = st.session_state.get('use_enhanced_extraction', True)
     
-    # Initialize extractor
-    extractor = LLMRecommendationExtractor()
+    # Initialize extractors
+    llm_extractor = LLMRecommendationExtractor()
+    enhanced_extractor = EnhancedConcernExtractor()
     
     # Progress tracking
     total_docs = len(selected_docs)
@@ -486,79 +1281,108 @@ def extract_content_from_documents(selected_docs: List[str]):
                     status_text.error(f"❌ Document not found: {doc_name}")
                     continue
                 
+                content = doc.get('content', '')
+                if not content:
+                    status_text.warning(f"⚠️ No content in {doc_name}")
+                    processing_results.append({
+                        'document': doc_name,
+                        'recommendations_found': 0,
+                        'concerns_found': 0,
+                        'enhanced_concerns': 0,
+                        'standard_concerns': 0,
+                        'status': 'no_content'
+                    })
+                    continue
+                
                 # Enhanced extraction for concerns if enabled
                 enhanced_concerns = []
                 if extract_concerns and use_enhanced_extraction:
                     try:
-                        concern_text = extract_concern_text(doc['content'])
-                        if concern_text and len(concern_text) >= min_text_length:
-                            confidence = calculate_enhanced_confidence(concern_text)
-                            if confidence >= confidence_threshold:
+                        result = enhanced_extractor.extract_concerns_robust(content, doc_name)
+                        raw_concerns = result['concerns']
+                        
+                        # Filter enhanced concerns
+                        for concern in raw_concerns:
+                            if (concern['confidence_score'] >= confidence_threshold and 
+                                len(concern['text']) >= min_text_length):
+                                
+                                # Reformat for compatibility
                                 enhanced_concern = {
-                                    'id': f"enhanced_{doc_name}_{i}",
-                                    'text': concern_text,
+                                    'id': concern['id'],
+                                    'text': concern['text'],
                                     'document_source': doc_name,
-                                    'confidence_score': confidence,
+                                    'confidence_score': concern['confidence_score'],
                                     'extraction_method': 'enhanced_pattern',
                                     'category': 'coroner_concern',
-                                    'type': 'concern'
+                                    'type': 'concern',
+                                    'method': concern['method'],
+                                    'timestamp': concern.get('extracted_at', datetime.now().isoformat())
                                 }
                                 
                                 # Add metadata if extraction is enabled
                                 if st.session_state.get('extract_metadata', True):
-                                    metadata = extract_metadata(doc['content'])
-                                    enhanced_concern['metadata'] = metadata
+                                    try:
+                                        metadata = extract_metadata(content)
+                                        enhanced_concern['metadata'] = metadata
+                                    except:
+                                        enhanced_concern['metadata'] = {}
                                 
                                 enhanced_concerns.append(enhanced_concern)
+                                
                     except Exception as e:
                         logging.warning(f"Enhanced extraction failed for {doc_name}: {e}")
                 
-                # Standard extraction
-                extraction_result = extractor.extract_recommendations_and_concerns(
-                    doc['content'], 
-                    doc['filename']
-                )
+                # Standard LLM extraction
+                standard_recommendations = []
+                standard_concerns = []
                 
-                recommendations = extraction_result.get('recommendations', [])
-                standard_concerns = extraction_result.get('concerns', [])
+                try:
+                    extraction_result = llm_extractor.extract_recommendations_and_concerns(
+                        content, 
+                        doc_name
+                    )
+                    
+                    raw_recommendations = extraction_result.get('recommendations', [])
+                    raw_concerns = extraction_result.get('concerns', [])
+                    
+                    # Apply filtering to recommendations
+                    for rec in raw_recommendations:
+                        if (rec.confidence_score >= confidence_threshold and 
+                            len(rec.text) >= min_text_length):
+                            standard_recommendations.append(rec)
+                    
+                    # Apply filtering to standard concerns
+                    if extract_concerns:
+                        for concern in raw_concerns:
+                            if (concern.get('confidence_score', 0) >= confidence_threshold and 
+                                len(concern.get('text', '')) >= min_text_length):
+                                standard_concerns.append(concern)
                 
-                # Apply filtering to recommendations
-                filtered_recommendations = []
-                for rec in recommendations:
-                    if (rec.confidence_score >= confidence_threshold and 
-                        len(rec.text) >= min_text_length):
-                        filtered_recommendations.append(rec)
+                except Exception as e:
+                    logging.warning(f"Standard extraction failed for {doc_name}: {e}")
                 
-                # Apply filtering to standard concerns
-                filtered_concerns = []
-                if extract_concerns:
-                    for concern in standard_concerns:
-                        if (concern.get('confidence_score', 0) >= confidence_threshold and 
-                            len(concern.get('text', '')) >= min_text_length):
-                            filtered_concerns.append(concern)
-                
-                # Combine enhanced and standard concerns
-                all_doc_concerns = enhanced_concerns + filtered_concerns
+                # Combine all results
+                all_doc_concerns = enhanced_concerns + standard_concerns
                 
                 # Limit extractions
-                filtered_recommendations = filtered_recommendations[:max_extractions]
+                standard_recommendations = standard_recommendations[:max_extractions]
                 all_doc_concerns = all_doc_concerns[:max_extractions]
                 
                 # Store results
-                all_recommendations.extend(filtered_recommendations)
+                all_recommendations.extend(standard_recommendations)
                 all_concerns.extend(all_doc_concerns)
                 
                 processing_results.append({
                     'document': doc_name,
-                    'recommendations_found': len(filtered_recommendations),
+                    'recommendations_found': len(standard_recommendations),
                     'concerns_found': len(all_doc_concerns),
                     'enhanced_concerns': len(enhanced_concerns),
-                    'standard_concerns': len(filtered_concerns),
+                    'standard_concerns': len(standard_concerns),
                     'status': 'success'
                 })
                 
-                concern_summary = f"{len(all_doc_concerns)} concerns ({len(enhanced_concerns)} enhanced + {len(filtered_concerns)} standard)"
-                status_text.success(f"✅ Extracted {len(filtered_recommendations)} recommendations, {concern_summary} from {doc_name}")
+                concern_summary = f"{len(all_doc_concerns)} concerns ({len(enhanced_concerns)} enhanced + {len(standard_concerns)} standard)"
+                status_text.success(f"✅ Extracted {len(standard_recommendations)} recommendations, {concern_summary} from {doc_name}")
                 
             except Exception as e:
                 error_msg = f"Error extracting from {doc_name}: {str(e)}"
@@ -638,6 +1462,7 @@ def show_extraction_summary(processing_results: List[Dict], recommendations: Lis
         if 'Status' in display_df.columns:
             display_df['Status'] = display_df['Status'].map({
                 'success': '✅ Success',
+                'no_content': '⚠️ No Content',
                 'error': '❌ Error'
             })
         
@@ -653,8 +1478,17 @@ def show_extraction_summary(processing_results: List[Dict], recommendations: Lis
         with st.expander("⚠️ Processing Errors"):
             for result in failed_docs:
                 st.error(f"**{result['document']}:** {result.get('error', 'Unknown error')}")
+    
+    # Show documents with no content
+    no_content_docs = [r for r in processing_results if r['status'] == 'no_content']
+    if no_content_docs:
+        with st.expander("📄 Documents with No Content"):
+            st.warning("These documents had no extractable content:")
+            for result in no_content_docs:
+                st.write(f"• {result['document']}")
+            st.info("💡 These documents may need re-processing with enhanced PDF extraction or OCR.")
 
-# Keep all existing functions unchanged
+# Keep all existing display functions unchanged
 def display_extraction_results():
     """Display extracted recommendations and concerns"""
     if not st.session_state.extracted_recommendations and not st.session_state.extracted_concerns:
@@ -847,7 +1681,7 @@ def display_extracted_concerns():
     # Enhanced display options
     display_mode = st.radio(
         "Display Mode:",
-        ["Table View", "Detailed Cards", "Comparison Mode"],
+        ["Table View", "Detailed Cards", "Method Comparison"],
         horizontal=True,
         key="concern_display_mode"
     )
@@ -856,8 +1690,8 @@ def display_extracted_concerns():
         display_concerns_table(filtered_concerns)
     elif display_mode == "Detailed Cards":
         display_concerns_cards(filtered_concerns)
-    elif display_mode == "Comparison Mode":
-        display_concerns_comparison(filtered_concerns)
+    elif display_mode == "Method Comparison":
+        display_method_comparison_view(filtered_concerns)
 
 def display_concerns_table(concerns: List[Dict]):
     """Display concerns in table format"""
@@ -938,87 +1772,56 @@ def display_concerns_cards(concerns: List[Dict]):
             
             st.markdown("---")
 
-def display_concerns_comparison(concerns: List[Dict]):
-    """Display concerns in comparison mode"""
-    if len(concerns) < 2:
-        st.info("Need at least 2 concerns for comparison mode.")
+def display_method_comparison_view(concerns: List[Dict]):
+    """Display method comparison view"""
+    st.subheader("📊 Extraction Method Comparison")
+    
+    if not concerns:
+        st.info("No concerns available for method comparison.")
         return
     
-    st.write("**Select concerns to compare side by side:**")
+    # Group by extraction method
+    method_groups = {}
+    for concern in concerns:
+        method = concern.get('extraction_method', 'Unknown')
+        if method not in method_groups:
+            method_groups[method] = []
+        method_groups[method].append(concern)
     
-    col1, col2 = st.columns(2)
-    
-    # Create concern options for selection
-    concern_options = {}
-    for i, concern in enumerate(concerns):
-        preview = concern.get('text', '')[:80] + "..." if len(concern.get('text', '')) > 80 else concern.get('text', '')
-        source = concern.get('document_source', 'Unknown')
-        concern_options[f"[{source}] {preview}"] = i
-    
-    with col1:
-        concern1_label = st.selectbox("Select first concern:", list(concern_options.keys()), key="comp_concern1")
-        if concern1_label:
-            concern1 = concerns[concern_options[concern1_label]]
-            display_single_concern_comparison(concern1, "Concern 1")
-    
-    with col2:
-        concern2_label = st.selectbox("Select second concern:", list(concern_options.keys()), key="comp_concern2")
-        if concern2_label:
-            concern2 = concerns[concern_options[concern2_label]]
-            display_single_concern_comparison(concern2, "Concern 2")
-    
-    # Show similarity analysis if both selected
-    if concern1_label and concern2_label and concern1_label != concern2_label:
-        st.markdown("---")
-        st.subheader("🔍 Similarity Analysis")
+    # Create comparison metrics
+    comparison_data = []
+    for method, method_concerns in method_groups.items():
+        total_confidence = sum(c.get('confidence_score', 0) for c in method_concerns)
+        avg_confidence = total_confidence / len(method_concerns) if method_concerns else 0
+        avg_length = sum(len(c.get('text', '')) for c in method_concerns) / len(method_concerns) if method_concerns else 0
+        with_metadata = len([c for c in method_concerns if c.get('metadata')])
         
-        similarity = calculate_text_similarity(
-            concern1.get('text', ''), 
-            concern2.get('text', '')
-        )
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Text Similarity", f"{similarity:.3f}")
-        with col2:
-            same_source = concern1.get('document_source') == concern2.get('document_source')
-            st.metric("Same Source", "✅" if same_source else "❌")
-        with col3:
-            same_method = concern1.get('extraction_method') == concern2.get('extraction_method')
-            st.metric("Same Method", "✅" if same_method else "❌")
-
-def display_single_concern_comparison(concern: Dict, title: str):
-    """Display a single concern in comparison format"""
-    st.subheader(title)
-    st.write(f"**Source:** {concern.get('document_source', 'Unknown')}")
-    st.write(f"**Method:** {concern.get('extraction_method', 'Unknown')}")
-    st.write(f"**Confidence:** {concern.get('confidence_score', 0):.2f}")
+        comparison_data.append({
+            'Method': method,
+            'Count': len(method_concerns),
+            'Avg Confidence': f"{avg_confidence:.2f}",
+            'Avg Length': f"{avg_length:.0f}",
+            'With Metadata': f"{with_metadata}/{len(method_concerns)}",
+            'Metadata %': f"{(with_metadata / len(method_concerns)) * 100:.1f}%"
+        })
     
-    text = concern.get('text', '')
-    if len(text) > 200:
-        st.text_area("", value=text, height=150, disabled=True, key=f"{title}_text")
-    else:
-        st.write(text)
+    comparison_df = pd.DataFrame(comparison_data)
+    st.dataframe(comparison_df, use_container_width=True)
     
-    if concern.get('metadata'):
-        with st.expander("📊 Metadata"):
-            for key, value in concern['metadata'].items():
-                st.write(f"**{key.replace('_', ' ').title()}:** {value}")
-
-def calculate_text_similarity(text1: str, text2: str) -> float:
-    """Calculate simple text similarity using token overlap"""
-    if not text1 or not text2:
-        return 0.0
+    # Show samples from each method
+    st.subheader("🔍 Sample Concerns by Method")
     
-    # Simple tokenization
-    tokens1 = set(re.findall(r'\b[a-zA-Z]{3,}\b', text1.lower()))
-    tokens2 = set(re.findall(r'\b[a-zA-Z]{3,}\b', text2.lower()))
-    
-    # Jaccard similarity
-    intersection = len(tokens1 & tokens2)
-    union = len(tokens1 | tokens2)
-    
-    return intersection / union if union > 0 else 0.0
+    for method, method_concerns in method_groups.items():
+        with st.expander(f"{method} - {len(method_concerns)} concerns"):
+            # Show top 2 concerns by confidence
+            top_concerns = sorted(method_concerns, key=lambda x: x.get('confidence_score', 0), reverse=True)[:2]
+            
+            for i, concern in enumerate(top_concerns):
+                st.write(f"**Sample {i+1}** (Confidence: {concern.get('confidence_score', 0):.2f})")
+                st.write(f"**Source:** {concern.get('document_source', 'Unknown')}")
+                preview = concern.get('text', '')[:200] + "..." if len(concern.get('text', '')) > 200 else concern.get('text', '')
+                st.write(f"**Text:** {preview}")
+                st.write("---")
 
 def display_concern_detail(concern):
     """Display detailed view of a single concern with enhanced information"""
@@ -1036,16 +1839,18 @@ def display_concern_detail(concern):
             
             if concern.get('type'):
                 st.write(f"• **Type:** {concern.get('type', 'Unknown')}")
+            
+            if concern.get('method'):
+                st.write(f"• **Sub-method:** {concern.get('method', 'Unknown')}")
         
         with col2:
             st.markdown("**Metrics:**")
             st.write(f"**ID:** {concern.get('id', 'N/A')}")
             st.write(f"**Source:** {concern.get('document_source', 'Unknown')}")
-            st.write(f"**Section:** {concern.get('section', 'Unknown')}")
-            st.write(f"**Page:** {concern.get('page_number', 'N/A')}")
             st.write(f"**Confidence:** {concern.get('confidence_score', 0):.2f}")
             st.write(f"**Category:** {concern.get('category', 'General')}")
             st.write(f"**Length:** {len(concern.get('text', ''))} characters")
+            st.write(f"**Word Count:** {concern.get('word_count', 'N/A')}")
             
             # Enhanced metadata display
             if concern.get('metadata'):
@@ -1293,7 +2098,9 @@ def export_enhanced_concerns_csv(enhanced_concerns: List[Dict]):
             'Source_Document': concern.get('document_source', ''),
             'Confidence_Score': concern.get('confidence_score', 0),
             'Extraction_Method': concern.get('extraction_method', 'enhanced_pattern'),
+            'Sub_Method': concern.get('method', ''),
             'Text_Length': len(concern.get('text', '')),
+            'Word_Count': concern.get('word_count', ''),
             'Timestamp': concern.get('timestamp', '')
         }
         
@@ -1308,6 +2115,342 @@ def export_enhanced_concerns_csv(enhanced_concerns: List[Dict]):
     csv = df.to_csv(index=False).encode('utf-8')
     
     st.download_button(
+        label="📥 Download Concerns CSV",
+        data=csv,
+        file_name=f"concerns_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+def export_combined_csv():
+    """Export combined recommendations and concerns to CSV"""
+    recommendations = st.session_state.get('extracted_recommendations', [])
+    concerns = st.session_state.get('extracted_concerns', [])
+    
+    if not recommendations and not concerns:
+        st.warning("No data to export.")
+        return
+    
+    # Prepare combined data
+    export_data = []
+    
+    for rec in recommendations:
+        export_data.append({
+            'Type': 'Recommendation',
+            'ID': rec.id,
+            'Text': rec.text,
+            'Source_Document': rec.document_source,
+            'Section': rec.section_title,
+            'Page_Number': rec.page_number,
+            'Confidence_Score': rec.confidence_score,
+            'Category': getattr(rec, 'metadata', {}).get('category', 'General'),
+            'Text_Length': len(rec.text),
+            'Extraction_Method': getattr(rec, 'metadata', {}).get('extraction_method', 'llm')
+        })
+    
+    for concern in concerns:
+        row_data = {
+            'Type': 'Concern',
+            'ID': concern.get('id', ''),
+            'Text': concern.get('text', ''),
+            'Source_Document': concern.get('document_source', ''),
+            'Section': concern.get('section', ''),
+            'Page_Number': concern.get('page_number', ''),
+            'Confidence_Score': concern.get('confidence_score', 0),
+            'Category': concern.get('category', 'General'),
+            'Text_Length': len(concern.get('text', '')),
+            'Extraction_Method': concern.get('extraction_method', 'Unknown')
+        }
+        
+        export_data.append(row_data)
+    
+    df = pd.DataFrame(export_data)
+    csv = df.to_csv(index=False).encode('utf-8')
+    
+    st.download_button(
+        label="📥 Download Combined CSV",
+        data=csv,
+        file_name=f"combined_extractions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+# Emergency fix function for immediate use
+def render_emergency_extraction_fix():
+    """Emergency fix for extraction failures - can be called separately"""
+    st.markdown("---")
+    st.subheader("🚨 Emergency Extraction Fix")
+    
+    st.markdown("""
+    **Having extraction problems?** This emergency tool can help diagnose and fix issues 
+    with the failing extractions you're experiencing.
+    """)
+    
+    if not st.session_state.get('uploaded_documents'):
+        st.info("Upload documents first to use this emergency fix.")
+        return
+    
+    # Quick diagnosis
+    st.write("**📋 Quick Document Diagnosis:**")
+    
+    docs_with_issues = []
+    docs_ok = []
+    
+    for doc in st.session_state.uploaded_documents:
+        filename = doc['filename']
+        content = doc.get('content', '')
+        content_length = len(content)
+        
+        col1, col2, col3 = st.columns([3, 1, 1])
+        
+        with col1:
+            st.write(f"📄 {filename}")
+        
+        with col2:
+            if content_length == 0:
+                st.error("No content")
+                docs_with_issues.append(doc)
+            elif content_length < 100:
+                st.warning(f"{content_length} chars")
+                docs_with_issues.append(doc)
+            else:
+                st.success(f"{content_length:,} chars")
+                docs_ok.append(doc)
+        
+        with col3:
+            # Quick check for concern-related words
+            if content and any(word in content.lower() for word in ['concern', 'coroner', 'matter', 'issue']):
+                st.info("✓ Keywords")
+            else:
+                st.warning("No keywords")
+    
+    # Show summary and emergency extraction
+    if docs_with_issues:
+        st.error(f"🚨 **Found {len(docs_with_issues)} documents with extraction issues**")
+        
+        for doc in docs_with_issues:
+            st.write(f"• {doc['filename']}: No readable content extracted")
+        
+        st.markdown("""
+        **Possible causes:**
+        - PDFs are scanned images (need OCR)
+        - PDFs are password protected  
+        - PDF extraction failed during upload
+        - Files are corrupted
+        """)
+    
+    if docs_ok:
+        st.success(f"✅ **{len(docs_ok)} documents have extractable content**")
+        
+        # Emergency enhanced extraction
+        st.markdown("### 🚀 Emergency Enhanced Extraction")
+        
+        emergency_confidence = st.slider("Emergency Extraction Confidence", 0.0, 1.0, 0.3, 0.05)
+        
+        if st.button("🚀 Run Emergency Enhanced Extraction", type="primary"):
+            run_emergency_enhanced_extraction(docs_ok, emergency_confidence)
+
+def run_emergency_enhanced_extraction(docs_with_content: List[Dict], confidence_threshold: float):
+    """Run emergency enhanced extraction"""
+    st.write("**🚨 Running emergency enhanced extraction...**")
+    
+    extractor = EnhancedConcernExtractor()
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    all_concerns = []
+    emergency_results = []
+    
+    for i, doc in enumerate(docs_with_content):
+        progress = (i + 1) / len(docs_with_content)
+        progress_bar.progress(progress)
+        status_text.text(f"Emergency processing: {doc['filename']}...")
+        
+        try:
+            content = doc.get('content', '')
+            
+            # Run enhanced extraction
+            result = extractor.extract_concerns_robust(content, doc['filename'])
+            concerns = result['concerns']
+            debug_info = result['debug_info']
+            
+            # Filter by confidence
+            good_concerns = [c for c in concerns if c['confidence_score'] >= confidence_threshold]
+            
+            all_concerns.extend(good_concerns)
+            
+            emergency_results.append({
+                'document': doc['filename'],
+                'total_found': len(concerns),
+                'filtered_found': len(good_concerns),
+                'methods_tried': len(debug_info.get('methods_tried', [])),
+                'status': 'success' if good_concerns else 'no_concerns'
+            })
+            
+            if good_concerns:
+                status_text.success(f"✅ Emergency extraction found {len(good_concerns)} concerns in {doc['filename']}")
+            else:
+                status_text.warning(f"⚠️ No concerns found in {doc['filename']}")
+                
+        except Exception as e:
+            emergency_results.append({
+                'document': doc['filename'],
+                'total_found': 0,
+                'filtered_found': 0,
+                'methods_tried': 0,
+                'status': f'Error: {str(e)}'
+            })
+            status_text.error(f"❌ Emergency extraction failed for {doc['filename']}")
+    
+    # Clear progress
+    progress_bar.empty()
+    status_text.empty()
+    
+    # Show emergency results
+    if all_concerns:
+        st.success(f"🎉 **Emergency Extraction Successful!** Found {len(all_concerns)} concerns")
+        
+        # Quick save option
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("💾 Save Emergency Results", type="primary"):
+                st.session_state.extracted_concerns = all_concerns
+                st.success("✅ Emergency results saved!")
+        
+        with col2:
+            if st.button("📥 Download Emergency Results"):
+                export_emergency_results(all_concerns)
+        
+        # Show sample results
+        st.subheader("📋 Emergency Extraction Samples")
+        for i, concern in enumerate(all_concerns[:3]):
+            with st.expander(f"Emergency Result {i+1} - {concern['document_source']} (Confidence: {concern['confidence_score']:.2f})"):
+                st.write(f"**Method:** {concern['method']}")
+                st.write(f"**Text:** {concern['text'][:200]}...")
+        
+        # Results table
+        results_df = pd.DataFrame(emergency_results)
+        st.dataframe(results_df, use_container_width=True)
+        
+    else:
+        st.error("😞 **Emergency extraction found no concerns**")
+        st.markdown("""
+        **Emergency troubleshooting:**
+        1. Check if documents contain the expected content
+        2. Try lowering the confidence threshold further
+        3. Documents may need OCR processing for scanned images
+        4. Consider manual content verification
+        """)
+
+def export_emergency_results(concerns: List[Dict]):
+    """Export emergency extraction results"""
+    export_data = []
+    for concern in concerns:
+        export_data.append({
+            'Emergency_ID': concern.get('id', ''),
+            'Text': concern.get('text', ''),
+            'Source_Document': concern.get('document_source', ''),
+            'Confidence_Score': concern.get('confidence_score', 0),
+            'Method': concern.get('method', ''),
+            'Type': concern.get('type', ''),
+            'Text_Length': len(concern.get('text', '')),
+            'Emergency_Timestamp': datetime.now().isoformat()
+        })
+    
+    df = pd.DataFrame(export_data)
+    csv = df.to_csv(index=False).encode('utf-8')
+    
+    st.download_button(
+        label="📥 Download Emergency Results",
+        data=csv,
+        file_name=f"emergency_extraction_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+# Add this to the end of your render_extraction_tab function
+# Just add this line at the very end:
+# render_emergency_extraction_fix()
+
+# Additional utility function for quick testing
+def quick_test_document_extraction():
+    """Quick test function for document extraction"""
+    st.markdown("---")
+    st.subheader("🧪 Quick Extraction Test")
+    
+    if not st.session_state.get('uploaded_documents'):
+        st.info("Upload documents first to test extraction.")
+        return
+    
+    doc_options = [doc['filename'] for doc in st.session_state.uploaded_documents]
+    test_doc = st.selectbox("Select document to test:", doc_options, key="quick_test_doc")
+    
+    if test_doc and st.button("🧪 Quick Test"):
+        doc = next((d for d in st.session_state.uploaded_documents 
+                   if d['filename'] == test_doc), None)
+        
+        if doc:
+            content = doc.get('content', '')
+            
+            if not content:
+                st.error("❌ No content in this document")
+                return
+            
+            st.success(f"✅ Document has {len(content):,} characters")
+            
+            # Test different extraction methods
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Standard Extraction Test:**")
+                try:
+                    standard_result = extract_concern_text(content)
+                    if standard_result:
+                        st.success(f"✅ Found {len(standard_result)} chars")
+                        with st.expander("Preview"):
+                            st.write(standard_result[:200] + "...")
+                    else:
+                        st.warning("⚠️ No results")
+                except Exception as e:
+                    st.error(f"❌ Error: {e}")
+            
+            with col2:
+                st.write("**Enhanced Extraction Test:**")
+                try:
+                    extractor = EnhancedConcernExtractor()
+                    enhanced_result = extractor.extract_concerns_robust(content, test_doc)
+                    concerns = enhanced_result['concerns']
+                    
+                    if concerns:
+                        st.success(f"✅ Found {len(concerns)} concerns")
+                        best_concern = max(concerns, key=lambda x: x['confidence_score'])
+                        with st.expander("Best Result"):
+                            st.write(f"**Confidence:** {best_concern['confidence_score']:.2f}")
+                            st.write(f"**Method:** {best_concern['method']}")
+                            st.write(f"**Text:** {best_concern['text'][:200]}...")
+                    else:
+                        st.warning("⚠️ No concerns found")
+                except Exception as e:
+                    st.error(f"❌ Error: {e}")
+
+# Final note: To use this revised file, simply replace your existing 
+# modules/ui/extraction_components.py with this complete code.
+# 
+# The key improvements:
+# 1. ✅ Enhanced document status checking
+# 2. ✅ Robust multi-method concern extraction 
+# 3. ✅ Comprehensive debugging tools
+# 4. ✅ Emergency extraction fix for failed documents
+# 5. ✅ Better error handling and user feedback
+# 6. ✅ Enhanced export options
+# 7. ✅ Backward compatibility with existing functions
+#
+# This should resolve your extraction failures and provide much better
+# debugging capabilities to understand what's happening with your PDFs.
+
+# END OF FILE - COMPLETE EXTRACTION COMPONENTSbutton(
         label="📥 Download Enhanced Concerns CSV",
         data=csv,
         file_name=f"enhanced_concerns_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
@@ -1412,6 +2555,7 @@ def export_concerns_csv():
             'Category': concern.get('category', ''),
             'Text_Length': len(concern.get('text', '')),
             'Extraction_Method': concern.get('extraction_method', 'Unknown'),
+            'Sub_Method': concern.get('method', ''),
             'Timestamp': concern.get('timestamp', '')
         }
         
@@ -1425,6 +2569,8 @@ def export_concerns_csv():
     df = pd.DataFrame(export_data)
     csv = df.to_csv(index=False).encode('utf-8')
     
+    # REPLACE the incomplete "st.download_" line in your v6 code with this:
+
     st.download_button(
         label="📥 Download Concerns CSV",
         data=csv,
@@ -1485,3 +2631,259 @@ def export_combined_csv():
         mime="text/csv",
         use_container_width=True
     )
+
+# Emergency fix function for immediate use
+def render_emergency_extraction_fix():
+    """Emergency fix for extraction failures - can be called separately"""
+    st.markdown("---")
+    st.subheader("🚨 Emergency Extraction Fix")
+    
+    st.markdown("""
+    **Having extraction problems?** This emergency tool can help diagnose and fix issues 
+    with the failing extractions you're experiencing.
+    """)
+    
+    if not st.session_state.get('uploaded_documents'):
+        st.info("Upload documents first to use this emergency fix.")
+        return
+    
+    # Quick diagnosis
+    st.write("**📋 Quick Document Diagnosis:**")
+    
+    docs_with_issues = []
+    docs_ok = []
+    
+    for doc in st.session_state.uploaded_documents:
+        filename = doc['filename']
+        content = doc.get('content', '')
+        content_length = len(content)
+        
+        col1, col2, col3 = st.columns([3, 1, 1])
+        
+        with col1:
+            st.write(f"📄 {filename}")
+        
+        with col2:
+            if content_length == 0:
+                st.error("No content")
+                docs_with_issues.append(doc)
+            elif content_length < 100:
+                st.warning(f"{content_length} chars")
+                docs_with_issues.append(doc)
+            else:
+                st.success(f"{content_length:,} chars")
+                docs_ok.append(doc)
+        
+        with col3:
+            # Quick check for concern-related words
+            if content and any(word in content.lower() for word in ['concern', 'coroner', 'matter', 'issue']):
+                st.info("✓ Keywords")
+            else:
+                st.warning("No keywords")
+    
+    # Show summary and emergency extraction
+    if docs_with_issues:
+        st.error(f"🚨 **Found {len(docs_with_issues)} documents with extraction issues**")
+        
+        for doc in docs_with_issues:
+            st.write(f"• {doc['filename']}: No readable content extracted")
+        
+        st.markdown("""
+        **Possible causes:**
+        - PDFs are scanned images (need OCR)
+        - PDFs are password protected  
+        - PDF extraction failed during upload
+        - Files are corrupted
+        """)
+    
+    if docs_ok:
+        st.success(f"✅ **{len(docs_ok)} documents have extractable content**")
+        
+        # Emergency enhanced extraction
+        st.markdown("### 🚀 Emergency Enhanced Extraction")
+        
+        emergency_confidence = st.slider("Emergency Extraction Confidence", 0.0, 1.0, 0.3, 0.05)
+        
+        if st.button("🚀 Run Emergency Enhanced Extraction", type="primary"):
+            run_emergency_enhanced_extraction(docs_ok, emergency_confidence)
+
+def run_emergency_enhanced_extraction(docs_with_content: List[Dict], confidence_threshold: float):
+    """Run emergency enhanced extraction"""
+    st.write("**🚨 Running emergency enhanced extraction...**")
+    
+    extractor = EnhancedConcernExtractor()
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    all_concerns = []
+    emergency_results = []
+    
+    for i, doc in enumerate(docs_with_content):
+        progress = (i + 1) / len(docs_with_content)
+        progress_bar.progress(progress)
+        status_text.text(f"Emergency processing: {doc['filename']}...")
+        
+        try:
+            content = doc.get('content', '')
+            
+            # Run enhanced extraction
+            result = extractor.extract_concerns_robust(content, doc['filename'])
+            concerns = result['concerns']
+            debug_info = result['debug_info']
+            
+            # Filter by confidence
+            good_concerns = [c for c in concerns if c['confidence_score'] >= confidence_threshold]
+            
+            all_concerns.extend(good_concerns)
+            
+            emergency_results.append({
+                'document': doc['filename'],
+                'total_found': len(concerns),
+                'filtered_found': len(good_concerns),
+                'methods_tried': len(debug_info.get('methods_tried', [])),
+                'status': 'success' if good_concerns else 'no_concerns'
+            })
+            
+            if good_concerns:
+                status_text.success(f"✅ Emergency extraction found {len(good_concerns)} concerns in {doc['filename']}")
+            else:
+                status_text.warning(f"⚠️ No concerns found in {doc['filename']}")
+                
+        except Exception as e:
+            emergency_results.append({
+                'document': doc['filename'],
+                'total_found': 0,
+                'filtered_found': 0,
+                'methods_tried': 0,
+                'status': f'Error: {str(e)}'
+            })
+            status_text.error(f"❌ Emergency extraction failed for {doc['filename']}")
+    
+    # Clear progress
+    progress_bar.empty()
+    status_text.empty()
+    
+    # Show emergency results
+    if all_concerns:
+        st.success(f"🎉 **Emergency Extraction Successful!** Found {len(all_concerns)} concerns")
+        
+        # Quick save option
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("💾 Save Emergency Results", type="primary"):
+                st.session_state.extracted_concerns = all_concerns
+                st.success("✅ Emergency results saved!")
+        
+        with col2:
+            if st.button("📥 Download Emergency Results"):
+                export_emergency_results(all_concerns)
+        
+        # Show sample results
+        st.subheader("📋 Emergency Extraction Samples")
+        for i, concern in enumerate(all_concerns[:3]):
+            with st.expander(f"Emergency Result {i+1} - {concern['document_source']} (Confidence: {concern['confidence_score']:.2f})"):
+                st.write(f"**Method:** {concern['method']}")
+                st.write(f"**Text:** {concern['text'][:200]}...")
+        
+        # Results table
+        results_df = pd.DataFrame(emergency_results)
+        st.dataframe(results_df, use_container_width=True)
+        
+    else:
+        st.error("😞 **Emergency extraction found no concerns**")
+        st.markdown("""
+        **Emergency troubleshooting:**
+        1. Check if documents contain the expected content
+        2. Try lowering the confidence threshold further
+        3. Documents may need OCR processing for scanned images
+        4. Consider manual content verification
+        """)
+
+def export_emergency_results(concerns: List[Dict]):
+    """Export emergency extraction results"""
+    export_data = []
+    for concern in concerns:
+        export_data.append({
+            'Emergency_ID': concern.get('id', ''),
+            'Text': concern.get('text', ''),
+            'Source_Document': concern.get('document_source', ''),
+            'Confidence_Score': concern.get('confidence_score', 0),
+            'Method': concern.get('method', ''),
+            'Type': concern.get('type', ''),
+            'Text_Length': len(concern.get('text', '')),
+            'Emergency_Timestamp': datetime.now().isoformat()
+        })
+    
+    df = pd.DataFrame(export_data)
+    csv = df.to_csv(index=False).encode('utf-8')
+    
+    st.download_button(
+        label="📥 Download Emergency Results",
+        data=csv,
+        file_name=f"emergency_extraction_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+# Additional utility function for quick testing
+def quick_test_document_extraction():
+    """Quick test function for document extraction"""
+    st.markdown("---")
+    st.subheader("🧪 Quick Extraction Test")
+    
+    if not st.session_state.get('uploaded_documents'):
+        st.info("Upload documents first to test extraction.")
+        return
+    
+    doc_options = [doc['filename'] for doc in st.session_state.uploaded_documents]
+    test_doc = st.selectbox("Select document to test:", doc_options, key="quick_test_doc")
+    
+    if test_doc and st.button("🧪 Quick Test"):
+        doc = next((d for d in st.session_state.uploaded_documents 
+                   if d['filename'] == test_doc), None)
+        
+        if doc:
+            content = doc.get('content', '')
+            
+            if not content:
+                st.error("❌ No content in this document")
+                return
+            
+            st.success(f"✅ Document has {len(content):,} characters")
+            
+            # Test different extraction methods
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Standard Extraction Test:**")
+                try:
+                    standard_result = extract_concern_text(content)
+                    if standard_result:
+                        st.success(f"✅ Found {len(standard_result)} chars")
+                        with st.expander("Preview"):
+                            st.write(standard_result[:200] + "...")
+                    else:
+                        st.warning("⚠️ No results")
+                except Exception as e:
+                    st.error(f"❌ Error: {e}")
+            
+            with col2:
+                st.write("**Enhanced Extraction Test:**")
+                try:
+                    extractor = EnhancedConcernExtractor()
+                    enhanced_result = extractor.extract_concerns_robust(content, test_doc)
+                    concerns = enhanced_result['concerns']
+                    
+                    if concerns:
+                        st.success(f"✅ Found {len(concerns)} concerns")
+                        best_concern = max(concerns, key=lambda x: x['confidence_score'])
+                        with st.expander("Best Result"):
+                            st.write(f"**Confidence:** {best_concern['confidence_score']:.2f}")
+                            st.write(f"**Method:** {best_concern['method']}")
+                            st.write(f"**Text:** {best_concern['text'][:200]}...")
+                    else:
+                        st.warning("⚠️ No concerns found")
+                except Exception as e:
+                    st.error(f"❌ Error: {e}")
