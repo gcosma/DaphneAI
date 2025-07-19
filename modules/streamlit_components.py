@@ -8,7 +8,7 @@ This replaces the old large file and provides backward compatibility.
 """
 
 # Import all UI components from the new modular structure
-from .ui import (
+from modules.ui import (
     initialize_session_state,
     render_header,
     render_navigation_tabs,
