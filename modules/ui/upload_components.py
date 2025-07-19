@@ -502,7 +502,7 @@ def show_document_statistics():
     # Show content length histogram
     if content_lengths:
         content_df = pd.DataFrame({'Content Length': content_lengths})
-        st.bar_chart(content_df) = [len(doc.get('content', '')) for doc in docs]
+        st.bar_chart(content_df)
     avg_content_length = sum(content_lengths) / len(content_lengths) if content_lengths else 0
     
     col1, col2 = st.columns(2)
