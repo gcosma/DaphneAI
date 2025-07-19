@@ -67,7 +67,7 @@ def main():
             render_matching_tab()
         with tab5:
             render_smart_search_tab()        
-        with tab5:
+        with tab6:
             render_dashboard_tab()
             
     except Exception as e:
