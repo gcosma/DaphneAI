@@ -22,7 +22,7 @@ class DocumentProcessor:
             
             if not text_content:
                 self.logger.warning(f"No text extracted from {pdf_path}")
-                return None
+                text_content = "" 
             
             return {
                 "content": text_content,
