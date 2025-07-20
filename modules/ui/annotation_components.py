@@ -27,16 +27,54 @@ except ImportError as e:
         def annotate_text(self, text, frameworks): return {}, {}
         def load_custom_framework(self, file): return True, "Mock framework loaded"
 
+# EXACT REPLACEMENT for render_annotation_tab() function
+
 def render_annotation_tab():
     """Render the concept annotation tab"""
     st.header("🏷️ Concept Annotation")
     
-    if not st.session_state.extracted_recommendations:
-        st.warning("⚠️ Please extract recommendations first in the Extract Content tab.")
+    # Check for both recommendations and concerns
+    recommendations = st.session_state.get('extracted_recommendations', [])
+    concerns = st.session_state.get('extracted_concerns', [])
+    
+    if not recommendations and not concerns:
+        st.warning("⚠️ Please extract recommendations or concerns first in the Extract Content tab.")
         return
     
-    st.markdown("""
-    Annotate recommendations with conceptual themes using BERT-based analysis and 
+    # Let user choose what to annotate
+    st.markdown("### 📋 Select Content to Annotate")
+    
+    # Content selection
+    content_options = []
+    if recommendations:
+        content_options.append("Recommendations")
+    if concerns:
+        content_options.append("Concerns")
+    if recommendations and concerns:
+        content_options.append("Both")
+    
+    if len(content_options) > 1:
+        content_choice = st.radio(
+            "What would you like to annotate?",
+            content_options,
+            horizontal=True,
+            key="annotation_content_choice"
+        )
+    else:
+        content_choice = content_options[0] if content_options else "None"
+    
+    # Show what's available
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("📋 Recommendations Available", len(recommendations))
+    with col2:
+        st.metric("⚠️ Concerns Available", len(concerns))
+    with col3:
+        total_items = len(recommendations) + len(concerns)
+        st.metric("📊 Total Items", total_items)
+    
+    st.markdown(f"""
+    Annotate {content_choice.lower()} with conceptual themes using BERT-based analysis and 
     established frameworks like I-SIRch and House of Commons.
     """)
     
@@ -248,8 +286,47 @@ def render_annotation_interface():
     """Render the main annotation interface"""
     st.subheader("🔬 Annotation Process")
     
+    # Get both recommendations and concerns
     recommendations = st.session_state.get('extracted_recommendations', [])
+    concerns = st.session_state.get('extracted_concerns', [])
     selected_frameworks = st.session_state.get('selected_frameworks', [])
+    
+    # Determine what content to use based on user selection
+    content_choice = st.session_state.get('annotation_content_choice', 'Recommendations')
+    
+    # Prepare items based on selection
+    if content_choice == "Recommendations":
+        items = recommendations
+        item_type = "recommendations"
+    elif content_choice == "Concerns":
+        # Convert concerns to recommendation-like objects
+        items = []
+        for concern in concerns:
+            pseudo_rec = type('obj', (object,), {
+                'id': concern.get('id', 'unknown'),
+                'text': concern.get('text', ''),
+                'document_source': concern.get('document_source', 'unknown'),
+                'section_title': 'Concern',
+                'page_number': None,
+                'confidence_score': concern.get('confidence_score', 0),
+                'original_type': 'concern'
+            })
+            items.append(pseudo_rec)
+        item_type = "concerns"
+    else:  # Both
+        items = list(recommendations)
+        for concern in concerns:
+            pseudo_rec = type('obj', (object,), {
+                'id': concern.get('id', 'unknown'),
+                'text': concern.get('text', ''),
+                'document_source': concern.get('document_source', 'unknown'),
+                'section_title': 'Concern',
+                'page_number': None,
+                'confidence_score': concern.get('confidence_score', 0),
+                'original_type': 'concern'
+            })
+            items.append(pseudo_rec)
+        item_type = "recommendations and concerns"
     
     if not selected_frameworks:
         st.warning("⚠️ Please select at least one framework above.")
@@ -261,53 +338,53 @@ def render_annotation_interface():
     with col1:
         annotation_scope = st.radio(
             "What to annotate:",
-            ["All Recommendations", "Selected Recommendations", "By Document"],
-            help="Choose which recommendations to annotate",
+            [f"All {item_type.title()}", f"Selected {item_type.title()}", "By Document"],
+            help=f"Choose which {item_type} to annotate",
             key="annotation_scope"
         )
     
     with col2:
         st.markdown("**Annotation Info:**")
-        st.write(f"• Total recommendations: {len(recommendations)}")
+        st.write(f"• Total {item_type}: {len(items)}")
         st.write(f"• Selected frameworks: {len(selected_frameworks)}")
         st.write(f"• Similarity threshold: {st.session_state.get('similarity_threshold', 0.65):.2f}")
     
-    # Recommendation selection based on scope
-    recommendations_to_annotate = []
+    # Item selection based on scope
+    recommendations_to_annotate = []  # Keep same variable name for compatibility
     
-    if annotation_scope == "All Recommendations":
-        recommendations_to_annotate = recommendations
+    if annotation_scope == f"All {item_type.title()}":
+        recommendations_to_annotate = items
     
-    elif annotation_scope == "Selected Recommendations":
-        # Allow user to select specific recommendations
-        rec_options = [f"{rec.id}: {rec.text[:50]}..." for rec in recommendations]
+    elif annotation_scope == f"Selected {item_type.title()}":
+        # Allow user to select specific items
+        rec_options = [f"{item.id}: {item.text[:50]}..." for item in items]
         selected_indices = st.multiselect(
-            "Select recommendations to annotate:",
+            f"Select {item_type} to annotate:",
             range(len(rec_options)),
             format_func=lambda x: rec_options[x],
             key="selected_recommendations_indices"
         )
-        recommendations_to_annotate = [recommendations[i] for i in selected_indices]
+        recommendations_to_annotate = [items[i] for i in selected_indices]
     
     elif annotation_scope == "By Document":
         # Allow selection by document source
-        doc_sources = list(set(rec.document_source for rec in recommendations))
+        doc_sources = list(set(item.document_source for item in items))
         selected_docs = st.multiselect(
             "Select documents:",
             doc_sources,
             key="selected_docs_annotation"
         )
-        recommendations_to_annotate = [rec for rec in recommendations if rec.document_source in selected_docs]
+        recommendations_to_annotate = [item for item in items if item.document_source in selected_docs]
     
     # Show what will be annotated
     if recommendations_to_annotate:
-        st.info(f"📊 Ready to annotate {len(recommendations_to_annotate)} recommendations with {len(selected_frameworks)} frameworks")
+        st.info(f"📊 Ready to annotate {len(recommendations_to_annotate)} {item_type} with {len(selected_frameworks)} frameworks")
         
         # Annotation button
         if st.button("🚀 Start Annotation", type="primary", use_container_width=True):
             annotate_recommendations(recommendations_to_annotate, selected_frameworks)
     else:
-        st.warning("No recommendations selected for annotation.")
+        st.warning(f"No {item_type} selected for annotation.")
 
 def annotate_recommendations(recommendations: List, frameworks: List[str]):
     """Perform annotation on selected recommendations"""
