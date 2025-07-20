@@ -1959,7 +1959,8 @@ def display_quality_analysis(recommendations: List, concerns: List[Dict]):
         
         if all_confidences:
             confidence_df = pd.DataFrame({'Confidence': all_confidences})
-            st.histogram_chart(confidence_df['Confidence'])
+            conf_counts = confidence_df['Confidence'].value_counts().sort_index()
+            st.bar_chart(conf_counts)
             
             # Quality metrics
             col1, col2, col3 = st.columns(3)
