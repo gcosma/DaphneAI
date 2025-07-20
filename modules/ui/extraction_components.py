@@ -1,5 +1,5 @@
 # ===============================================
-# FILE: modules/ui/extraction_components.py (FIXED IMPORTS VERSION)
+# FILE: modules/ui/extraction_components.py (FIXED - KEEP WORKING CLASSES)
 # ===============================================
 
 import streamlit as st
@@ -8,176 +8,371 @@ from datetime import datetime
 from typing import List, Dict, Any
 import logging
 import sys
+import os
 from pathlib import Path
 
-# Add modules to path if needed
-if str(Path(__file__).parent.parent) not in sys.path:
-    sys.path.append(str(Path(__file__).parent.parent))
+# Add the current directory and parent directories to path for imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
-# Try multiple import approaches to find the enhanced extraction classes
-def get_extraction_classes():
-    """Try different ways to import the extraction classes"""
-    
-    # Method 1: Try importing from enhanced_extraction in the same directory
-    try:
-        from .enhanced_extraction import EnhancedConcernExtractor, StandardLLMExtractor
-        return EnhancedConcernExtractor, StandardLLMExtractor, "ui.enhanced_extraction"
-    except ImportError:
-        pass
-    
-    # Method 2: Try importing from modules.ui.enhanced_extraction
-    try:
-        from modules.ui.enhanced_extraction import EnhancedConcernExtractor, StandardLLMExtractor
-        return EnhancedConcernExtractor, StandardLLMExtractor, "modules.ui.enhanced_extraction"
-    except ImportError:
-        pass
-    
-    # Method 3: Try importing from enhanced_extraction directly
-    try:
-        import enhanced_extraction
-        return enhanced_extraction.EnhancedConcernExtractor, enhanced_extraction.StandardLLMExtractor, "enhanced_extraction"
-    except ImportError:
-        pass
-    
-    # Method 4: Try from current directory
-    try:
-        import sys
-        import os
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        sys.path.insert(0, current_dir)
-        from enhanced_extraction import EnhancedConcernExtractor, StandardLLMExtractor
-        return EnhancedConcernExtractor, StandardLLMExtractor, "current_dir.enhanced_extraction"
-    except ImportError:
-        pass
-    
-    # Method 5: Create fallback classes
-    return None, None, "fallback"
+# Try to import the working enhanced extraction classes
+enhanced_extractor_class = None
+standard_extractor_class = None
 
-# Try to get the extraction classes
-EnhancedConcernExtractor, StandardLLMExtractor, import_source = get_extraction_classes()
+def import_enhanced_classes():
+    """Import the enhanced extraction classes using multiple methods"""
+    global enhanced_extractor_class, standard_extractor_class
+    
+    import_methods = [
+        # Method 1: Direct import from same directory
+        lambda: __import__('enhanced_extraction'),
+        
+        # Method 2: Import from modules.ui
+        lambda: __import__('modules.ui.enhanced_extraction', fromlist=['EnhancedConcernExtractor', 'StandardLLMExtractor']),
+        
+        # Method 3: Relative import
+        lambda: __import__('.enhanced_extraction', package='modules.ui', fromlist=['EnhancedConcernExtractor', 'StandardLLMExtractor']),
+        
+        # Method 4: Direct file execution
+        lambda: exec(open(os.path.join(current_dir, 'enhanced_extraction.py')).read(), globals())
+    ]
+    
+    for i, method in enumerate(import_methods):
+        try:
+            if i < 3:  # For import methods
+                module = method()
+                enhanced_extractor_class = getattr(module, 'EnhancedConcernExtractor', None)
+                standard_extractor_class = getattr(module, 'StandardLLMExtractor', None)
+                
+                if enhanced_extractor_class and standard_extractor_class:
+                    st.success(f"✅ Successfully imported extraction classes using method {i+1}")
+                    return True
+            else:  # For exec method
+                method()
+                if 'EnhancedConcernExtractor' in globals() and 'StandardLLMExtractor' in globals():
+                    enhanced_extractor_class = globals()['EnhancedConcernExtractor']
+                    standard_extractor_class = globals()['StandardLLMExtractor']
+                    st.success(f"✅ Successfully loaded extraction classes using exec method")
+                    return True
+                    
+        except Exception as e:
+            st.warning(f"⚠️ Import method {i+1} failed: {str(e)[:100]}")
+            continue
+    
+    return False
 
-# Create fallback classes if imports failed
-if EnhancedConcernExtractor is None:
+# Try to import the classes
+import_success = import_enhanced_classes()
+
+# If imports failed, create inline versions of the working classes
+if not import_success or not enhanced_extractor_class:
+    st.warning("⚠️ Creating inline extraction classes from your working code...")
+    
+    # Import required modules for the inline classes
+    import re
+    import json
     
     class EnhancedConcernExtractor:
-        """Fallback Enhanced Concern Extractor"""
+        """Enhanced concern extraction with multiple robust methods (inline version)"""
         
         def __init__(self):
             self.logger = logging.getLogger(__name__)
+            
+            # Enhanced patterns for concern detection (from your working code)
+            self.concern_patterns = {
+                'standard': [
+                    r'(?:coroner|matter of )?concern(?:s)?[\s:]+([^.]+(?:\.[^.]*){0,3}\.)',
+                    r'(?:identified|raised|expressed)\s+(?:a\s+)?concern(?:s)?[\s:]+([^.]+\.)',
+                    r'concern\s+(?:that|about|regarding)[\s:]+([^.]+\.)',
+                    r'(?:this|the)\s+concern(?:s)?[\s:]+([^.]+\.)'
+                ],
+                'flexible': [
+                    r'(?:matter|issue|problem)(?:s)?[\s:]+([^.]+(?:\.[^.]*){0,2}\.)',
+                    r'(?:identified|noted|found)\s+(?:that|the following)[\s:]+([^.]+\.)',
+                    r'(?:this|the)\s+(?:matter|issue)[\s:]+([^.]+\.)',
+                    r'(?:prevention|recommendation)[\s:]+([^.]+\.)'
+                ],
+                'section': [
+                    r'(?:coroner|matter)\s+concern(?:s)?[\s\n]*([^.]+(?:\.[^.]*){0,5}\.)',
+                    r'prevention[\s\n]+of[\s\n]+future[\s\n]+death(?:s)?[\s\n]*([^.]+(?:\.[^.]*){0,5}\.)',
+                    r'regulation\s+28[\s\n]*report[\s\n]*([^.]+(?:\.[^.]*){0,5}\.)'
+                ],
+                'keyword': [
+                    r'(?:failure|inadequate|insufficient)[\s:]+([^.]+\.)',
+                    r'(?:lack\s+of|absence\s+of)[\s:]+([^.]+\.)',
+                    r'(?:should\s+have|ought\s+to\s+have)[\s:]+([^.]+\.)'
+                ]
+            }
         
-        def extract_concerns_robust(self, content: str, document_name: str = "") -> Dict:
-            """Fallback extraction using basic patterns"""
+        def _normalize_content(self, content: str) -> str:
+            """Normalize content for better pattern matching"""
+            # Remove excessive whitespace
+            content = re.sub(r'\s+', ' ', content)
             
-            # Try to use the core_utils extract_concern_text if available
-            try:
-                from core_utils import extract_concern_text
-                extracted_text = extract_concern_text(content)
-                
-                if extracted_text and len(extracted_text.strip()) > 20:
-                    return {
-                        'concerns': [{
-                            'id': 'fallback_1',
-                            'text': extracted_text.strip(),
-                            'method': 'core_utils_extract_concern_text',
-                            'type': 'coroner_concern',
-                            'confidence_score': 0.9,
-                            'extracted_at': datetime.now().isoformat(),
-                            'document_source': document_name
-                        }],
-                        'debug_info': {
-                            'method': 'core_utils_fallback',
-                            'success': True
-                        }
-                    }
-            except ImportError:
-                pass
+            # Fix punctuation spacing
+            content = re.sub(r'([.!?])\s*([A-Z])', r'\1 \2', content)
+            content = re.sub(r'([.,;:!?])([A-Za-z])', r'\1 \2', content)
             
-            # Basic pattern fallback
-            import re
-            patterns = [
-                r"CORONER'S\s+CONCERNS?:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|$)",
-                r"MATTERS?\s+OF\s+CONCERN:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|$)",
-            ]
+            # Fix word boundaries
+            content = re.sub(r'([a-z])([A-Z])', r'\1 \2', content)
+            content = re.sub(r'(\w)(\d)', r'\1 \2', content)
+            content = re.sub(r'(\d)([A-Za-z])', r'\1 \2', content)
             
+            return content.strip()
+        
+        def _extract_standard_patterns(self, content: str) -> List[Dict]:
+            """Extract using standard concern patterns"""
             concerns = []
-            for i, pattern in enumerate(patterns):
+            
+            for pattern in self.concern_patterns['standard']:
                 matches = re.finditer(pattern, content, re.IGNORECASE | re.DOTALL)
                 for match in matches:
                     text = match.group(1).strip()
-                    if len(text) > 20:
+                    if len(text) > 20:  # Minimum length filter
                         concerns.append({
-                            'id': f'fallback_{i}',
+                            'id': f"std_{len(concerns)}",
                             'text': text,
-                            'method': 'basic_pattern_fallback',
+                            'method': 'standard_pattern',
                             'type': 'coroner_concern',
-                            'confidence_score': 0.7,
+                            'confidence_score': 0.8,
                             'extracted_at': datetime.now().isoformat(),
-                            'document_source': document_name
+                            'pattern_used': pattern
                         })
             
-            return {
-                'concerns': concerns,
-                'debug_info': {
-                    'method': 'basic_pattern_fallback',
-                    'patterns_tried': len(patterns),
-                    'success': len(concerns) > 0
+            return concerns
+        
+        def _extract_flexible_patterns(self, content: str) -> List[Dict]:
+            """Extract using flexible patterns"""
+            concerns = []
+            
+            for pattern in self.concern_patterns['flexible']:
+                matches = re.finditer(pattern, content, re.IGNORECASE | re.DOTALL)
+                for match in matches:
+                    text = match.group(1).strip()
+                    if len(text) > 15:
+                        concerns.append({
+                            'id': f"flex_{len(concerns)}",
+                            'text': text,
+                            'method': 'flexible_pattern',
+                            'type': 'issue_matter',
+                            'confidence_score': 0.7,
+                            'extracted_at': datetime.now().isoformat(),
+                            'pattern_used': pattern
+                        })
+            
+            return concerns
+        
+        def _extract_section_patterns(self, content: str) -> List[Dict]:
+            """Extract using section-based patterns"""
+            concerns = []
+            
+            for pattern in self.concern_patterns['section']:
+                matches = re.finditer(pattern, content, re.IGNORECASE | re.DOTALL)
+                for match in matches:
+                    text = match.group(1).strip()
+                    if len(text) > 30:  # Longer minimum for section patterns
+                        concerns.append({
+                            'id': f"sect_{len(concerns)}",
+                            'text': text,
+                            'method': 'section_pattern',
+                            'type': 'section_concern',
+                            'confidence_score': 0.9,
+                            'extracted_at': datetime.now().isoformat(),
+                            'pattern_used': pattern
+                        })
+            
+            return concerns
+        
+        def _extract_keyword_patterns(self, content: str) -> List[Dict]:
+            """Extract using keyword-based patterns"""
+            concerns = []
+            
+            for pattern in self.concern_patterns['keyword']:
+                matches = re.finditer(pattern, content, re.IGNORECASE | re.DOTALL)
+                for match in matches:
+                    text = match.group(1).strip()
+                    if len(text) > 10:
+                        concerns.append({
+                            'id': f"key_{len(concerns)}",
+                            'text': text,
+                            'method': 'keyword_pattern',
+                            'type': 'failure_concern',
+                            'confidence_score': 0.6,
+                            'extracted_at': datetime.now().isoformat(),
+                            'pattern_used': pattern
+                        })
+            
+            return concerns
+        
+        def _deduplicate_concerns(self, concerns: List[Dict]) -> List[Dict]:
+            """Remove duplicate concerns based on text similarity"""
+            unique_concerns = []
+            
+            for concern in concerns:
+                text = concern['text'].lower().strip()
+                
+                # Check for duplicates
+                is_duplicate = False
+                for existing in unique_concerns:
+                    existing_text = existing['text'].lower().strip()
+                    
+                    # Simple similarity check
+                    if (text in existing_text or existing_text in text or
+                        self._calculate_text_similarity(text, existing_text) > 0.8):
+                        is_duplicate = True
+                        # Keep the one with higher confidence
+                        if concern['confidence_score'] > existing['confidence_score']:
+                            unique_concerns.remove(existing)
+                            unique_concerns.append(concern)
+                        break
+                
+                if not is_duplicate:
+                    unique_concerns.append(concern)
+            
+            return unique_concerns
+        
+        def _calculate_text_similarity(self, text1: str, text2: str) -> float:
+            """Calculate simple text similarity"""
+            words1 = set(text1.split())
+            words2 = set(text2.split())
+            
+            if not words1 or not words2:
+                return 0.0
+            
+            intersection = words1.intersection(words2)
+            union = words1.union(words2)
+            
+            return len(intersection) / len(union)
+        
+        def extract_concerns_robust(self, content: str, document_name: str = "") -> Dict:
+            """Extract concerns using multiple robust methods"""
+            if not content or len(content.strip()) < 10:
+                return {
+                    'concerns': [],
+                    'debug_info': {
+                        'error': 'No content or content too short',
+                        'content_length': len(content) if content else 0
+                    }
                 }
+            
+            # Normalize content
+            normalized_content = self._normalize_content(content)
+            
+            # Try different extraction methods
+            all_concerns = []
+            debug_info = {'methods_tried': [], 'results': {}}
+            
+            # Method 1: Standard patterns
+            try:
+                standard_concerns = self._extract_standard_patterns(normalized_content)
+                debug_info['methods_tried'].append('standard_patterns')
+                debug_info['results']['standard_patterns'] = len(standard_concerns)
+                all_concerns.extend(standard_concerns)
+            except Exception as e:
+                debug_info['results']['standard_patterns'] = f"Error: {e}"
+            
+            # Method 2: Flexible patterns
+            try:
+                flexible_concerns = self._extract_flexible_patterns(normalized_content)
+                debug_info['methods_tried'].append('flexible_patterns')
+                debug_info['results']['flexible_patterns'] = len(flexible_concerns)
+                all_concerns.extend(flexible_concerns)
+            except Exception as e:
+                debug_info['results']['flexible_patterns'] = f"Error: {e}"
+            
+            # Method 3: Section detection
+            try:
+                section_concerns = self._extract_section_patterns(normalized_content)
+                debug_info['methods_tried'].append('section_detection')
+                debug_info['results']['section_detection'] = len(section_concerns)
+                all_concerns.extend(section_concerns)
+            except Exception as e:
+                debug_info['results']['section_detection'] = f"Error: {e}"
+            
+            # Method 4: Keyword extraction
+            try:
+                keyword_concerns = self._extract_keyword_patterns(normalized_content)
+                debug_info['methods_tried'].append('keyword_extraction')
+                debug_info['results']['keyword_extraction'] = len(keyword_concerns)
+                all_concerns.extend(keyword_concerns)
+            except Exception as e:
+                debug_info['results']['keyword_extraction'] = f"Error: {e}"
+            
+            # Deduplicate concerns
+            unique_concerns = self._deduplicate_concerns(all_concerns)
+            
+            # Add document source to all concerns
+            for concern in unique_concerns:
+                concern['document_source'] = document_name
+            
+            debug_info['total_before_dedup'] = len(all_concerns)
+            debug_info['total_after_dedup'] = len(unique_concerns)
+            debug_info['content_length'] = len(content)
+            
+            return {
+                'concerns': unique_concerns,
+                'debug_info': debug_info
             }
-
-if StandardLLMExtractor is None:
     
     class StandardLLMExtractor:
-        """Fallback Standard LLM Extractor"""
+        """Standard LLM-based extraction using OpenAI API (inline version)"""
         
         def __init__(self, api_key: str = None):
             self.api_key = api_key or st.secrets.get("OPENAI_API_KEY")
             self.logger = logging.getLogger(__name__)
         
         def extract_concerns_llm(self, content: str, document_name: str = "") -> Dict:
-            """Fallback LLM extraction"""
-            
-            if not self.api_key:
-                return {
-                    'concerns': [],
-                    'debug_info': {
-                        'error': 'No OpenAI API key available',
-                        'method': 'llm_fallback'
-                    }
-                }
-            
+            """Extract concerns using LLM"""
             try:
                 from openai import OpenAI
                 client = OpenAI(api_key=self.api_key)
                 
-                # Simple prompt
-                prompt = f"""Extract concerns from this coroner document. Return as JSON array with 'text' and 'confidence' fields.
-
-Document: {content[:3000]}"""
+                prompt = f"""
+                Extract concerns from the following coroner document text.
+                
+                Focus on:
+                - Coroner concerns
+                - Matters of concern
+                - Issues identified
+                - Problems noted
+                - Failures mentioned
+                
+                Text: {content[:4000]}  # Limit to avoid token limits
+                
+                Return a JSON array of concerns with:
+                - text: the concern text
+                - confidence: confidence score (0-1)
+                - type: concern type
+                """
                 
                 response = client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "Extract concerns from coroner documents. Return valid JSON only."},
+                        {"role": "system", "content": "You are an expert at extracting concerns from coroner documents. Return valid JSON only."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.1,
-                    max_tokens=1000
+                    max_tokens=1500
                 )
                 
                 result_text = response.choices[0].message.content.strip()
                 
-                # Try to parse JSON
-                import json
+                # Parse JSON response
                 try:
                     llm_concerns = json.loads(result_text)
                     
+                    # Format concerns
                     formatted_concerns = []
                     for i, concern in enumerate(llm_concerns):
                         formatted_concerns.append({
-                            'id': f"llm_fallback_{i}",
+                            'id': f"llm_{i}",
                             'text': concern.get('text', ''),
-                            'method': 'llm_fallback',
-                            'type': 'llm_concern',
+                            'method': 'llm_extraction',
+                            'type': concern.get('type', 'llm_concern'),
                             'confidence_score': concern.get('confidence', 0.7),
                             'extracted_at': datetime.now().isoformat(),
                             'document_source': document_name
@@ -186,19 +381,18 @@ Document: {content[:3000]}"""
                     return {
                         'concerns': formatted_concerns,
                         'debug_info': {
-                            'method': 'llm_fallback',
-                            'success': True,
+                            'method': 'llm',
+                            'response_length': len(result_text),
                             'concerns_found': len(formatted_concerns)
                         }
                     }
                     
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
                     return {
                         'concerns': [],
                         'debug_info': {
-                            'error': 'Failed to parse LLM response as JSON',
-                            'method': 'llm_fallback',
-                            'raw_response': result_text[:200]
+                            'error': f"JSON parsing failed: {e}",
+                            'raw_response': result_text[:500]
                         }
                     }
                     
@@ -206,10 +400,15 @@ Document: {content[:3000]}"""
                 return {
                     'concerns': [],
                     'debug_info': {
-                        'error': f"LLM extraction failed: {str(e)}",
-                        'method': 'llm_fallback'
+                        'error': f"LLM extraction failed: {e}"
                     }
                 }
+    
+    # Set the classes
+    enhanced_extractor_class = EnhancedConcernExtractor
+    standard_extractor_class = StandardLLMExtractor
+    
+    st.success("✅ Using inline extraction classes (based on your working code)")
 
 # =============================================================================
 # MAIN EXTRACTION TAB - SIMPLIFIED VERSION
@@ -219,13 +418,6 @@ def render_extraction_tab():
     """Main extraction tab - SIMPLIFIED, CLEAR VERSION"""
     
     st.title("📄 Extract Concerns from Documents")
-    
-    # Show import status for debugging
-    if import_source == "fallback":
-        st.warning("⚠️ Using fallback extraction methods. Enhanced extraction module not found.")
-        st.info(f"💡 Import source: {import_source}")
-    else:
-        st.success(f"✅ Using extraction classes from: {import_source}")
     
     st.markdown("""
     This tool finds and extracts concerns from your uploaded documents. 
@@ -341,7 +533,7 @@ def render_extraction_tab():
     show_simple_extraction_results()
 
 # =============================================================================
-# EXTRACTION FUNCTIONS - SIMPLIFIED
+# EXTRACTION FUNCTIONS - USING WORKING CLASSES
 # =============================================================================
 
 def run_pattern_extraction_simple(selected_docs):
@@ -360,8 +552,8 @@ def run_pattern_extraction_simple(selected_docs):
         all_concerns = []
         doc_results = []
         
-        # Initialize extractor
-        extractor = EnhancedConcernExtractor()
+        # Initialize extractor using the working class
+        extractor = enhanced_extractor_class()
         
         for i, doc_name in enumerate(selected_docs):
             # Update progress
@@ -381,7 +573,7 @@ def run_pattern_extraction_simple(selected_docs):
                 continue
             
             try:
-                # Run extraction
+                # Run extraction using the working method
                 result = extractor.extract_concerns_robust(doc['content'], doc_name)
                 concerns = result['concerns']
                 
@@ -393,7 +585,8 @@ def run_pattern_extraction_simple(selected_docs):
                 doc_results.append({
                     'document': doc_name,
                     'status': f'✅ Success',
-                    'concerns_found': len(good_concerns)
+                    'concerns_found': len(good_concerns),
+                    'debug_info': result.get('debug_info', {})
                 })
                 
             except Exception as e:
@@ -424,6 +617,13 @@ def run_pattern_extraction_simple(selected_docs):
     with results_container:
         if all_concerns:
             st.success(f"🎉 **Pattern extraction completed!** Found **{len(all_concerns)} concerns** from {len(selected_docs)} documents.")
+            
+            # Show debug info if available
+            with st.expander("🔍 Debug Information"):
+                for result in doc_results:
+                    if 'debug_info' in result:
+                        st.write(f"**{result['document']}:**")
+                        st.json(result['debug_info'])
         else:
             st.warning("⚠️ **No concerns found** with pattern method. Try the AI method or check your documents.")
 
@@ -450,8 +650,8 @@ def run_ai_extraction_simple(selected_docs):
         all_concerns = []
         doc_results = []
         
-        # Initialize extractor
-        extractor = StandardLLMExtractor(api_key)
+        # Initialize extractor using the working class
+        extractor = standard_extractor_class(api_key)
         
         for i, doc_name in enumerate(selected_docs):
             # Update progress
@@ -471,7 +671,7 @@ def run_ai_extraction_simple(selected_docs):
                 continue
             
             try:
-                # Run AI extraction
+                # Run AI extraction using the working method
                 result = extractor.extract_concerns_llm(doc['content'], doc_name)
                 concerns = result['concerns']
                 
@@ -597,6 +797,11 @@ def show_simple_extraction_results():
                     concern_text = concern.get('text', '')
                     display_text = concern_text[:200] + '...' if len(concern_text) > 200 else concern_text
                     st.write(f"'{display_text}'")
+                    
+                    # Show extraction method and confidence
+                    method_info = concern.get('method', 'Unknown')
+                    confidence = concern.get('confidence_score', 0)
+                    st.caption(f"Method: {method_info} | Confidence: {confidence:.2f}")
                     st.markdown("---")
                 
                 if len(concerns) > 3:
@@ -637,6 +842,30 @@ def show_simple_extraction_results():
             if 'extracted_concerns' in st.session_state:
                 del st.session_state.extracted_concerns
             st.rerun()
+
+# =============================================================================
+# LEGACY FUNCTIONS (kept for compatibility)
+# =============================================================================
+
+def display_extraction_results():
+    """Legacy function - redirects to simple results"""
+    show_simple_extraction_results()
+
+def render_document_status_check():
+    """Legacy function - simplified version"""
+    pass  # Not needed in simplified interface
+
+def render_extraction_configuration():
+    """Legacy function - simplified version"""
+    pass  # Not needed in simplified interface
+
+def render_extraction_interface():
+    """Legacy function - simplified version"""
+    pass  # Not needed in simplified interface
+
+def render_enhanced_concern_extraction():
+    """Legacy function - simplified version"""
+    pass  # Not needed in simplified interface
 
 if __name__ == "__main__":
     st.title("📄 Simple Extraction Interface")
