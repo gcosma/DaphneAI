@@ -489,6 +489,7 @@ def render_confidence_analysis(recommendations: List, concerns: List):
                 )
                 st.plotly_chart(fig, use_container_width=True)
             else:
+                conf_counts = conf_df['Confidence'].value_counts().sort_index()
                 st.bar_chart(conf_counts)
         
         with col2:
@@ -1615,7 +1616,8 @@ def render_query_analysis(search_history: List[Dict], search_results: Dict):
                 )
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.histogram_chart(length_df, x='Query Length (words)')
+                length_counts = length_df['Query Length (words)'].value_counts().sort_index()
+                st.bar_chart(length_counts)
     
     with col2:
         # Most common query terms
