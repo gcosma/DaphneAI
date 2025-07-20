@@ -333,7 +333,7 @@ def render_extraction_tab():
     - 🎯 **Improved Concern Extraction**: Better pattern matching for coroner documents
     - 📄 **Enhanced PDF Processing**: Handles OCR issues and various document formats
     - 📊 **Confidence Scoring**: Advanced scoring for extraction quality
-    - 🔍 **Metadata Extraction**: Automatically extract case refs, dates, and names
+    - 🔍 **Metadata Extraction**: Automatically extract case refs, dates, and names""")
     
     # Document status check first
     render_document_status_check()
