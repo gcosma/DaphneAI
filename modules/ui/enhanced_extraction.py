@@ -1,223 +1,186 @@
 # ===============================================
-# COMPLETE PDF EXTRACTION FIX - REVISED WITH CONCERN SPLITTING FIXES
-# Save this as: enhanced_extraction.py
+# COMPLETE ENHANCED EXTRACTION SYSTEM
 # ===============================================
 
-import pdfplumber
-import fitz  # PyMuPDF
-import logging
 import re
+import logging
 import streamlit as st
 import pandas as pd
-from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from datetime import datetime
-import tempfile
-import os
+import json
 
-class CompletePDFExtractor:
-    """Complete PDF extraction and concern detection solution"""
+class EnhancedConcernExtractor:
+    """Enhanced concern extraction with multiple robust methods"""
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        logging.basicConfig(level=logging.INFO)
-    
-    def extract_text_from_pdf(self, pdf_path: str) -> Dict[str, Any]:
-        """Enhanced PDF extraction with multiple fallback methods"""
-        try:
-            # Method 1: Try pdfplumber with enhanced settings
-            text_content, method = self._extract_with_pdfplumber_enhanced(pdf_path)
-            
-            # Method 2: Try PyMuPDF if pdfplumber fails
-            if not text_content or len(text_content.strip()) < 50:
-                self.logger.info(f"Pdfplumber yielded minimal content, trying PyMuPDF")
-                text_content, method = self._extract_with_pymupdf_enhanced(pdf_path)
-            
-            # Method 3: Try OCR if both standard methods fail
-            if not text_content or len(text_content.strip()) < 50:
-                self.logger.info(f"Standard extraction failed, attempting OCR")
-                text_content, method = self._extract_with_ocr(pdf_path)
-            
-            # Extract metadata
-            metadata = self._extract_metadata(pdf_path)
-            metadata['extraction_method'] = method
-            
-            # Clean and normalize the extracted text
-            if text_content:
-                cleaned_content = self._clean_extracted_text(text_content)
-            else:
-                cleaned_content = ""
-            
-            return {
-                "content": cleaned_content,
-                "metadata": metadata,
-                "source": Path(pdf_path).name,
-                "extraction_method": method,
-                "content_length": len(cleaned_content),
-                "success": len(cleaned_content) > 10
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Error processing {pdf_path}: {e}")
-            return {
-                "content": "",
-                "metadata": {},
-                "source": Path(pdf_path).name,
-                "extraction_method": "failed",
-                "content_length": 0,
-                "success": False,
-                "error": str(e)
-            }
-    
-    def _extract_with_pdfplumber_enhanced(self, pdf_path: str) -> Tuple[str, str]:
-        """Enhanced pdfplumber extraction"""
-        try:
-            text_parts = []
-            
-            with pdfplumber.open(pdf_path) as pdf:
-                for page_num, page in enumerate(pdf.pages):
-                    try:
-                        # Try multiple extraction strategies
-                        page_text = page.extract_text(
-                            x_tolerance=2,
-                            y_tolerance=2,
-                            layout=True,
-                            x_density=7.25,
-                            y_density=13
-                        )
-                        
-                        # Fallback methods if no text
-                        if not page_text:
-                            page_text = page.extract_text()
-                        
-                        if not page_text:
-                            words = page.extract_words()
-                            if words:
-                                page_text = ' '.join([word['text'] for word in words])
-                        
-                        if page_text:
-                            text_parts.append(page_text)
-                            
-                    except Exception as e:
-                        self.logger.warning(f"Error on page {page_num + 1}: {e}")
-                        continue
-            
-            final_text = '\n\n'.join(text_parts)
-            return final_text, "pdfplumber_enhanced"
-            
-        except Exception as e:
-            self.logger.error(f"Pdfplumber extraction failed: {e}")
-            return "", "pdfplumber_failed"
-    
-    def _extract_with_pymupdf_enhanced(self, pdf_path: str) -> Tuple[str, str]:
-        """Enhanced PyMuPDF extraction"""
-        try:
-            doc = fitz.open(pdf_path)
-            text_parts = []
-            
-            for page_num in range(doc.page_count):
-                page = doc[page_num]
-                
-                # Try different extraction methods
-                page_text = page.get_text()
-                
-                if not page_text:
-                    page_text = page.get_text("text", sort=True)
-                
-                if not page_text:
-                    blocks = page.get_text("blocks")
-                    page_text = '\n'.join([block[4] for block in blocks if block[4].strip()])
-                
-                if page_text:
-                    text_parts.append(page_text)
-            
-            doc.close()
-            final_text = '\n\n'.join(text_parts)
-            return final_text, "pymupdf_enhanced"
-            
-        except Exception as e:
-            self.logger.error(f"PyMuPDF extraction failed: {e}")
-            return "", "pymupdf_failed"
-    
-    def _extract_with_ocr(self, pdf_path: str) -> Tuple[str, str]:
-        """OCR extraction for scanned PDFs"""
-        try:
-            import pytesseract
-            from pdf2image import convert_from_path
-            
-            self.logger.info(f"Starting OCR extraction")
-            
-            pages = convert_from_path(pdf_path, dpi=300)
-            ocr_text_parts = []
-            
-            for page_num, page_image in enumerate(pages):
-                try:
-                    custom_config = r'--oem 3 --psm 6'
-                    page_text = pytesseract.image_to_string(page_image, config=custom_config)
-                    
-                    if page_text.strip():
-                        ocr_text_parts.append(page_text)
-                        
-                except Exception as e:
-                    self.logger.warning(f"OCR failed on page {page_num + 1}: {e}")
-                    continue
-            
-            final_text = '\n\n'.join(ocr_text_parts)
-            return final_text, "ocr"
-                
-        except ImportError:
-            self.logger.warning("OCR libraries not available")
-            return "", "ocr_unavailable"
-        except Exception as e:
-            self.logger.error(f"OCR extraction failed: {e}")
-            return "", "ocr_failed"
-    
-    def _extract_metadata(self, pdf_path: str) -> Dict[str, Any]:
-        """Extract PDF metadata"""
-        try:
-            doc = fitz.open(pdf_path)
-            metadata = doc.metadata or {}
-            
-            enhanced_metadata = {
-                "page_count": doc.page_count,
-                "is_encrypted": doc.is_encrypted,
-                "title": metadata.get("title", ""),
-                "author": metadata.get("author", ""),
-                "creation_date": metadata.get("creationDate"),
-                "modification_date": metadata.get("modDate")
-            }
-            
-            doc.close()
-            return enhanced_metadata
-            
-        except Exception as e:
-            self.logger.error(f"Metadata extraction failed: {e}")
-            return {}
-    
-    def _clean_extracted_text(self, text: str) -> str:
-        """Clean and normalize extracted text"""
-        if not text:
-            return ""
         
-        # Fix spacing issues
-        text = re.sub(r'\s+', ' ', text)
-        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
-        
-        # Fix common OCR issues
-        text = text.replace('`', "'")
-        text = text.replace(''', "'").replace('"', '"').replace('"', '"')
-        text = text.replace('—', '-').replace('–', '-')
+        # Enhanced patterns for concern detection
+        self.concern_patterns = {
+            'standard': [
+                r'(?:coroner|matter of )?concern(?:s)?[\s:]+([^.]+(?:\.[^.]*){0,3}\.)',
+                r'(?:identified|raised|expressed)\s+(?:a\s+)?concern(?:s)?[\s:]+([^.]+\.)',
+                r'concern\s+(?:that|about|regarding)[\s:]+([^.]+\.)',
+                r'(?:this|the)\s+concern(?:s)?[\s:]+([^.]+\.)'
+            ],
+            'flexible': [
+                r'(?:matter|issue|problem)(?:s)?[\s:]+([^.]+(?:\.[^.]*){0,2}\.)',
+                r'(?:identified|noted|found)\s+(?:that|the following)[\s:]+([^.]+\.)',
+                r'(?:this|the)\s+(?:matter|issue)[\s:]+([^.]+\.)',
+                r'(?:prevention|recommendation)[\s:]+([^.]+\.)'
+            ],
+            'section': [
+                r'(?:coroner|matter)\s+concern(?:s)?[\s\n]*([^.]+(?:\.[^.]*){0,5}\.)',
+                r'prevention[\s\n]+of[\s\n]+future[\s\n]+death(?:s)?[\s\n]*([^.]+(?:\.[^.]*){0,5}\.)',
+                r'regulation\s+28[\s\n]*report[\s\n]*([^.]+(?:\.[^.]*){0,5}\.)'
+            ],
+            'keyword': [
+                r'(?:failure|inadequate|insufficient)[\s:]+([^.]+\.)',
+                r'(?:lack\s+of|absence\s+of)[\s:]+([^.]+\.)',
+                r'(?:should\s+have|ought\s+to\s+have)[\s:]+([^.]+\.)'
+            ]
+        }
+    
+    def _normalize_content(self, content: str) -> str:
+        """Normalize content for better pattern matching"""
+        # Remove excessive whitespace
+        content = re.sub(r'\s+', ' ', content)
         
         # Fix punctuation spacing
-        text = re.sub(r'\s+([.,;:!?])', r'\1', text)
-        text = re.sub(r'([.,;:!?])([A-Za-z])', r'\1 \2', text)
+        content = re.sub(r'([.!?])\s*([A-Z])', r'\1 \2', content)
+        content = re.sub(r'([.,;:!?])([A-Za-z])', r'\1 \2', content)
         
         # Fix word boundaries
-        text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
-        text = re.sub(r'(\w)(\d)', r'\1 \2', text)
-        text = re.sub(r'(\d)([A-Za-z])', r'\1 \2', text)
+        content = re.sub(r'([a-z])([A-Z])', r'\1 \2', content)
+        content = re.sub(r'(\w)(\d)', r'\1 \2', content)
+        content = re.sub(r'(\d)([A-Za-z])', r'\1 \2', content)
         
-        return text.strip()
+        return content.strip()
+    
+    def _extract_standard_patterns(self, content: str) -> List[Dict]:
+        """Extract using standard concern patterns"""
+        concerns = []
+        
+        for pattern in self.concern_patterns['standard']:
+            matches = re.finditer(pattern, content, re.IGNORECASE | re.DOTALL)
+            for match in matches:
+                text = match.group(1).strip()
+                if len(text) > 20:  # Minimum length filter
+                    concerns.append({
+                        'id': f"std_{len(concerns)}",
+                        'text': text,
+                        'method': 'standard_pattern',
+                        'type': 'coroner_concern',
+                        'confidence_score': 0.8,
+                        'extracted_at': datetime.now().isoformat(),
+                        'pattern_used': pattern
+                    })
+        
+        return concerns
+    
+    def _extract_flexible_patterns(self, content: str) -> List[Dict]:
+        """Extract using flexible patterns"""
+        concerns = []
+        
+        for pattern in self.concern_patterns['flexible']:
+            matches = re.finditer(pattern, content, re.IGNORECASE | re.DOTALL)
+            for match in matches:
+                text = match.group(1).strip()
+                if len(text) > 15:
+                    concerns.append({
+                        'id': f"flex_{len(concerns)}",
+                        'text': text,
+                        'method': 'flexible_pattern',
+                        'type': 'issue_matter',
+                        'confidence_score': 0.7,
+                        'extracted_at': datetime.now().isoformat(),
+                        'pattern_used': pattern
+                    })
+        
+        return concerns
+    
+    def _extract_section_patterns(self, content: str) -> List[Dict]:
+        """Extract using section-based patterns"""
+        concerns = []
+        
+        for pattern in self.concern_patterns['section']:
+            matches = re.finditer(pattern, content, re.IGNORECASE | re.DOTALL)
+            for match in matches:
+                text = match.group(1).strip()
+                if len(text) > 30:  # Longer minimum for section patterns
+                    concerns.append({
+                        'id': f"sect_{len(concerns)}",
+                        'text': text,
+                        'method': 'section_pattern',
+                        'type': 'section_concern',
+                        'confidence_score': 0.9,
+                        'extracted_at': datetime.now().isoformat(),
+                        'pattern_used': pattern
+                    })
+        
+        return concerns
+    
+    def _extract_keyword_patterns(self, content: str) -> List[Dict]:
+        """Extract using keyword-based patterns"""
+        concerns = []
+        
+        for pattern in self.concern_patterns['keyword']:
+            matches = re.finditer(pattern, content, re.IGNORECASE | re.DOTALL)
+            for match in matches:
+                text = match.group(1).strip()
+                if len(text) > 10:
+                    concerns.append({
+                        'id': f"key_{len(concerns)}",
+                        'text': text,
+                        'method': 'keyword_pattern',
+                        'type': 'failure_concern',
+                        'confidence_score': 0.6,
+                        'extracted_at': datetime.now().isoformat(),
+                        'pattern_used': pattern
+                    })
+        
+        return concerns
+    
+    def _deduplicate_concerns(self, concerns: List[Dict]) -> List[Dict]:
+        """Remove duplicate concerns based on text similarity"""
+        unique_concerns = []
+        
+        for concern in concerns:
+            text = concern['text'].lower().strip()
+            
+            # Check for duplicates
+            is_duplicate = False
+            for existing in unique_concerns:
+                existing_text = existing['text'].lower().strip()
+                
+                # Simple similarity check
+                if (text in existing_text or existing_text in text or
+                    self._calculate_text_similarity(text, existing_text) > 0.8):
+                    is_duplicate = True
+                    # Keep the one with higher confidence
+                    if concern['confidence_score'] > existing['confidence_score']:
+                        unique_concerns.remove(existing)
+                        unique_concerns.append(concern)
+                    break
+            
+            if not is_duplicate:
+                unique_concerns.append(concern)
+        
+        return unique_concerns
+    
+    def _calculate_text_similarity(self, text1: str, text2: str) -> float:
+        """Calculate simple text similarity"""
+        words1 = set(text1.split())
+        words2 = set(text2.split())
+        
+        if not words1 or not words2:
+            return 0.0
+        
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        
+        return len(intersection) / len(union)
     
     def extract_concerns_robust(self, content: str, document_name: str = "") -> Dict:
         """Extract concerns using multiple robust methods"""
@@ -273,422 +236,332 @@ class CompletePDFExtractor:
         except Exception as e:
             debug_info['results']['keyword_extraction'] = f"Error: {e}"
         
-        # Remove duplicates and add metadata
-        unique_concerns = self._process_concerns(all_concerns, document_name)
+        # Deduplicate concerns
+        unique_concerns = self._deduplicate_concerns(all_concerns)
         
-        debug_info['final_stats'] = {
-            'total_raw': len(all_concerns),
-            'unique': len(unique_concerns),
-            'duplicates_removed': len(all_concerns) - len(unique_concerns)
-        }
+        # Add document source to all concerns
+        for concern in unique_concerns:
+            concern['document_source'] = document_name
+        
+        debug_info['total_before_dedup'] = len(all_concerns)
+        debug_info['total_after_dedup'] = len(unique_concerns)
+        debug_info['content_length'] = len(content)
         
         return {
             'concerns': unique_concerns,
             'debug_info': debug_info
         }
+
+
+class StandardLLMExtractor:
+    """Standard LLM-based extraction using OpenAI API"""
     
-    def _normalize_content(self, content: str) -> str:
-        """Normalize content for better pattern matching"""
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or st.secrets.get("OPENAI_API_KEY")
+        self.logger = logging.getLogger(__name__)
+    
+    def extract_concerns_llm(self, content: str, document_name: str = "") -> Dict:
+        """Extract concerns using LLM"""
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=self.api_key)
+            
+            prompt = f"""
+            Extract concerns from the following coroner document text.
+            
+            Focus on:
+            - Coroner concerns
+            - Matters of concern
+            - Issues identified
+            - Problems noted
+            - Failures mentioned
+            
+            Text: {content[:4000]}  # Limit to avoid token limits
+            
+            Return a JSON array of concerns with:
+            - text: the concern text
+            - confidence: confidence score (0-1)
+            - type: concern type
+            """
+            
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are an expert at extracting concerns from coroner documents. Return valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=1500
+            )
+            
+            result_text = response.choices[0].message.content.strip()
+            
+            # Parse JSON response
+            try:
+                llm_concerns = json.loads(result_text)
+                
+                # Format concerns
+                formatted_concerns = []
+                for i, concern in enumerate(llm_concerns):
+                    formatted_concerns.append({
+                        'id': f"llm_{i}",
+                        'text': concern.get('text', ''),
+                        'method': 'llm_extraction',
+                        'type': concern.get('type', 'llm_concern'),
+                        'confidence_score': concern.get('confidence', 0.7),
+                        'extracted_at': datetime.now().isoformat(),
+                        'document_source': document_name
+                    })
+                
+                return {
+                    'concerns': formatted_concerns,
+                    'debug_info': {
+                        'method': 'llm',
+                        'response_length': len(result_text),
+                        'concerns_found': len(formatted_concerns)
+                    }
+                }
+                
+            except json.JSONDecodeError as e:
+                return {
+                    'concerns': [],
+                    'debug_info': {
+                        'error': f"JSON parsing failed: {e}",
+                        'raw_response': result_text[:500]
+                    }
+                }
+                
+        except Exception as e:
+            return {
+                'concerns': [],
+                'debug_info': {
+                    'error': f"LLM extraction failed: {e}"
+                }
+            }
+
+
+def compare_extraction_methods(content: str, document_name: str = ""):
+    """Compare standard and enhanced extraction methods"""
+    
+    st.subheader("🔍 Extraction Method Comparison")
+    
+    # Test standard extraction
+    st.write("### Standard LLM Extraction")
+    try:
+        standard_extractor = StandardLLMExtractor()
+        standard_result = standard_extractor.extract_concerns_llm(content, document_name)
+        standard_concerns = standard_result['concerns']
+        
+        if standard_concerns:
+            st.success(f"✅ **Standard extraction found:** {len(standard_concerns)} concerns")
+            
+            for i, concern in enumerate(standard_concerns[:3]):  # Show first 3
+                with st.expander(f"Standard Concern {i+1} (Confidence: {concern['confidence_score']:.2f})"):
+                    st.write(f"**Method:** {concern['method']}")
+                    st.write(f"**Type:** {concern['type']}")
+                    st.write(f"**Text:** {concern['text'][:200]}...")
+        else:
+            st.warning("⚠️ **Standard extraction found nothing**")
+            
+        with st.expander("🔍 Standard Extraction Debug Info"):
+            st.json(standard_result['debug_info'])
+            
+    except Exception as e:
+        st.error(f"❌ **Standard extraction failed:** {e}")
+    
+    # Test enhanced extraction
+    st.write("### Enhanced Pattern Extraction")
+    try:
+        enhanced_extractor = EnhancedConcernExtractor()
+        enhanced_result = enhanced_extractor.extract_concerns_robust(content, document_name)
+        enhanced_concerns = enhanced_result['concerns']
+        
+        if enhanced_concerns:
+            st.success(f"✅ **Enhanced extraction found:** {len(enhanced_concerns)} concerns")
+            
+            for i, concern in enumerate(enhanced_concerns[:3]):  # Show first 3
+                with st.expander(f"Enhanced Concern {i+1} (Confidence: {concern['confidence_score']:.2f})"):
+                    st.write(f"**Method:** {concern['method']}")
+                    st.write(f"**Type:** {concern['type']}")
+                    st.write(f"**Text:** {concern['text'][:200]}...")
+        else:
+            st.warning("⚠️ **Enhanced extraction found no concerns**")
+        
+        with st.expander("🔍 Enhanced Extraction Debug Info"):
+            st.json(enhanced_result['debug_info'])
+            
+    except Exception as e:
+        st.error(f"❌ **Enhanced extraction failed:** {e}")
+    
+    # Method comparison summary
+    st.write("### Method Comparison Summary")
+    
+    comparison_data = [
+        {
+            'Method': 'Standard LLM',
+            'Type': 'AI-powered',
+            'API Required': 'Yes (OpenAI)',
+            'Speed': 'Slower',
+            'Accuracy': 'High (context-aware)',
+            'Cost': 'Per API call',
+            'Reliability': 'Depends on API'
+        },
+        {
+            'Method': 'Enhanced Pattern',
+            'Type': 'Pattern-based',
+            'API Required': 'No',
+            'Speed': 'Faster',
+            'Accuracy': 'High (for structured docs)',
+            'Cost': 'None',
+            'Reliability': 'Always available'
+        }
+    ]
+    
+    st.dataframe(pd.DataFrame(comparison_data), use_container_width=True)
+
+
+def run_complete_extraction_workflow(documents: List[Dict], use_both_methods: bool = True):
+    """Run complete extraction workflow with both methods"""
+    
+    st.subheader("🚀 Complete Extraction Workflow")
+    
+    # Initialize extractors
+    enhanced_extractor = EnhancedConcernExtractor()
+    standard_extractor = StandardLLMExtractor()
+    
+    # Results storage
+    all_concerns = []
+    workflow_results = []
+    
+    # Progress tracking
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    total_docs = len(documents)
+    
+    for i, doc in enumerate(documents):
+        progress = (i + 1) / total_docs
+        progress_bar.progress(progress)
+        
+        doc_name = doc['filename']
+        content = doc.get('content', '')
+        
+        status_text.text(f"Processing {doc_name}...")
+        
         if not content:
-            return ""
-        
-        # Fix common OCR issues
-        content = re.sub(r'([a-z])([A-Z])', r'\1 \2', content)
-        content = re.sub(r'(\w)(\d)', r'\1 \2', content)
-        content = re.sub(r'(\d)(\w)', r'\1 \2', content)
-        
-        # Normalize whitespace
-        content = re.sub(r'\s+', ' ', content)
-        content = re.sub(r'\n\s*\n', '\n\n', content)
-        
-        return content.strip()
-    
-    def _extract_standard_patterns(self, content: str) -> List[Dict]:
-        """Standard patterns for coroner concerns - IMPROVED to capture complete sections"""
-        
-        # Enhanced patterns that capture more complete concern sections
-        patterns = [
-            # Main concern section patterns - capture everything until a clear section break
-            r"(?:THE\s+)?(?:CORONER|CORONER'S)\s+(?:CONCERNS?|CONCERN)\s+(?:ARE|IS)?:?\s*(.*?)(?=(?:ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS?|YOUR\s+RESPONSE|COPIES|SIGNED|DATED\s+THIS|FURTHER\s+ACTION|PREVENTION\s+OF\s+FUTURE\s+DEATHS)\b|$)",
-            r"(?:MATTERS?|MATTER)\s+OF\s+(?:CONCERNS?|CONCERN)\s+(?:ARE|IS)?:?\s*(.*?)(?=(?:ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS?|YOUR\s+RESPONSE|COPIES|SIGNED|DATED\s+THIS|FURTHER\s+ACTION|PREVENTION\s+OF\s+FUTURE\s+DEATHS)\b|$)",
-            
-            # Alternative patterns for different document formats
-            r"(?:CONCERNS?|MATTERS?\s+OF\s+CONCERN)\s+(?:RAISED|IDENTIFIED|NOTED)?:?\s*(.*?)(?=(?:ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS?|YOUR\s+RESPONSE|RECOMMENDATIONS?|COPIES|SIGNED|DATED\s+THIS)\b|$)",
-            
-            # Pattern for documents with numbered concern sections
-            r"CONCERN\s+(?:NO\.?\s*)?(\d+)[\.\:\s]+(.*?)(?=CONCERN\s+(?:NO\.?\s*)?\d+|ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS?|$)",
-        ]
-        
-        concerns = []
-        for pattern in patterns:
-            try:
-                matches = re.finditer(pattern, content, re.IGNORECASE | re.DOTALL)
-                for match in matches:
-                    if len(match.groups()) >= 1:
-                        concern_text = match.group(-1).strip()  # Get the last capture group
-                        
-                        if concern_text and len(concern_text) > 50:  # Increased minimum length
-                            cleaned = self._clean_concern_text(concern_text)
-                            if cleaned and len(cleaned) > 30:
-                                concerns.append({
-                                    'text': cleaned,
-                                    'type': 'coroner_concern_complete',
-                                    'method': 'standard_pattern_enhanced',
-                                    'pattern': pattern[:50] + "...",
-                                    'captured_length': len(cleaned)
-                                })
-            except re.error as e:
-                self.logger.warning(f"Regex error in standard patterns: {e}")
-                continue
-        
-        return concerns
-    
-    def _extract_flexible_patterns(self, content: str) -> List[Dict]:
-        """Flexible patterns - FIXED to keep concerns together"""
-        sections = re.split(r'\n\s*\n', content)
-        concerns = []
-        
-        concern_indicators = [
-            r'concern.*?about', r'matter.*?of.*?concern', r'issue.*?identified',
-            r'problem.*?with', r'deficiency.*?in', r'failure.*?to',
-            r'inadequate.*?(?:provision|system|process)', r'insufficient.*?(?:resources|training)',
-            r'lack.*?of.*?(?:oversight|training|resources)', r'poor.*?(?:communication|coordination)'
-        ]
-        
-        for section in sections:
-            # Check if this section contains concern indicators
-            has_concern_indicators = False
-            for indicator in concern_indicators:
-                if re.search(indicator, section, re.IGNORECASE):
-                    has_concern_indicators = True
-                    break
-            
-            if has_concern_indicators and len(section.strip()) > 50:
-                # Keep the ENTIRE section together instead of splitting by sentences
-                cleaned_section = self._clean_concern_text(section.strip())
-                if cleaned_section and len(cleaned_section) > 30:
-                    concerns.append({
-                        'text': cleaned_section,
-                        'type': 'identified_concern_section',
-                        'method': 'flexible_pattern_unified',
-                        'indicators_found': [ind for ind in concern_indicators 
-                                           if re.search(ind, section, re.IGNORECASE)]
-                    })
-        
-        return concerns
-    
-    def _extract_section_patterns(self, content: str) -> List[Dict]:
-        """Extract from structured sections - FIXED to group related items"""
-        concerns = []
-        
-        # Look for concern sections with headers
-        concern_section_patterns = [
-            r'(?:CONCERNS?|MATTERS?\s+OF\s+CONCERN|ISSUES?\s+IDENTIFIED)[:\s]*\n((?:(?:\d+[\.\)]|\w+[\.\)]|[•\-\*]|\w+\s*:).*?\n?)+)',
-            r'(?:THE\s+)?(?:CORONER|CORONER\'S)\s+(?:CONCERNS?|MATTERS?\s+OF\s+CONCERN)[:\s]*\n((?:(?:\d+[\.\)]|\w+[\.\)]|[•\-\*]).*?\n?)+)',
-        ]
-        
-        for pattern in concern_section_patterns:
-            try:
-                matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-                for match in matches:
-                    section_content = match.group(1).strip()
-                    
-                    # Keep the entire section together instead of splitting into individual items
-                    if len(section_content) > 50:
-                        cleaned_section = self._clean_concern_text(section_content)
-                        if cleaned_section:
-                            concerns.append({
-                                'text': cleaned_section,
-                                'type': 'structured_concern_section',
-                                'method': 'section_detection_unified',
-                                'format': 'multi_item_section'
-                            })
-            except re.error:
-                continue
-        
-        # If no section headers found, look for numbered/bulleted lists but group them
-        if not concerns:
-            concerns.extend(self._extract_grouped_list_items(content))
-        
-        return concerns
-    
-    def _extract_grouped_list_items(self, content: str) -> List[Dict]:
-        """Extract list items but group related ones together"""
-        concerns = []
-        
-        # Look for groups of numbered/bulleted items that might be concerns
-        list_group_patterns = [
-            # Numbered items (1. 2. 3. etc.) - capture entire groups
-            r'((?:\d+[\.\)]\s*[^0-9]+?(?=\d+[\.\)]|$))+)',
-            # Lettered items (a. b. c. etc.) - capture entire groups
-            r'((?:[a-z][\.\)]\s*[^a-z\.\)]+?(?=[a-z][\.\)]|$))+)',
-            # Bulleted items (• - * etc.) - capture entire groups
-            r'((?:[•\-\*]\s*[^•\-\*\n]+?(?=[•\-\*]|$))+)',
-        ]
-        
-        for pattern in list_group_patterns:
-            try:
-                matches = re.finditer(pattern, content, re.MULTILINE | re.DOTALL)
-                for match in matches:
-                    group_text = match.group(1).strip()
-                    
-                    # Check if this group contains concern-related content
-                    concern_keywords = ['concern', 'issue', 'problem', 'risk', 'deficiency', 'failure', 
-                                      'inadequate', 'insufficient', 'lacking', 'poor', 'unsafe']
-                    
-                    keyword_count = sum(1 for keyword in concern_keywords 
-                                      if keyword in group_text.lower())
-                    
-                    # If the group has enough concern keywords and sufficient length, keep it together
-                    if keyword_count >= 2 and len(group_text) > 100:
-                        cleaned_group = self._clean_concern_text(group_text)
-                        if cleaned_group:
-                            concerns.append({
-                                'text': cleaned_group,
-                                'type': 'grouped_list_concern',
-                                'method': 'section_detection_grouped',
-                                'keyword_matches': keyword_count,
-                                'format': 'grouped_list'
-                            })
-            except re.error:
-                continue
-        
-        return concerns
-    
-    def _extract_keyword_patterns(self, content: str) -> List[Dict]:
-        """Keyword-based extraction - FIXED to capture complete paragraphs"""
-        concern_keywords = [
-            'inadequate', 'insufficient', 'failure', 'breach', 'deficient',
-            'lacking', 'poor', 'substandard', 'unsafe', 'risk', 'problem',
-            'issue', 'concern', 'deficiency', 'shortcoming', 'weakness'
-        ]
-        
-        # Split into paragraphs instead of sentences to keep context together
-        paragraphs = re.split(r'\n\s*\n', content)
-        concerns = []
-        
-        for paragraph in paragraphs:
-            paragraph = paragraph.strip()
-            if len(paragraph) < 100:  # Skip very short paragraphs
-                continue
-                
-            # Count concern keywords in the paragraph
-            keyword_count = sum(1 for keyword in concern_keywords 
-                              if keyword.lower() in paragraph.lower())
-            
-            # If paragraph has multiple concern keywords, treat it as a complete concern
-            if keyword_count >= 2:
-                cleaned_paragraph = self._clean_concern_text(paragraph)
-                if cleaned_paragraph and len(cleaned_paragraph) > 50:
-                    # Find which keywords matched
-                    matched_keywords = [keyword for keyword in concern_keywords 
-                                      if keyword.lower() in paragraph.lower()]
-                    
-                    concerns.append({
-                        'text': cleaned_paragraph,
-                        'type': 'keyword_concern_paragraph',
-                        'method': 'keyword_extraction_unified',
-                        'keyword_matches': keyword_count,
-                        'matched_keywords': matched_keywords
-                    })
-        
-        return concerns
-    
-    def _clean_concern_text(self, text: str) -> str:
-        """Clean extracted concern text"""
-        if not text:
-            return ""
-        
-        # Remove extra whitespace
-        text = re.sub(r'\s+', ' ', text)
-        
-        # Remove common footer text
-        text = re.sub(r'YOU ARE UNDER A DUTY.*$', '', text, re.IGNORECASE)
-        text = re.sub(r'COPIES.*$', '', text, re.IGNORECASE)
-        text = re.sub(r'SIGNED:.*$', '', text, re.IGNORECASE)
-        
-        return text.strip()
-    
-    def _process_concerns(self, concerns: List[Dict], document_name: str) -> List[Dict]:
-        """Process and deduplicate concerns - IMPROVED deduplication"""
-        if not concerns:
-            return []
-        
-        # Add metadata to all concerns
-        for i, concern in enumerate(concerns):
-            concern.update({
-                'id': f"{document_name}_concern_{i+1}",
-                'document_source': document_name,
-                'confidence_score': self._calculate_confidence(concern['text']),
-                'text_length': len(concern['text']),
-                'word_count': len(concern['text'].split()),
-                'paragraph_count': len([p for p in concern['text'].split('\n\n') if p.strip()]),
-                'extracted_at': datetime.now().isoformat()
+            workflow_results.append({
+                'document': doc_name,
+                'status': 'no_content',
+                'enhanced_concerns': 0,
+                'standard_concerns': 0
             })
+            continue
         
-        # Enhanced deduplication that considers semantic similarity, not just word overlap
-        unique_concerns = []
+        doc_concerns = []
         
-        for concern in concerns:
-            is_duplicate = False
-            concern_words = set(concern['text'].lower().split())
-            
-            for existing in unique_concerns:
-                existing_words = set(existing['text'].lower().split())
-                
-                # Calculate Jaccard similarity
-                intersection = len(concern_words & existing_words)
-                union = len(concern_words | existing_words)
-                similarity = intersection / union if union > 0 else 0
-                
-                # Also check for substring containment (one concern contained in another)
-                text1_clean = concern['text'].lower().strip()
-                text2_clean = existing['text'].lower().strip()
-                
-                containment = (text1_clean in text2_clean) or (text2_clean in text1_clean)
-                
-                # Mark as duplicate if high similarity OR one contains the other
-                if similarity > 0.6 or containment:
-                    is_duplicate = True
-                    # Keep the longer, more detailed version
-                    if len(concern['text']) > len(existing['text']):
-                        # Replace existing with this more detailed version
-                        unique_concerns.remove(existing)
-                        unique_concerns.append(concern)
-                    break
-            
-            if not is_duplicate:
-                unique_concerns.append(concern)
+        # Enhanced extraction
+        try:
+            enhanced_result = enhanced_extractor.extract_concerns_robust(content, doc_name)
+            enhanced_concerns = enhanced_result['concerns']
+            doc_concerns.extend(enhanced_concerns)
+            enhanced_count = len(enhanced_concerns)
+        except Exception as e:
+            enhanced_count = 0
+            st.warning(f"Enhanced extraction failed for {doc_name}: {e}")
         
-        # Sort by confidence and text length (prefer longer, more detailed concerns)
-        unique_concerns.sort(key=lambda x: (x['confidence_score'], x['text_length']), reverse=True)
+        # Standard extraction (if enabled)
+        standard_count = 0
+        if use_both_methods:
+            try:
+                standard_result = standard_extractor.extract_concerns_llm(content, doc_name)
+                standard_concerns = standard_result['concerns']
+                doc_concerns.extend(standard_concerns)
+                standard_count = len(standard_concerns)
+            except Exception as e:
+                st.warning(f"Standard extraction failed for {doc_name}: {e}")
         
-        return unique_concerns
+        all_concerns.extend(doc_concerns)
+        
+        workflow_results.append({
+            'document': doc_name,
+            'status': 'success',
+            'enhanced_concerns': enhanced_count,
+            'standard_concerns': standard_count,
+            'total_concerns': len(doc_concerns)
+        })
     
-    def _calculate_confidence(self, text: str) -> float:
-        """Calculate confidence score - IMPROVED scoring"""
-        if not text:
-            return 0.0
-        
-        base_score = 0.5
-        
-        # Length indicators (longer text usually means more complete concern)
-        text_length = len(text)
-        if text_length > 200: base_score += 0.1
-        if text_length > 500: base_score += 0.1
-        if text_length > 1000: base_score += 0.1
-        
-        # Paragraph structure (multiple paragraphs suggest complete concern)
-        paragraph_count = len([p for p in text.split('\n\n') if p.strip()])
-        if paragraph_count > 1: base_score += 0.1
-        if paragraph_count > 2: base_score += 0.1
-        
-        # Content indicators
-        concern_words = ['concern', 'issue', 'problem', 'risk', 'deficiency', 'failure',
-                        'inadequate', 'insufficient', 'lacking', 'poor', 'unsafe']
-        word_matches = sum(1 for word in concern_words if word in text.lower())
-        base_score += min(word_matches * 0.05, 0.2)  # Cap at 0.2 bonus
-        
-        # Structure indicators
-        if re.search(r'\d+[\.\)]', text): base_score += 0.05  # Numbered points
-        if re.search(r'[A-Z][a-z]+:', text): base_score += 0.05  # Section headers
-        if re.search(r'(?:because|due to|as a result|therefore)', text, re.IGNORECASE): base_score += 0.05  # Causal language
-        
-        # Penalize very short text (likely fragments)
-        if text_length < 100: base_score -= 0.2
-        if text_length < 50: base_score -= 0.3
-        
-        return min(base_score, 1.0)  # Cap at 1.0
-
-
-# ===============================================
-# STREAMLIT INTEGRATION FUNCTIONS
-# ===============================================
-
-def debug_uploaded_documents():
-    """Debug function to check uploaded documents"""
-    st.subheader("🔍 Debug Document Content")
+    # Clear progress
+    progress_bar.empty()
+    status_text.empty()
     
-    if not st.session_state.get('uploaded_documents'):
-        st.warning("No documents uploaded")
+    # Show results summary
+    st.success(f"🎉 Workflow Complete! Found {len(all_concerns)} total concerns")
+    
+    # Results breakdown
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        enhanced_total = sum(r['enhanced_concerns'] for r in workflow_results)
+        st.metric("Enhanced Extraction", enhanced_total)
+    
+    with col2:
+        standard_total = sum(r['standard_concerns'] for r in workflow_results)
+        st.metric("Standard Extraction", standard_total)
+    
+    with col3:
+        total_docs_processed = len([r for r in workflow_results if r['status'] == 'success'])
+        st.metric("Documents Processed", total_docs_processed)
+    
+    # Detailed results table
+    st.write("### Detailed Results")
+    results_df = pd.DataFrame(workflow_results)
+    st.dataframe(results_df, use_container_width=True)
+    
+    return all_concerns, workflow_results
+
+
+# Usage example and testing interface
+def main_extraction_interface():
+    """Main interface for extraction testing and comparison"""
+    
+    st.title("🔧 Complete Extraction System")
+    
+    # Check if documents are available
+    if 'uploaded_documents' not in st.session_state or not st.session_state.uploaded_documents:
+        st.warning("Please upload documents first to test extraction methods.")
         return
     
-    extractor = CompletePDFExtractor()
-    
+    # Document selection
     doc_options = [doc['filename'] for doc in st.session_state.uploaded_documents]
-    selected_doc = st.selectbox("Select document to debug:", doc_options)
+    selected_doc = st.selectbox("Select document for testing:", doc_options)
     
     if selected_doc:
-        doc = next((d for d in st.session_state.uploaded_documents 
-                   if d['filename'] == selected_doc), None)
+        # Get document content
+        doc = next((d for d in st.session_state.uploaded_documents if d['filename'] == selected_doc), None)
+        if doc and doc.get('content'):
+            content = doc['content']
+            
+            # Show content preview
+            with st.expander("📄 Document Content Preview"):
+                st.text_area("Content", content[:1000] + "..." if len(content) > 1000 else content, height=200)
+            
+            # Extraction options
+            st.write("### Extraction Options")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("🎯 Test Enhanced Extraction", type="primary"):
+                    compare_extraction_methods(content, selected_doc)
+            
+            with col2:
+                if st.button("🚀 Run Full Workflow", type="secondary"):
+                    selected_docs = [doc]
+                    run_complete_extraction_workflow(selected_docs, use_both_methods=True)
         
-        if doc and st.button("🔍 Analyze Document"):
-            st.write(f"**Document:** {selected_doc}")
-            
-            content = doc.get('content', '')
-            st.write(f"**Content Length:** {len(content)} characters")
-            
-            if not content:
-                st.error("❌ No content found in document!")
-                st.info("**Possible solutions:**")
-                st.write("1. Document might be scanned (image-based)")
-                st.write("2. PDF might be corrupted")
-                st.write("3. PDF extraction failed")
-            else:
-                st.success("✅ Content found!")
-                
-                # Test concern extraction
-                with st.spinner("Testing concern extraction..."):
-                    result = extractor.extract_concerns_robust(content, selected_doc)
-                
-                concerns = result['concerns']
-                debug_info = result['debug_info']
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.write(f"**Concerns Found:** {len(concerns)}")
-                    if concerns:
-                        for i, concern in enumerate(concerns[:3]):  # Show first 3
-                            with st.expander(f"Concern {i+1} (Confidence: {concern['confidence_score']:.2f})"):
-                                st.write(f"**Method:** {concern['method']}")
-                                st.write(f"**Type:** {concern['type']}")
-                                st.write(f"**Length:** {len(concern['text'])} chars")
-                                st.write(f"**Text:** {concern['text'][:300]}...")
-                
-                with col2:
-                    st.write("**Debug Information:**")
-                    st.json(debug_info)
-                
-                # Show content preview
-                with st.expander("Content Preview (first 1000 chars)"):
-                    st.text(content[:1000])
+        else:
+            st.error("Selected document has no content.")
 
-def fix_extraction_for_failed_documents():
-    """Re-process documents that failed extraction"""
-    st.subheader("🔧 Fix Failed Extractions")
-    
-    if not st.session_state.get('uploaded_documents'):
-        st.warning("No documents to fix")
-        return
-    
-    extractor = CompletePDFExtractor()
-    
-    # Find documents with no content
-    failed_docs = [doc for doc in st.session_state.uploaded_documents 
-                   if not doc.get('content') or len(doc.get('content', '')) < 50]
-    
-    if not failed_docs:
-        st.success("✅ All documents have content extracted!")
-        return
-    
-    st.warning(f"Found {len(failed_docs)} documents with extraction issues:")
-    
-    for doc in failed_docs:
-        st.write(f"• {doc['filename']} (Content length: {len(doc.get('content', ''))})")
-    
-    if st.button("🚀 Re-process Failed Documents"):
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        fixed_count = 0
+
+if __name__ == "__main__":
+    main_extraction_interface()
