@@ -1379,37 +1379,6 @@ def show_annotation_summary(successful: int, failed: List[str], total: int):
     dummy_items = [{'type': 'recommendation'} for _ in range(total)]
     show_comprehensive_annotation_summary(successful, failed, total, dummy_items)
 
-def render_annotation_interface():
-    """Legacy annotation interface for backward compatibility"""
-    st.subheader("🔬 Legacy Annotation Interface")
-    
-    recommendations = st.session_state.get('extracted_recommendations', [])
-    selected_frameworks = st.session_state.get('selected_frameworks', [])
-    
-    if not selected_frameworks:
-        st.warning("⚠️ Please select at least one framework above.")
-        return
-    
-    # Simple legacy interface
-    if recommendations:
-        st.info(f"📊 Ready to annotate {len(recommendations)} recommendations with {len(selected_frameworks)} frameworks")
-        
-        if st.button("🚀 Start Legacy Annotation", type="secondary"):
-            run_comprehensive_annotation(recommendations, selected_frameworks)
-    else:
-        st.warning("No recommendations available for annotation.")
-
-def display_annotation_results():
-    """Main results display function"""
-    results = st.session_state.get('annotation_results', {})
-    
-    if not results:
-        st.info("💡 No annotations yet. Configure settings above and click 'Start Annotation' to begin.")
-        return
-    
-    # Call the comprehensive display function
-    display_annotation_results()
-
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
