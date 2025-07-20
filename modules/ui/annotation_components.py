@@ -606,7 +606,7 @@ def show_enhanced_annotation_summary(successful: int, failed: List[str], total: 
 # =============================================================================
 
 def display_annotation_results():
-    """Display annotation results with interactive features for both recommendations and concerns"""
+    """Display annotation results in PDFxtract table style"""
     results = st.session_state.get('annotation_results', {})
     
     if not results:
@@ -615,15 +615,256 @@ def display_annotation_results():
     
     st.subheader("🏷️ Annotation Results")
     
-    # Results overview
-    display_enhanced_annotation_overview(results)
+    # Results overview metrics
+    display_annotation_overview_metrics(results)
     
-    # Detailed results
-    display_enhanced_detailed_annotations(results)
-    
-    # Export options
-    render_annotation_export_options(results)
+    # Main results table in PDFxtract style
+    display_annotation_table(results)
 
+def display_annotation_overview_metrics(results: Dict):
+    """Display overview metrics in a clean format"""
+    # Calculate statistics
+    total_items = len(results)
+    total_annotations = 0
+    framework_counts = {}
+    confidence_scores = []
+    content_type_counts = {'recommendation': 0, 'concern': 0, 'unknown': 0}
+    
+    for result in results.values():
+        # Count content types
+        content_type = result.get('content_type', 'unknown')
+        content_type_counts[content_type] = content_type_counts.get(content_type, 0) + 1
+        
+        annotations = result.get('annotations', {})
+        for framework, themes in annotations.items():
+            framework_counts[framework] = framework_counts.get(framework, 0) + len(themes)
+            total_annotations += len(themes)
+            
+            for theme in themes:
+                confidence_scores.append(theme['confidence'])
+    
+    # Display metrics in PDFxtract style
+    st.markdown("### 📊 Results Summary")
+    st.write(f"**Total Theme Identifications:** {total_annotations}")
+    
+    # Framework distribution like PDFxtract
+    if framework_counts:
+        framework_cols = st.columns(len(framework_counts))
+        
+        for i, (framework, count) in enumerate(framework_counts.items()):
+            with framework_cols[i]:
+                st.metric(framework, count, help=f"Number of theme identifications from {framework} framework")
+
+def display_annotation_table(results: Dict):
+    """Display annotations in PDFxtract-style table format"""
+    # Prepare data for table display
+    table_data = []
+    
+    for item_id, result in results.items():
+        content_item = result.get('content_item')
+        content_type = result.get('content_type', 'unknown')
+        annotations = result.get('annotations', {})
+        
+        # Get basic content info
+        if content_type == 'recommendation' and hasattr(content_item, 'text'):
+            content_text = content_item.text
+            document_source = getattr(content_item, 'document_source', 'Unknown')
+            section = getattr(content_item, 'section_title', 'Unknown')
+        elif content_type == 'concern' and isinstance(content_item, dict):
+            content_text = content_item.get('text', '')
+            document_source = content_item.get('document_source', 'Unknown')
+            section = content_item.get('type', 'Unknown')
+        else:
+            content_text = str(content_item)
+            document_source = 'Unknown'
+            section = 'Unknown'
+        
+        # Create rows for each annotation (like PDFxtract does)
+        for framework, themes in annotations.items():
+            for theme in themes:
+                table_data.append({
+                    'Item ID': item_id,
+                    'Content Type': content_type.title(),
+                    'Document': document_source.split('/')[-1] if '/' in document_source else document_source,
+                    'Framework': framework,
+                    'Theme': theme['theme'],
+                    'Confidence': theme['confidence'],
+                    'Combined Score': theme.get('semantic_similarity', 0) * theme['confidence'],
+                    'Matched Keywords': ', '.join(theme.get('matched_keywords', [])[:3]),  # Limit for display
+                    'Content Preview': content_text[:100] + "..." if len(content_text) > 100 else content_text,
+                    'Section': section,
+                    'Annotation Time': result.get('annotation_time', '')
+                })
+    
+    if not table_data:
+        st.warning("No annotations to display.")
+        return
+    
+    # Create DataFrame
+    df = pd.DataFrame(table_data)
+    
+    # Add filtering options (PDFxtract style)
+    st.markdown("### 🔍 Filter Results")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        content_types = ['All'] + sorted(df['Content Type'].unique().tolist())
+        content_filter = st.selectbox("Content Type:", content_types, key="table_content_filter")
+    
+    with col2:
+        frameworks = ['All'] + sorted(df['Framework'].unique().tolist())
+        framework_filter = st.selectbox("Framework:", frameworks, key="table_framework_filter")
+    
+    with col3:
+        min_confidence = st.slider("Min Confidence:", 0.0, 1.0, 0.0, 0.05, key="table_confidence_filter")
+    
+    with col4:
+        documents = ['All'] + sorted(df['Document'].unique().tolist())
+        doc_filter = st.selectbox("Document:", documents, key="table_doc_filter")
+    
+    # Apply filters
+    filtered_df = df.copy()
+    
+    if content_filter != 'All':
+        filtered_df = filtered_df[filtered_df['Content Type'] == content_filter]
+    
+    if framework_filter != 'All':
+        filtered_df = filtered_df[filtered_df['Framework'] == framework_filter]
+    
+    if doc_filter != 'All':
+        filtered_df = filtered_df[filtered_df['Document'] == doc_filter]
+    
+    filtered_df = filtered_df[filtered_df['Confidence'] >= min_confidence]
+    
+    if filtered_df.empty:
+        st.warning("No annotations match the current filters.")
+        return
+    
+    st.write(f"Showing {len(filtered_df)} of {len(df)} annotations")
+    
+    # Display the main results table (PDFxtract style)
+    # Select columns to display
+    display_cols = [
+        "Item ID", "Content Type", "Document", "Framework", "Theme", 
+        "Confidence", "Combined Score", "Matched Keywords"
+    ]
+    
+    # Add metadata columns if available
+    metadata_cols = ["Section", "Content Preview"]
+    for col in metadata_cols:
+        if col in filtered_df.columns:
+            display_cols.append(col)
+    
+    # Create the display DataFrame with only selected columns
+    display_df = filtered_df[display_cols].copy()
+    
+    # Format numeric columns
+    if 'Confidence' in display_df.columns:
+        display_df['Confidence'] = display_df['Confidence'].apply(lambda x: f"{x:.3f}")
+    
+    if 'Combined Score' in display_df.columns:
+        display_df['Combined Score'] = display_df['Combined Score'].apply(lambda x: f"{x:.3f}")
+    
+    # Display the results table with PDFxtract-style configuration
+    selected_rows = st.dataframe(
+        display_df,
+        use_container_width=True,
+        column_config={
+            "Item ID": st.column_config.TextColumn("Item ID", width="small"),
+            "Content Type": st.column_config.TextColumn("Type", width="small"),
+            "Document": st.column_config.TextColumn("Document", width="medium"),
+            "Framework": st.column_config.TextColumn("Framework", width="small"),
+            "Theme": st.column_config.TextColumn("Theme", width="medium"),
+            "Confidence": st.column_config.TextColumn("Confidence", width="small"),
+            "Combined Score": st.column_config.NumberColumn("Score", format="%.3f", width="small"),
+            "Matched Keywords": st.column_config.TextColumn("Keywords", width="large"),
+            "Content Preview": st.column_config.TextColumn("Preview", width="large"),
+            "Section": st.column_config.TextColumn("Section", width="medium"),
+        },
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="multi-row"
+    )
+    
+    # Show detailed view for selected rows (expandable)
+    if hasattr(selected_rows, 'selection') and selected_rows.selection.rows:
+        st.markdown("### 📖 Selected Annotations Details")
+        
+        for row_idx in selected_rows.selection.rows:
+            if row_idx < len(filtered_df):
+                row_data = filtered_df.iloc[row_idx]
+                display_selected_annotation_detail(row_data, results)
+
+def display_selected_annotation_detail(row_data, all_results):
+    """Display detailed view of selected annotation"""
+    item_id = row_data['Item ID']
+    framework = row_data['Framework']
+    theme_name = row_data['Theme']
+    
+    # Find the full result data
+    result = all_results.get(item_id)
+    if not result:
+        st.error(f"Could not find details for {item_id}")
+        return
+    
+    content_item = result.get('content_item')
+    content_type = result.get('content_type', 'unknown')
+    
+    # Get the specific theme data
+    theme_data = None
+    annotations = result.get('annotations', {})
+    if framework in annotations:
+        for theme in annotations[framework]:
+            if theme['theme'] == theme_name:
+                theme_data = theme
+                break
+    
+    if not theme_data:
+        st.error(f"Could not find theme details for {theme_name}")
+        return
+    
+    # Display in expandable format
+    with st.expander(f"🔍 {item_id} - {framework}: {theme_name}", expanded=True):
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            st.markdown("**Full Content Text:**")
+            if content_type == 'recommendation' and hasattr(content_item, 'text'):
+                st.write(content_item.text)
+            elif content_type == 'concern' and isinstance(content_item, dict):
+                st.write(content_item.get('text', 'No text available'))
+            else:
+                st.write("Content not available")
+            
+            st.markdown("**All Matched Keywords:**")
+            keywords = theme_data.get('matched_keywords', [])
+            if keywords:
+                st.write(", ".join(keywords))
+            else:
+                st.write("No keywords matched")
+        
+        with col2:
+            st.markdown("**Annotation Metrics:**")
+            st.write(f"**Type:** {content_type.title()}")
+            st.write(f"**Framework:** {framework}")
+            st.write(f"**Theme:** {theme_data['theme']}")
+            st.write(f"**Confidence:** {theme_data['confidence']:.3f}")
+            st.write(f"**Semantic Similarity:** {theme_data.get('semantic_similarity', 0):.3f}")
+            st.write(f"**Keyword Count:** {theme_data.get('keyword_count', 0)}")
+            
+            # Source information
+            st.markdown("**Source Details:**")
+            if content_type == 'recommendation' and hasattr(content_item, 'document_source'):
+                st.write(f"**Document:** {content_item.document_source}")
+                if hasattr(content_item, 'section_title'):
+                    st.write(f"**Section:** {content_item.section_title}")
+            elif content_type == 'concern' and isinstance(content_item, dict):
+                st.write(f"**Document:** {content_item.get('document_source', 'Unknown')}")
+                if content_item.get('type'):
+                    st.write(f"**Concern Type:** {content_item.get('type')}")
+            
+            # Timing information
+            st.write(f"**Annotated:** {result.get('annotation_time', 'Unknown')}")
 def display_enhanced_annotation_overview(results: Dict):
     """Display overview statistics of annotation results for mixed content"""
     # Calculate statistics
@@ -1035,6 +1276,87 @@ def export_enhanced_annotations_json(results: Dict):
         mime="application/json",
         use_container_width=True
     )
+
+
+# =============================================================================
+# SIMPLIFIED EXPORT OPTIONS (PDFxtract style)
+# =============================================================================
+
+def render_annotation_export_options(results: Dict):
+    """Render simplified export options like PDFxtract"""
+    st.markdown("### 📥 Export Options")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("📊 Export Summary CSV", use_container_width=True):
+            export_pfdxtract_style_csv(results)
+    
+    with col2:
+        if st.button("📋 Export Detailed CSV", use_container_width=True):
+            export_enhanced_detailed_annotations(results)
+    
+    with col3:
+        if st.button("📄 Export JSON", use_container_width=True):
+            export_enhanced_annotations_json(results)
+
+def export_pfdxtract_style_csv(results: Dict):
+    """Export in PDFxtract style - simple table format"""
+    if not results:
+        st.warning("No annotations to export.")
+        return
+    
+    # Create the same format as the display table
+    table_data = []
+    
+    for item_id, result in results.items():
+        content_item = result.get('content_item')
+        content_type = result.get('content_type', 'unknown')
+        annotations = result.get('annotations', {})
+        
+        # Get content info
+        if content_type == 'recommendation' and hasattr(content_item, 'text'):
+            content_text = content_item.text
+            document_source = getattr(content_item, 'document_source', 'Unknown')
+            section = getattr(content_item, 'section_title', 'Unknown')
+        elif content_type == 'concern' and isinstance(content_item, dict):
+            content_text = content_item.get('text', '')
+            document_source = content_item.get('document_source', 'Unknown')
+            section = content_item.get('type', 'Unknown')
+        else:
+            content_text = str(content_item)
+            document_source = 'Unknown'
+            section = 'Unknown'
+        
+        # Create rows for each annotation
+        for framework, themes in annotations.items():
+            for theme in themes:
+                table_data.append({
+                    'Item_ID': item_id,
+                    'Content_Type': content_type.title(),
+                    'Document': document_source,
+                    'Section': section,
+                    'Framework': framework,
+                    'Theme': theme['theme'],
+                    'Confidence': theme['confidence'],
+                    'Combined_Score': theme.get('semantic_similarity', 0) * theme['confidence'],
+                    'Matched_Keywords': ', '.join(theme.get('matched_keywords', [])),
+                    'Content_Text': content_text,
+                    'Annotation_Time': result.get('annotation_time', '')
+                })
+    
+    df = pd.DataFrame(table_data)
+    csv = df.to_csv(index=False).encode('utf-8')
+    
+    st.download_button(
+        label="📥 Download PDFxtract-Style CSV",
+        data=csv,
+        file_name=f"annotations_pfdxtract_style_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+
 
 # =============================================================================
 # LEGACY INTERFACE SUPPORT FUNCTIONS
