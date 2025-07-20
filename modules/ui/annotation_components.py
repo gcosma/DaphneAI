@@ -134,7 +134,7 @@ def render_framework_management():
         themes_count = len(annotator.frameworks[framework])
         st.write(f"• **{framework}:** {themes_count} themes")
     
-    # Framework selection
+    # Framework selection - DON'T manually set session state after widget creation
     selected_frameworks = st.multiselect(
         "Select frameworks to use for annotation:",
         available_frameworks,
@@ -142,8 +142,6 @@ def render_framework_management():
         help="Choose which conceptual frameworks to apply",
         key="selected_frameworks"
     )
-    
-    st.session_state.selected_frameworks = selected_frameworks
     
     # Framework details
     if selected_frameworks:
@@ -177,7 +175,7 @@ def render_framework_management():
                     st.error(f"❌ {message}")
             except Exception as e:
                 st.error(f"❌ Error loading framework: {str(e)}")
-
+                
 # =============================================================================
 # CONFIGURATION FUNCTIONS
 # =============================================================================
@@ -254,6 +252,7 @@ def render_enhanced_annotation_interface(content_choice, recommendations, concer
     """Render the annotation interface based on content choice"""
     st.subheader("🔬 Annotation Process")
     
+    # Get selected frameworks from session state (managed by the widget)
     selected_frameworks = st.session_state.get('selected_frameworks', [])
     
     if not selected_frameworks:
