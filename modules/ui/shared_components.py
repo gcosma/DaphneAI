@@ -298,9 +298,33 @@ def format_timestamp(timestamp: str) -> str:
     except:
         return timestamp
 
-def show_progress_indicator(message: str = "Processing..."):
-    """Show a progress indicator"""
-    return st.spinner(message)
+def show_progress_indicator(current: int = None, total: int = None, message: str = "Processing..."):
+    """Show a progress indicator - supports both simple spinner and progress bar modes"""
+    
+    # If called with 3 arguments (current, total, message) - show progress bar
+    if current is not None and total is not None:
+        if total > 0:
+            progress = current / total
+            st.progress(progress, text=f"{message}: {current}/{total}")
+        else:
+            st.info(f"{message}...")
+        return None  # No context manager for progress bar mode
+    
+    # If called with just message or no arguments - show spinner
+    elif isinstance(current, str):
+        # Handle case where first arg is actually the message
+        return st.spinner(current)
+    else:
+        # Default spinner mode
+        return st.spinner(message)
+
+def render_progress_indicator(current: int, total: int, description: str = "Processing"):
+    """Render a progress indicator (alternative function name for compatibility)"""
+    if total > 0:
+        progress = current / total
+        st.progress(progress, text=f"{description}: {current}/{total}")
+    else:
+        st.info(f"{description}...")
 
 def generate_mock_recommendations(doc_name: str, num_recommendations: int = 3):
     """Generate mock recommendations when no API key is available"""
