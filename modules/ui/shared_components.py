@@ -1,5 +1,5 @@
 # ===============================================
-# FILE: modules/ui/shared_components.py (FIXED VERSION)
+# FILE: modules/ui/shared_components.py (COMPLETE VERSION)
 # ===============================================
 import streamlit as st
 import logging
@@ -51,6 +51,11 @@ def initialize_session_state():
         # AI availability status
         st.session_state.ai_available = bool(os.getenv('OPENAI_API_KEY'))
         st.session_state.use_mock_ai = not st.session_state.ai_available
+        
+        # Processing settings
+        st.session_state.batch_size = 10
+        st.session_state.use_advanced_ai = True
+        st.session_state.model_temperature = 0.1
 
 def render_header():
     """Render the main application header with status indicators"""
@@ -98,7 +103,7 @@ def render_navigation_tabs():
     return tabs
 
 # ===============================================
-# MISSING FUNCTIONS - NOW ADDED
+# SIDEBAR AND ERROR HANDLING FUNCTIONS
 # ===============================================
 
 def render_sidebar_info():
@@ -148,13 +153,13 @@ def render_sidebar_info():
         st.subheader("⚙️ Settings")
         
         # Processing settings
-        batch_size = st.slider("Batch Size", 1, 20, 10)
+        batch_size = st.slider("Batch Size", 1, 20, st.session_state.get('batch_size', 10))
         st.session_state.batch_size = batch_size
         
         # Model settings
-        if st.checkbox("Use Advanced AI", value=True):
+        if st.checkbox("Use Advanced AI", value=st.session_state.get('use_advanced_ai', True)):
             st.session_state.use_advanced_ai = True
-            model_temp = st.slider("Temperature", 0.0, 1.0, 0.1)
+            model_temp = st.slider("Temperature", 0.0, 1.0, st.session_state.get('model_temperature', 0.1))
             st.session_state.model_temperature = model_temp
         else:
             st.session_state.use_advanced_ai = False
@@ -199,24 +204,41 @@ def display_error_messages():
     """Display any pending error messages (alias for show_error_messages)"""
     show_error_messages()
 
-def render_sidebar_controls():
-    """Render sidebar controls for global settings"""
-    with st.sidebar:
-        st.header("⚙️ Settings")
-        
-        # Processing settings
-        st.subheader("Processing Options")
-        batch_size = st.slider("Batch Size", 1, 20, 10)
-        st.session_state.batch_size = batch_size
-        
-        # Model settings
-        st.subheader("AI Model Settings")
-        if st.checkbox("Use Advanced AI", value=True):
-            st.session_state.use_advanced_ai = True
-            model_temp = st.slider("Temperature", 0.0, 1.0, 0.1)
-            st.session_state.model_temperature = model_temp
+# ===============================================
+# PROGRESS AND PROCESSING FUNCTIONS
+# ===============================================
+
+def show_progress_indicator(current: int = None, total: int = None, message: str = "Processing..."):
+    """Show a progress indicator - supports both simple spinner and progress bar modes"""
+    
+    # If called with 3 arguments (current, total, message) - show progress bar
+    if current is not None and total is not None:
+        if total > 0:
+            progress = current / total
+            st.progress(progress, text=f"{message}: {current}/{total}")
         else:
-            st.session_state.use_advanced_ai = False
+            st.info(f"{message}...")
+        return None  # No context manager for progress bar mode
+    
+    # If called with just message or no arguments - show spinner
+    elif isinstance(current, str):
+        # Handle case where first arg is actually the message
+        return st.spinner(current)
+    else:
+        # Default spinner mode
+        return st.spinner(message)
+
+def render_progress_indicator(current: int, total: int, description: str = "Processing"):
+    """Render a progress indicator (alternative function name for compatibility)"""
+    if total > 0:
+        progress = current / total
+        st.progress(progress, text=f"{description}: {current}/{total}")
+    else:
+        st.info(f"{description}...")
+
+# ===============================================
+# VALIDATION AND UTILITY FUNCTIONS
+# ===============================================
 
 def validate_api_keys():
     """Validate required API keys - OPTIONAL for this app"""
@@ -279,52 +301,9 @@ def display_debug_info():
                 'recent_actions': st.session_state.get('user_actions', [])[-5:]
             })
 
-# Utility functions for specific data types
-def safe_get_text_length(text: str) -> int:
-    """Safely get text length"""
-    return len(text) if text else 0
-
-def truncate_text(text: str, max_length: int = 100) -> str:
-    """Truncate text to specified length"""
-    if not text:
-        return ""
-    return text[:max_length] + "..." if len(text) > max_length else text
-
-def format_timestamp(timestamp: str) -> str:
-    """Format timestamp for display"""
-    try:
-        dt = datetime.fromisoformat(timestamp)
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except:
-        return timestamp
-
-def show_progress_indicator(current: int = None, total: int = None, message: str = "Processing..."):
-    """Show a progress indicator - supports both simple spinner and progress bar modes"""
-    
-    # If called with 3 arguments (current, total, message) - show progress bar
-    if current is not None and total is not None:
-        if total > 0:
-            progress = current / total
-            st.progress(progress, text=f"{message}: {current}/{total}")
-        else:
-            st.info(f"{message}...")
-        return None  # No context manager for progress bar mode
-    
-    # If called with just message or no arguments - show spinner
-    elif isinstance(current, str):
-        # Handle case where first arg is actually the message
-        return st.spinner(current)
-    else:
-        # Default spinner mode
-        return st.spinner(message)
-
-def render_progress_indicator(current: int, total: int, description: str = "Processing"):
-    """Render a progress indicator (alternative function name for compatibility)"""
-    if total > 0:
-        progress = current / total
-        st.progress(progress, text=f"{description}: {current}/{total}")
-    else:
-        st.info(f"{description}...")
+# ===============================================
+# MOCK DATA FUNCTIONS (FOR NO API KEY)
+# ===============================================
 
 def generate_mock_recommendations(doc_name: str, num_recommendations: int = 3):
     """Generate mock recommendations when no API key is available"""
@@ -357,3 +336,85 @@ def get_mock_annotation_results(recommendations: list):
         }
     
     return results
+
+# ===============================================
+# ADDITIONAL UTILITY FUNCTIONS
+# ===============================================
+
+def render_sidebar_controls():
+    """Render sidebar controls for global settings"""
+    with st.sidebar:
+        st.header("⚙️ Settings")
+        
+        # Processing settings
+        st.subheader("Processing Options")
+        batch_size = st.slider("Batch Size", 1, 20, 10)
+        st.session_state.batch_size = batch_size
+        
+        # Model settings
+        st.subheader("AI Model Settings")
+        if st.checkbox("Use Advanced AI", value=True):
+            st.session_state.use_advanced_ai = True
+            model_temp = st.slider("Temperature", 0.0, 1.0, 0.1)
+            st.session_state.model_temperature = model_temp
+        else:
+            st.session_state.use_advanced_ai = False
+
+def safe_get_text_length(text: str) -> int:
+    """Safely get text length"""
+    return len(text) if text else 0
+
+def truncate_text(text: str, max_length: int = 100) -> str:
+    """Truncate text to specified length"""
+    if not text:
+        return ""
+    return text[:max_length] + "..." if len(text) > max_length else text
+
+def format_timestamp(timestamp: str) -> str:
+    """Format timestamp for display"""
+    try:
+        dt = datetime.fromisoformat(timestamp)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        return timestamp
+
+def render_document_selector(documents: List[Dict], key_prefix: str = "selector") -> List[Dict]:
+    """Render document selector with checkboxes"""
+    if not documents:
+        st.info("Please upload documents first.")
+        return []
+    
+    st.subheader("📄 Select Documents")
+    
+    # Select all/none controls
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Select All", key=f"{key_prefix}_all"):
+            st.session_state[f"{key_prefix}_selected"] = list(range(len(documents)))
+    
+    with col2:
+        if st.button("Select None", key=f"{key_prefix}_none"):
+            st.session_state[f"{key_prefix}_selected"] = []
+    
+    # Initialize selection state
+    if f"{key_prefix}_selected" not in st.session_state:
+        st.session_state[f"{key_prefix}_selected"] = []
+    
+    # Document checkboxes
+    selected_docs = []
+    for i, doc in enumerate(documents):
+        is_selected = i in st.session_state[f"{key_prefix}_selected"]
+        
+        if st.checkbox(
+            f"📄 {doc.get('name', f'Document {i+1}')} ({len(doc.get('content', ''))} chars)",
+            value=is_selected,
+            key=f"{key_prefix}_{i}"
+        ):
+            if i not in st.session_state[f"{key_prefix}_selected"]:
+                st.session_state[f"{key_prefix}_selected"].append(i)
+            selected_docs.append(doc)
+        else:
+            if i in st.session_state[f"{key_prefix}_selected"]:
+                st.session_state[f"{key_prefix}_selected"].remove(i)
+    
+    return selected_docs
