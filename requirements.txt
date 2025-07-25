@@ -1,107 +1,57 @@
 # ===============================================
-# REQUIREMENTS.TXT - Python Dependencies
+# REQUIREMENTS.TXT - Streamlit Cloud Compatible
 # ===============================================
 
 # Core Streamlit Framework
 streamlit>=1.28.0
-streamlit-option-menu>=0.3.6
 
-# Data Processing and Analysis
+# Essential Data Processing
 pandas>=2.0.0
 numpy>=1.24.0
 
-# PDF Processing
+# PDF Processing (Core functionality)
 pdfplumber>=0.9.0
 PyMuPDF>=1.23.0
 
-# AI and Machine Learning
+# AI and Text Processing
 openai>=1.3.0
-transformers>=4.30.0
-torch>=2.0.0
-sentence-transformers>=2.2.0
-
-# Vector Database and Search
-# chromadb>=0.4.0  # Commented out due to SQLite version issues
-faiss-cpu>=1.7.4  # Alternative vector search
 
 # Data Visualization
 plotly>=5.15.0
-matplotlib>=3.7.0
-seaborn>=0.12.0
 
 # Web and API
 requests>=2.31.0
-httpx>=0.24.0
 
 # Text Processing
 nltk>=3.8.1
-spacy>=3.6.0
-beautifulsoup4>=4.12.0
 
 # File Processing
 openpyxl>=3.1.0
-xlsxwriter>=3.1.0
-python-docx>=0.8.11
 
 # Utilities
 python-dotenv>=1.0.0
-pydantic>=2.0.0
 tqdm>=4.65.0
-rich>=13.0.0
 
 # Date and Time
 python-dateutil>=2.8.2
 
-# Development and Testing (Optional)
-pytest>=7.4.0
-black>=23.0.0
-flake8>=6.0.0
-
-# Performance
-numba>=0.57.0
-
-# Security
-cryptography>=41.0.0
-
-# Image Processing (Optional)
-Pillow>=10.0.0
-
-# Audio Processing (Optional)
-# librosa>=0.10.0  # Uncomment if needed for audio processing
-
-# Additional Streamlit Components
-streamlit-elements>=0.1.0
-streamlit-aggrid>=0.3.4
-streamlit-plotly-events>=0.0.6
-
 # Configuration
 toml>=0.10.2
-pyyaml>=6.0
 
-# Logging and Monitoring
-loguru>=0.7.0
+# Image Processing
+Pillow>=10.0.0
 
-# Database (if needed)
-sqlalchemy>=2.0.0
-sqlite3  # Built-in, but listed for clarity
+# Note: Streamlit Cloud specific constraints
+# - Removed transformers (large download, PyTorch dependency)
+# - Removed chromadb (SQLite version issues)
+# - Removed spacy (model download issues)
+# - Removed torch (large download)
+# - Removed sentence-transformers (PyTorch dependency)
+# - Removed heavy ML libraries for faster deployment
 
-# Note: Some packages may require system dependencies
-# For ChromaDB SQLite issues, you may need to upgrade SQLite:
-# - On Ubuntu: sudo apt update && sudo apt install sqlite3
-# - On Mac: brew install sqlite
-# - On Windows: Download from https://www.sqlite.org/download.html
-
-# Version constraints explanation:
-# >= : Minimum version required
-# == : Exact version pinning (use sparingly)
-# ~= : Compatible release (recommended for stability)
-
-# Installation command:
-# pip install -r requirements.txt
-
-# For development environment:
-# pip install -r requirements.txt
-# pip install -e .
-
-# For production deployment:
-# pip install --no-deps -r requirements.txt
+# These can be added back individually if needed:
+# transformers>=4.30.0
+# torch>=2.0.0
+# sentence-transformers>=2.2.0
+# chromadb>=0.4.0
+# spacy>=3.6.0
