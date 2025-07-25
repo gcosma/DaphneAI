@@ -443,7 +443,7 @@ if __name__ == "__main__":
     else:
         print("Usage: python document_processor.py <pdf_file_path> [--debug]")
         print("Example: python document_processor.py 'Government_Response_to_IBI.pdf'")
-        print("Debug:   python document_processor.py 'Government_Response_to_IBI.pdf' --debug") None
+        print("Debug:   python document_processor.py 'Government_Response_to_IBI.pdf' --debug") 
             
             full_text = text_result['text']
             pages_data = text_result['pages']
