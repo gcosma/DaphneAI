@@ -156,11 +156,12 @@ class EnhancedSectionExtractor:
         text = re.sub(r'([.!?])([A-Z])', r'\1 \2', text)  # Fix sentence boundaries
         
         # Remove page headers/footers (common patterns)
-        text = re.sub(r'^\d+\s*, '', text, flags=re.MULTILINE)  # Page numbers
-        text = re.sub(r'^.*?confidential.*?, '', text, flags=re.MULTILINE | re.IGNORECASE)
-        text = re.sub(r'^.*?© crown copyright.*?, '', text, flags=re.MULTILINE | re.IGNORECASE)
+        text = re.sub(r'^\d+\s*, ', '', text, flags=re.MULTILINE)  # Page numbers
+        text = re.sub(r'^.*?confidential.*?, ', '', text, flags=re.MULTILINE | re.IGNORECASE)
+        text = re.sub(r'^.*?© crown copyright.*?, ', '', text, flags=re.MULTILINE | re.IGNORECASE)
         
         return text.strip()
+
 
     def _find_recommendation_response_sections(self, pages_data: List[Dict]) -> List[Dict[str, Any]]:
         """Find and extract recommendation and response sections"""
