@@ -1,5 +1,5 @@
 # ===============================================
-# FILE: modules/document_processor.py (COMPLETE ENHANCED VERSION)
+# FILE: modules/document_processor.py (COMPLETE ENHANCED VERSION - FIXED)
 # ===============================================
 
 import logging
@@ -106,344 +106,18 @@ class DocumentProcessor:
             if not text_result:
                 self.logger.error(f"Failed to extract basic text from {pdf_path}")
                 return {
-                'filename': Path(pdf_path).name,
-                'file_size_mb': metadata.get('file_size_mb', 0),
-                'total_pages': metadata.get('page_count', 0),
-                'is_valid': validation.get('is_valid', False),
-                'quality_score': validation.get('quality_score', 0),
-                'text_length': validation.get('text_length', 0),
-                'issues': validation.get('issues', []),
-                'recommendations': validation.get('recommendations', []),
-                'document_indicators': validation.get('document_indicators', {}),
-                **sections_info
-            }
-            
-        except Exception as summary_error:
-            self.logger.error(f"Error getting document summary: {summary_error}")
-            return {
-                'filename': Path(pdf_path).name,
-                'error': str(summary_error)
-            }
-
-    def extract_sections_with_details(self, pdf_path: str) -> Dict[str, Any]:
-        """Extract sections with detailed analysis"""
-        try:
-            # Get full extraction
-            result = self.extract_text_from_pdf(pdf_path, extract_sections_only=True)
-            
-            if not result or not result.get('success'):
-                return {
+                    'filename': Path(pdf_path).name,
+                    'text': '',
+                    'content': '',
                     'sections': [],
-                    'summary': {'error': 'Extraction failed'},
-                    'metadata': {'error': 'Could not process document'}
+                    'recommendations': [],
+                    'responses': [],
+                    'metadata': {'error': 'Failed to extract basic text'},
+                    'processed_at': datetime.now().isoformat(),
+                    'success': False,
+                    'error': 'Failed to extract basic text',
+                    'extractor_version': 'Enhanced_v3.0'
                 }
-            
-            sections = result.get('sections', [])
-            
-            # Add additional details to each section
-            detailed_sections = []
-            for section in sections:
-                detailed_section = section.copy()
-                
-                # Add content analysis
-                content = section.get('content', '')
-                detailed_section.update({
-                    'content_preview': content[:200] + '...' if len(content) > 200 else content,
-                    'has_numbered_items': bool(re.search(r'^\s*\d+\.', content, re.MULTILINE)),
-                    'has_bullet_points': bool(re.search(r'[•·‣⁃]', content)),
-                    'paragraph_count': len([p for p in content.split('\n\n') if p.strip()]),
-                    'sentence_count': len([s for s in re.split(r'[.!?]+', content) if s.strip()])
-                })
-                
-                detailed_sections.append(detailed_section)
-            
-            return {
-                'sections': detailed_sections,
-                'summary': {
-                    'total_sections': len(detailed_sections),
-                    'recommendation_sections': len([s for s in detailed_sections if s['type'] == 'recommendation']),
-                    'response_sections': len([s for s in detailed_sections if s['type'] == 'response']),
-                    'total_content_length': sum(len(s.get('content', '')) for s in detailed_sections),
-                    'average_section_length': sum(len(s.get('content', '')) for s in detailed_sections) / len(detailed_sections) if detailed_sections else 0
-                },
-                'metadata': result.get('metadata', {}),
-                'document_analysis': result.get('document_analysis', {}),
-                'recommendations': result.get('recommendations', []),
-                'responses': result.get('responses', [])
-            }
-            
-        except Exception as details_error:
-            self.logger.error(f"Error extracting sections with details: {details_error}")
-            return {
-                'sections': [],
-                'summary': {'error': str(details_error)},
-                'metadata': {'error': str(details_error)}
-            }
-
-    def detect_document_type(self, pdf_path: str) -> Dict[str, Any]:
-        """Detect the type of government document"""
-        try:
-            basic_result = self._extract_basic_text(pdf_path)
-            if not basic_result:
-                return {'type': 'unknown', 'confidence': 0.0, 'error': 'Failed to extract text'}
-            
-            text = basic_result['text']
-            analysis = self._analyze_government_document_structure(text)
-            
-            return {
-                'type': analysis['document_type'],
-                'inquiry_type': analysis.get('potential_inquiry_type', 'unknown'),
-                'has_recommendations': analysis.get('recommendation_mentions', 0) > 0,
-                'has_responses': analysis.get('response_mentions', 0) > 0,
-                'structure_type': 'table_of_contents' if analysis['has_table_of_contents'] else 'standard',
-                'confidence': self._calculate_document_type_confidence(analysis),
-                'analysis': analysis
-            }
-            
-        except Exception as detection_error:
-            self.logger.error(f"Error detecting document type: {detection_error}")
-            return {
-                'type': 'unknown',
-                'confidence': 0.0,
-                'error': str(detection_error)
-            }
-
-    def _calculate_document_type_confidence(self, analysis: Dict) -> float:
-        """Calculate confidence in document type detection"""
-        confidence = 0.0
-        
-        # Base confidence from document type detection
-        if analysis['document_type'] != 'unknown':
-            confidence += 0.4
-        
-        # Bonus for specific inquiry type
-        if analysis.get('potential_inquiry_type') != 'unknown':
-            confidence += 0.2
-        
-        # Bonus for structure indicators
-        if analysis['has_table_of_contents']:
-            confidence += 0.2
-        if analysis['has_numbered_sections']:
-            confidence += 0.1
-        
-        # Bonus for content indicators
-        if analysis.get('recommendation_mentions', 0) > 0:
-            confidence += 0.1
-        if analysis.get('response_mentions', 0) > 0:
-            confidence += 0.1
-        
-        return min(1.0, confidence)
-
-
-# ===============================================
-# UTILITY FUNCTIONS FOR BACKWARD COMPATIBILITY
-# ===============================================
-
-def extract_text_from_pdf(pdf_path: str, extract_sections_only: bool = True) -> Optional[Dict[str, Any]]:
-    """Standalone function for text extraction - maintains backward compatibility"""
-    processor = DocumentProcessor()
-    return processor.extract_text_from_pdf(pdf_path, extract_sections_only)
-
-def validate_pdf_file(pdf_path: str) -> bool:
-    """Quick validation check"""
-    processor = DocumentProcessor()
-    validation = processor.validate_extraction(pdf_path)
-    return validation.get('is_valid', False)
-
-def get_document_summary(pdf_path: str) -> Dict[str, Any]:
-    """Get document summary"""
-    processor = DocumentProcessor()
-    return processor.get_document_summary(pdf_path)
-
-def validate_document_extraction(pdf_path: str) -> bool:
-    """Quick validation check - returns True if extraction was successful"""
-    processor = DocumentProcessor()
-    validation = processor.validate_extraction(pdf_path)
-    return validation.get('is_valid', False) and validation.get('quality_score', 0) > 0.5
-
-def extract_recommendations_and_responses_only(pdf_path: str) -> Dict[str, Any]:
-    """Convenience function to extract only recommendations and responses sections"""
-    processor = DocumentProcessor()
-    return processor.extract_text_from_pdf(pdf_path, extract_sections_only=True)
-
-def get_sections_with_page_numbers(pdf_path: str) -> List[Dict[str, Any]]:
-    """Get a list of extracted sections with page numbers"""
-    processor = DocumentProcessor()
-    result = processor.extract_sections_with_details(pdf_path)
-    
-    sections_with_pages = []
-    for section in result.get('sections', []):
-        sections_with_pages.append({
-            'type': section['type'],
-            'title': section['title'],
-            'content': section['content'],
-            'page_start': section['page_start'],
-            'page_end': section['page_end'],
-            'page_range': f"{section['page_start']}-{section['page_end']}",
-            'word_count': section.get('content_stats', {}).get('word_count', 0)
-        })
-    
-    return sections_with_pages
-
-def detect_government_document_type(pdf_path: str) -> Dict[str, Any]:
-    """Detect government document type"""
-    processor = DocumentProcessor()
-    return processor.detect_document_type(pdf_path)
-
-# ===============================================
-# ENHANCED EXTRACTION FUNCTIONS
-# ===============================================
-
-def extract_government_recommendations(pdf_path: str) -> List[Dict[str, Any]]:
-    """Extract individual recommendations from government documents"""
-    processor = DocumentProcessor()
-    result = processor.extract_text_from_pdf(pdf_path, extract_sections_only=True)
-    
-    if result and result.get('success'):
-        return result.get('recommendations', [])
-    return []
-
-def extract_government_responses(pdf_path: str) -> List[Dict[str, Any]]:
-    """Extract individual responses from government documents"""
-    processor = DocumentProcessor()
-    result = processor.extract_text_from_pdf(pdf_path, extract_sections_only=True)
-    
-    if result and result.get('success'):
-        return result.get('responses', [])
-    return []
-
-def get_comprehensive_document_analysis(pdf_path: str) -> Dict[str, Any]:
-    """Get comprehensive analysis of a government document"""
-    processor = DocumentProcessor()
-    
-    # Get full extraction
-    extraction_result = processor.extract_text_from_pdf(pdf_path, extract_sections_only=True)
-    
-    # Get document type
-    document_type = processor.detect_document_type(pdf_path)
-    
-    # Get summary
-    summary = processor.get_document_summary(pdf_path)
-    
-    return {
-        'extraction_result': extraction_result,
-        'document_type': document_type,
-        'summary': summary,
-        'analysis_timestamp': datetime.now().isoformat(),
-        'success': extraction_result.get('success', False) if extraction_result else False
-    }
-
-# ===============================================
-# TESTING AND DEBUG FUNCTIONS
-# ===============================================
-
-def test_extraction(pdf_path: str, verbose: bool = True):
-    """Test extraction with a PDF file"""
-    processor = DocumentProcessor()
-    
-    if verbose:
-        print(f"Testing extraction for: {pdf_path}")
-        print("=" * 50)
-    
-    # Get summary
-    summary = processor.get_document_summary(pdf_path)
-    if verbose:
-        print("Document Summary:")
-        for key, value in summary.items():
-            print(f"  {key}: {value}")
-    
-    # Try extraction
-    result = processor.extract_text_from_pdf(pdf_path, extract_sections_only=True)
-    if result and result.get('success'):
-        text = result.get('text', '')
-        sections = result.get('sections', [])
-        recommendations = result.get('recommendations', [])
-        responses = result.get('responses', [])
-        
-        if verbose:
-            print(f"\nExtraction successful!")
-            print(f"Text length: {len(text):,} characters")
-            print(f"Sections found: {len(sections)}")
-            print(f"Individual recommendations: {len(recommendations)}")
-            print(f"Individual responses: {len(responses)}")
-            
-            for section in sections:
-                print(f"  - {section['type']}: {section['title']} ({len(section['content'])} chars)")
-        
-        return True
-    else:
-        if verbose:
-            print("\nExtraction failed!")
-            if result and 'error' in result:
-                print(f"Error: {result['error']}")
-        return False
-
-def debug_document_processing(pdf_path: str):
-    """Debug document processing step by step"""
-    processor = DocumentProcessor()
-    
-    print(f"DEBUG: Processing {pdf_path}")
-    print("=" * 60)
-    
-    # Step 1: Basic text extraction
-    print("Step 1: Basic text extraction...")
-    basic_result = processor._extract_basic_text(pdf_path)
-    if basic_result:
-        print(f"  ✅ Extracted {len(basic_result['text']):,} characters from {basic_result['total_pages']} pages")
-        
-        # Show first 300 characters
-        preview = basic_result['text'][:300].replace('\n', ' ')
-        print(f"  📄 Preview: {preview}...")
-    else:
-        print("  ❌ Basic text extraction failed")
-        return
-    
-    # Step 2: Document analysis
-    print("\nStep 2: Document structure analysis...")
-    analysis = processor._analyze_government_document_structure(basic_result['text'])
-    print(f"  📊 Document type: {analysis['document_type']}")
-    print(f"  📋 Has table of contents: {analysis['has_table_of_contents']}")
-    print(f"  🔢 Has numbered sections: {analysis['has_numbered_sections']}")
-    print(f"  📝 Recommendation mentions: {analysis.get('recommendation_mentions', 0)}")
-    print(f"  📋 Response mentions: {analysis.get('response_mentions', 0)}")
-    
-    # Step 3: Section detection
-    print("\nStep 3: Section header detection...")
-    lines = basic_result['text'].split('\n')
-    section_headers = processor._find_section_headers(lines)
-    print(f"  ✅ Found {len(section_headers)} section headers")
-    
-    for line_num, section_type, title in section_headers:
-        print(f"    Line {line_num}: {section_type} - {title}")
-    
-    # Step 4: Full extraction test
-    print("\nStep 4: Full extraction test...")
-    result = processor.extract_text_from_pdf(pdf_path, extract_sections_only=True)
-    if result and result.get('success'):
-        sections = result.get('sections', [])
-        recommendations = result.get('recommendations', [])
-        responses = result.get('responses', [])
-        
-        print(f"  ✅ Extraction successful!")
-        print(f"  📋 Sections: {len(sections)}")
-        print(f"  📝 Recommendations: {len(recommendations)}")
-        print(f"  📋 Responses: {len(responses)}")
-    else:
-        print(f"  ❌ Full extraction failed")
-        if result and 'error' in result:
-            print(f"  Error: {result['error']}")
-
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1:
-        if '--debug' in sys.argv:
-            debug_document_processing(sys.argv[1])
-        else:
-            test_extraction(sys.argv[1])
-    else:
-        print("Usage: python document_processor.py <pdf_file_path> [--debug]")
-        print("Example: python document_processor.py 'Government_Response_to_IBI.pdf'")
-        print("Debug:   python document_processor.py 'Government_Response_to_IBI.pdf' --debug") 
             
             full_text = text_result['text']
             pages_data = text_result['pages']
@@ -1006,4 +680,342 @@ if __name__ == "__main__":
             except Exception as sections_error:
                 self.logger.warning(f"Could not analyze sections: {sections_error}")
             
-            return
+            return {
+                'filename': Path(pdf_path).name,
+                'file_size_mb': metadata.get('file_size_mb', 0),
+                'total_pages': metadata.get('page_count', 0),
+                'is_valid': validation.get('is_valid', False),
+                'quality_score': validation.get('quality_score', 0),
+                'text_length': validation.get('text_length', 0),
+                'issues': validation.get('issues', []),
+                'recommendations': validation.get('recommendations', []),
+                'document_indicators': validation.get('document_indicators', {}),
+                **sections_info
+            }
+            
+        except Exception as summary_error:
+            self.logger.error(f"Error getting document summary: {summary_error}")
+            return {
+                'filename': Path(pdf_path).name,
+                'error': str(summary_error)
+            }
+
+    def extract_sections_with_details(self, pdf_path: str) -> Dict[str, Any]:
+        """Extract sections with detailed analysis"""
+        try:
+            # Get full extraction
+            result = self.extract_text_from_pdf(pdf_path, extract_sections_only=True)
+            
+            if not result or not result.get('success'):
+                return {
+                    'sections': [],
+                    'summary': {'error': 'Extraction failed'},
+                    'metadata': {'error': 'Could not process document'}
+                }
+            
+            sections = result.get('sections', [])
+            
+            # Add additional details to each section
+            detailed_sections = []
+            for section in sections:
+                detailed_section = section.copy()
+                
+                # Add content analysis
+                content = section.get('content', '')
+                detailed_section.update({
+                    'content_preview': content[:200] + '...' if len(content) > 200 else content,
+                    'has_numbered_items': bool(re.search(r'^\s*\d+\.', content, re.MULTILINE)),
+                    'has_bullet_points': bool(re.search(r'[•·‣⁃]', content)),
+                    'paragraph_count': len([p for p in content.split('\n\n') if p.strip()]),
+                    'sentence_count': len([s for s in re.split(r'[.!?]+', content) if s.strip()])
+                })
+                
+                detailed_sections.append(detailed_section)
+            
+            return {
+                'sections': detailed_sections,
+                'summary': {
+                    'total_sections': len(detailed_sections),
+                    'recommendation_sections': len([s for s in detailed_sections if s['type'] == 'recommendation']),
+                    'response_sections': len([s for s in detailed_sections if s['type'] == 'response']),
+                    'total_content_length': sum(len(s.get('content', '')) for s in detailed_sections),
+                    'average_section_length': sum(len(s.get('content', '')) for s in detailed_sections) / len(detailed_sections) if detailed_sections else 0
+                },
+                'metadata': result.get('metadata', {}),
+                'document_analysis': result.get('document_analysis', {}),
+                'recommendations': result.get('recommendations', []),
+                'responses': result.get('responses', [])
+            }
+            
+        except Exception as details_error:
+            self.logger.error(f"Error extracting sections with details: {details_error}")
+            return {
+                'sections': [],
+                'summary': {'error': str(details_error)},
+                'metadata': {'error': str(details_error)}
+            }
+
+    def detect_document_type(self, pdf_path: str) -> Dict[str, Any]:
+        """Detect the type of government document"""
+        try:
+            basic_result = self._extract_basic_text(pdf_path)
+            if not basic_result:
+                return {'type': 'unknown', 'confidence': 0.0, 'error': 'Failed to extract text'}
+            
+            text = basic_result['text']
+            analysis = self._analyze_government_document_structure(text)
+            
+            return {
+                'type': analysis['document_type'],
+                'inquiry_type': analysis.get('potential_inquiry_type', 'unknown'),
+                'has_recommendations': analysis.get('recommendation_mentions', 0) > 0,
+                'has_responses': analysis.get('response_mentions', 0) > 0,
+                'structure_type': 'table_of_contents' if analysis['has_table_of_contents'] else 'standard',
+                'confidence': self._calculate_document_type_confidence(analysis),
+                'analysis': analysis
+            }
+            
+        except Exception as detection_error:
+            self.logger.error(f"Error detecting document type: {detection_error}")
+            return {
+                'type': 'unknown',
+                'confidence': 0.0,
+                'error': str(detection_error)
+            }
+
+    def _calculate_document_type_confidence(self, analysis: Dict) -> float:
+        """Calculate confidence in document type detection"""
+        confidence = 0.0
+        
+        # Base confidence from document type detection
+        if analysis['document_type'] != 'unknown':
+            confidence += 0.4
+        
+        # Bonus for specific inquiry type
+        if analysis.get('potential_inquiry_type') != 'unknown':
+            confidence += 0.2
+        
+        # Bonus for structure indicators
+        if analysis['has_table_of_contents']:
+            confidence += 0.2
+        if analysis['has_numbered_sections']:
+            confidence += 0.1
+        
+        # Bonus for content indicators
+        if analysis.get('recommendation_mentions', 0) > 0:
+            confidence += 0.1
+        if analysis.get('response_mentions', 0) > 0:
+            confidence += 0.1
+        
+        return min(1.0, confidence)
+
+
+# ===============================================
+# UTILITY FUNCTIONS FOR BACKWARD COMPATIBILITY
+# ===============================================
+
+def extract_text_from_pdf(pdf_path: str, extract_sections_only: bool = True) -> Optional[Dict[str, Any]]:
+    """Standalone function for text extraction - maintains backward compatibility"""
+    processor = DocumentProcessor()
+    return processor.extract_text_from_pdf(pdf_path, extract_sections_only)
+
+def validate_pdf_file(pdf_path: str) -> bool:
+    """Quick validation check"""
+    processor = DocumentProcessor()
+    validation = processor.validate_extraction(pdf_path)
+    return validation.get('is_valid', False)
+
+def get_document_summary(pdf_path: str) -> Dict[str, Any]:
+    """Get document summary"""
+    processor = DocumentProcessor()
+    return processor.get_document_summary(pdf_path)
+
+def validate_document_extraction(pdf_path: str) -> bool:
+    """Quick validation check - returns True if extraction was successful"""
+    processor = DocumentProcessor()
+    validation = processor.validate_extraction(pdf_path)
+    return validation.get('is_valid', False) and validation.get('quality_score', 0) > 0.5
+
+def extract_recommendations_and_responses_only(pdf_path: str) -> Dict[str, Any]:
+    """Convenience function to extract only recommendations and responses sections"""
+    processor = DocumentProcessor()
+    return processor.extract_text_from_pdf(pdf_path, extract_sections_only=True)
+
+def get_sections_with_page_numbers(pdf_path: str) -> List[Dict[str, Any]]:
+    """Get a list of extracted sections with page numbers"""
+    processor = DocumentProcessor()
+    result = processor.extract_sections_with_details(pdf_path)
+    
+    sections_with_pages = []
+    for section in result.get('sections', []):
+        sections_with_pages.append({
+            'type': section['type'],
+            'title': section['title'],
+            'content': section['content'],
+            'page_start': section['page_start'],
+            'page_end': section['page_end'],
+            'page_range': f"{section['page_start']}-{section['page_end']}",
+            'word_count': section.get('content_stats', {}).get('word_count', 0)
+        })
+    
+    return sections_with_pages
+
+def detect_government_document_type(pdf_path: str) -> Dict[str, Any]:
+    """Detect government document type"""
+    processor = DocumentProcessor()
+    return processor.detect_document_type(pdf_path)
+
+# ===============================================
+# ENHANCED EXTRACTION FUNCTIONS
+# ===============================================
+
+def extract_government_recommendations(pdf_path: str) -> List[Dict[str, Any]]:
+    """Extract individual recommendations from government documents"""
+    processor = DocumentProcessor()
+    result = processor.extract_text_from_pdf(pdf_path, extract_sections_only=True)
+    
+    if result and result.get('success'):
+        return result.get('recommendations', [])
+    return []
+
+def extract_government_responses(pdf_path: str) -> List[Dict[str, Any]]:
+    """Extract individual responses from government documents"""
+    processor = DocumentProcessor()
+    result = processor.extract_text_from_pdf(pdf_path, extract_sections_only=True)
+    
+    if result and result.get('success'):
+        return result.get('responses', [])
+    return []
+
+def get_comprehensive_document_analysis(pdf_path: str) -> Dict[str, Any]:
+    """Get comprehensive analysis of a government document"""
+    processor = DocumentProcessor()
+    
+    # Get full extraction
+    extraction_result = processor.extract_text_from_pdf(pdf_path, extract_sections_only=True)
+    
+    # Get document type
+    document_type = processor.detect_document_type(pdf_path)
+    
+    # Get summary
+    summary = processor.get_document_summary(pdf_path)
+    
+    return {
+        'extraction_result': extraction_result,
+        'document_type': document_type,
+        'summary': summary,
+        'analysis_timestamp': datetime.now().isoformat(),
+        'success': extraction_result.get('success', False) if extraction_result else False
+    }
+
+# ===============================================
+# TESTING AND DEBUG FUNCTIONS
+# ===============================================
+
+def test_extraction(pdf_path: str, verbose: bool = True):
+    """Test extraction with a PDF file"""
+    processor = DocumentProcessor()
+    
+    if verbose:
+        print(f"Testing extraction for: {pdf_path}")
+        print("=" * 50)
+    
+    # Get summary
+    summary = processor.get_document_summary(pdf_path)
+    if verbose:
+        print("Document Summary:")
+        for key, value in summary.items():
+            print(f"  {key}: {value}")
+    
+    # Try extraction
+    result = processor.extract_text_from_pdf(pdf_path, extract_sections_only=True)
+    if result and result.get('success'):
+        text = result.get('text', '')
+        sections = result.get('sections', [])
+        recommendations = result.get('recommendations', [])
+        responses = result.get('responses', [])
+        
+        if verbose:
+            print(f"\nExtraction successful!")
+            print(f"Text length: {len(text):,} characters")
+            print(f"Sections found: {len(sections)}")
+            print(f"Individual recommendations: {len(recommendations)}")
+            print(f"Individual responses: {len(responses)}")
+            
+            for section in sections:
+                print(f"  - {section['type']}: {section['title']} ({len(section['content'])} chars)")
+        
+        return True
+    else:
+        if verbose:
+            print("\nExtraction failed!")
+            if result and 'error' in result:
+                print(f"Error: {result['error']}")
+        return False
+
+def debug_document_processing(pdf_path: str):
+    """Debug document processing step by step"""
+    processor = DocumentProcessor()
+    
+    print(f"DEBUG: Processing {pdf_path}")
+    print("=" * 60)
+    
+    # Step 1: Basic text extraction
+    print("Step 1: Basic text extraction...")
+    basic_result = processor._extract_basic_text(pdf_path)
+    if basic_result:
+        print(f"  ✅ Extracted {len(basic_result['text']):,} characters from {basic_result['total_pages']} pages")
+        
+        # Show first 300 characters
+        preview = basic_result['text'][:300].replace('\n', ' ')
+        print(f"  📄 Preview: {preview}...")
+    else:
+        print("  ❌ Basic text extraction failed")
+        return
+    
+    # Step 2: Document analysis
+    print("\nStep 2: Document structure analysis...")
+    analysis = processor._analyze_government_document_structure(basic_result['text'])
+    print(f"  📊 Document type: {analysis['document_type']}")
+    print(f"  📋 Has table of contents: {analysis['has_table_of_contents']}")
+    print(f"  🔢 Has numbered sections: {analysis['has_numbered_sections']}")
+    print(f"  📝 Recommendation mentions: {analysis.get('recommendation_mentions', 0)}")
+    print(f"  📋 Response mentions: {analysis.get('response_mentions', 0)}")
+    
+    # Step 3: Section detection
+    print("\nStep 3: Section header detection...")
+    lines = basic_result['text'].split('\n')
+    section_headers = processor._find_section_headers(lines)
+    print(f"  ✅ Found {len(section_headers)} section headers")
+    
+    for line_num, section_type, title in section_headers:
+        print(f"    Line {line_num}: {section_type} - {title}")
+    
+    # Step 4: Full extraction test
+    print("\nStep 4: Full extraction test...")
+    result = processor.extract_text_from_pdf(pdf_path, extract_sections_only=True)
+    if result and result.get('success'):
+        sections = result.get('sections', [])
+        recommendations = result.get('recommendations', [])
+        responses = result.get('responses', [])
+        
+        print(f"  ✅ Extraction successful!")
+        print(f"  📋 Sections: {len(sections)}")
+        print(f"  📝 Recommendations: {len(recommendations)}")
+        print(f"  📋 Responses: {len(responses)}")
+    else:
+        print(f"  ❌ Full extraction failed")
+        if result and 'error' in result:
+            print(f"  Error: {result['error']}")
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1:
+        if '--debug' in sys.argv:
+            debug_document_processing(sys.argv[1])
+        else:
+            test_extraction(sys.argv[1])
+    else:
+        print("Usage: python document_processor.py <pdf_file_path> [--debug]")
+        print("Example: python document_processor.py 'Government_Response_to_IBI.pdf'")
+        print("Debug:   python document_processor.py 'Government_Response_to_IBI.pdf' --debug")
