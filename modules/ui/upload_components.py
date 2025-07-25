@@ -1206,4 +1206,3 @@ if not validate_module_completeness():
 # Log successful module load
 logging.info(f"✅ Upload components module loaded with {len(__all__)} functions")
 logging.info(f"📊 Component availability - DocumentProcessor: {DOCUMENT_PROCESSOR_AVAILABLE}, SecurityValidator: {SECURITY_VALIDATOR_AVAILABLE}, SharedComponents: {SHARED_COMPONENTS_AVAILABLE}")
-    '
