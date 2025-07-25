@@ -717,7 +717,7 @@ class DocumentProcessorConfig:
         self.extract_sections_only = True
         self.validate_extraction = True
         self.min_section_length = 50  # Minimum characters for valid section
-        self.max_file_size_mb = 100
+        self.max_file_size_mb = 500
         
         # Logging settings
         self.log_level = logging.INFO
