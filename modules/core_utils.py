@@ -1,600 +1,720 @@
 # ===============================================
-# FILE: modules/core_utils.py (UPDATED VERSION)
+# FILE: modules/ui/upload_components.py (UPDATED VERSION)
 # ===============================================
-from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+
+import streamlit as st
 import pandas as pd
+import tempfile
+import os
 import logging
-import json
 from datetime import datetime
-import re
-import unicodedata
-import ssl
-import nltk
+from typing import List, Dict, Any
+from pathlib import Path
 
-# Setup NLTK with SSL handling
-def ensure_nltk_data():
-    """Ensure NLTK data is available with SSL handling"""
-    try:
+# Import required modules with error handling
+try:
+    import sys
+    sys.path.append('modules')
+    from document_processor import DocumentProcessor
+    from core_utils import SecurityValidator
+    from .shared_components import add_error_message, show_progress_indicator
+except ImportError as e:
+    logging.error(f"Import error in upload_components: {e}")
+    # Create mock classes for development
+    class DocumentProcessor:
+        def extract_text_from_pdf(self, path, extract_sections_only=True): return None
+    class SecurityValidator:
+        @staticmethod
+        def validate_file_upload(content, filename): return True
+        @staticmethod
+        def sanitize_filename(filename): return filename
+
+def render_upload_tab():
+    """Render the document upload tab"""
+    st.header("📁 Document Upload & Management")
+    
+    st.markdown("""
+    Upload PDF documents containing recommendations and responses. The system will automatically 
+    process and extract only the relevant sections for analysis.
+    """)
+    
+    # Upload interface
+    render_upload_interface()
+    
+    # Document management
+    render_document_library()
+    
+    # Batch operations
+    render_batch_operations()
+
+def render_upload_interface():
+    """Render the file upload interface"""
+    st.subheader("📤 Upload New Documents")
+    
+    # NEW: Add extraction mode selection
+    col1, col2 = st.columns([3, 1])
+    
+    with col2:
+        extraction_mode = st.radio(
+            "Extraction Mode:",
+            options=["Sections Only", "Full Document"],
+            help="Sections Only extracts just recommendations/responses sections (recommended). Full Document extracts everything.",
+            key="extraction_mode"
+        )
+        
+        # Store the choice for processing
+        st.session_state.extract_sections_only = (extraction_mode == "Sections Only")
+    
+    with col1:
+        uploaded_files = st.file_uploader(
+            "Choose PDF files",
+            type="pdf",
+            accept_multiple_files=True,
+            help="Select one or more PDF documents to upload and process",
+            key="document_uploader"
+        )
+    
+        st.markdown("**Upload Guidelines:**")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.markdown("• Max file size: 500MB")  # ✅ UPDATED FROM 100MB
+        with col2:
+            st.markdown("• Supported format: PDF")
+        with col3:
+            st.markdown("• Text must be readable")
+        with col4:
+            st.markdown("• Multiple files supported")
+    
+    # Process uploaded files
+    if uploaded_files:
+        if st.button("🚀 Process Documents", type="primary", use_container_width=True):
+            process_uploaded_files(uploaded_files)
+
+def process_uploaded_files(uploaded_files: List):
+    """Process uploaded PDF files with section extraction"""
+    processor = DocumentProcessor()
+    validator = SecurityValidator()
+    
+    if not uploaded_files:
+        st.warning("No files selected for processing.")
+        return
+    
+    # Get user preference for extraction mode
+    extract_sections_only = st.session_state.get('extract_sections_only', True)
+    
+    # Initialize progress tracking
+    total_files = len(uploaded_files)
+    progress_container = st.container()
+    status_container = st.container()
+    
+    successful_uploads = 0
+    failed_uploads = []
+    sections_summary = {'total_sections': 0, 'recommendations': 0, 'responses': 0}
+    
+    # Process each file
+    for i, uploaded_file in enumerate(uploaded_files):
+        current_step = i + 1
+        
+        with progress_container:
+            show_progress_indicator(current_step, total_files, f"Processing {uploaded_file.name}")
+        
+        with status_container:
+            status_text = st.empty()
+            status_text.info(f"📄 Processing: {uploaded_file.name}")
+        
         try:
-            _create_unverified_https_context = ssl._create_unverified_context
-        except AttributeError:
-            pass
-        else:
-            ssl._create_default_https_context = _create_unverified_https_context
-        
-        required_data = ['punkt', 'stopwords']
-        for data_name in required_data:
+            # Read file content
+            file_content = uploaded_file.read()
+            
+            # Security validation
             try:
-                nltk.data.find(f'tokenizers/{data_name}')
-            except LookupError:
-                try:
-                    nltk.download(data_name, quiet=True)
-                except Exception as e:
-                    logging.warning(f"Failed to download NLTK data {data_name}: {e}")
-    except Exception as e:
-        logging.warning(f"NLTK setup failed: {e}")
-
-# Initialize NLTK
-ensure_nltk_data()
-
-@dataclass
-class Recommendation:
-    id: str
-    text: str
-    document_source: str
-    section_title: str
-    page_number: Optional[int] = None
-    confidence_score: float = 0.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    annotations: List[Dict[str, Any]] = field(default_factory=list)
-
-@dataclass
-class Response:
-    id: str
-    text: str
-    recommendation_id: str
-    status: str
-    document_source: str
-    confidence_score: float = 0.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    annotations: List[Dict[str, Any]] = field(default_factory=list)
-
-@dataclass
-class AnnotationResult:
-    framework: str
-    theme: str
-    confidence: float
-    matched_keywords: List[str]
-    semantic_similarity: float
-    combined_score: float
-    sentence_positions: List[tuple] = field(default_factory=list)
-
-def clean_text(text: str) -> str:
-    """Clean text while preserving structure"""
-    if not text:
-        return ""
-
-    try:
-        text = str(text)
-        text = unicodedata.normalize("NFKD", text)
-
-        replacements = {
-            "â€™": "'", "â€œ": '"', "â€": '"', "â€¦": "...",
-            'â€"': "-", "â€¢": "•", "Â": " ", "\u200b": "",
-            "\uf0b7": "", "\u2019": "'", "\u201c": '"',
-            "\u201d": '"', "\u2013": "-", "\u2022": "•",
-        }
-
-        for encoded, replacement in replacements.items():
-            text = text.replace(encoded, replacement)
-
-        text = re.sub(r"<[^>]+>", "", text)
-        text = "".join(char if char.isprintable() or char == "\n" else " " for char in text)
-        text = re.sub(r" +", " ", text)
-        text = re.sub(r"\n+", "\n", text)
-
-        return text.strip()
-
-    except Exception as e:
-        logging.error(f"Error in clean_text: {e}")
-        return ""
-
-def clean_text_for_modeling(text: str) -> str:
-    """Clean text for BERT modeling"""
-    if not text:
-        return ""
-
-    try:
-        text = clean_text(text)
-        text = text.lower()
-
-        text = re.sub(r"\b\d{4}[-/]\d{2}[-/]\d{2}\b", "", text)
-        text = re.sub(r"\b\d{1,2}:\d{2}\b", "", text)
-        text = re.sub(r"\bref\w*\s*[-:\s]?\s*\w+[-\d]+\b", "", text, flags=re.IGNORECASE)
-        
-        legal_terms = r"\b(coroner|inquest|hearing|evidence|witness|statement|report|dated|signed)\b"
-        text = re.sub(legal_terms, "", text, flags=re.IGNORECASE)
-
-        text = re.sub(r"[^a-z\s]", " ", text)
-        text = re.sub(r"\s+", " ", text)
-        text = " ".join(word for word in text.split() if len(word) > 2)
-
-        return text.strip() if len(text.split()) >= 3 else ""
-
-    except Exception as e:
-        logging.error(f"Error in clean_text_for_modeling: {e}")
-        return ""
-
-def extract_concern_text(content: str) -> str:
-    """
-    ENHANCED: Extract complete concern text from PFD report content with robust section handling
-    
-    This replaces the previous version that was failing on PDF extraction.
-    
-    Key improvements:
-    1. Multiple robust patterns for different document formats
-    2. Better handling of OCR issues and text variations
-    3. Improved text normalization and cleaning
-    4. More comprehensive end markers detection
-    5. Better post-processing of extracted text
-    """
-    if pd.isna(content) or not isinstance(content, str):
-        return ""
-
-    try:
-        # Enhanced concern section identifiers - handles more variations
-        concern_patterns = [
-            # Standard patterns with optional punctuation and spacing
-            r"CORONER'S\s+CONCERNS?:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            r"MATTERS?\s+OF\s+CONCERN:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            r"The\s+MATTERS?\s+OF\s+CONCERN:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            
-            # Handle variations with "are" after the identifier
-            r"CORONER'S\s+CONCERNS?\s+are:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            r"MATTERS?\s+OF\s+CONCERN\s+are:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            
-            # Alternative section headers
-            r"HEALTHCARE\s+SAFETY\s+CONCERNS?:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            r"SAFETY\s+CONCERNS?:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            r"PATIENT\s+SAFETY\s+ISSUES?:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            r"HSIB\s+FINDINGS:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            r"INVESTIGATION\s+FINDINGS:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            r"THE\s+CORONER'S\s+MATTER\s+OF\s+CONCERN:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            r"CONCERNS?\s+AND\s+RECOMMENDATIONS?:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            r"CONCERNS?\s+IDENTIFIED:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            
-            # Handle OCR issues where spaces are missing
-            r"TheMATTERS?\s*OF\s*CONCERN:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)"
-        ]
-        
-        # Enhanced text normalization to handle PDF extraction issues
-        content_norm = _normalize_pdf_text(content)
-        
-        # Try each pattern and keep the longest/best match
-        best_concerns_text = ""
-        best_confidence = 0.0
-        
-        for pattern in concern_patterns:
-            try:
-                # Use case-insensitive and multiline matching
-                matches = re.finditer(pattern, content_norm, re.IGNORECASE | re.DOTALL | re.MULTILINE)
-                
-                for match in matches:
-                    extracted_text = match.group(1).strip()
-                    
-                    if extracted_text:
-                        # Calculate confidence score for this extraction
-                        confidence = _calculate_extraction_confidence(extracted_text, pattern)
-                        
-                        # Keep the best extraction based on length and confidence
-                        if (len(extracted_text) > len(best_concerns_text) and confidence >= best_confidence) or confidence > best_confidence + 0.1:
-                            best_concerns_text = extracted_text
-                            best_confidence = confidence
-                            
-            except re.error as e:
-                logging.warning(f"Regex error with pattern: {pattern[:50]}... Error: {e}")
+                validator.validate_file_upload(file_content, uploaded_file.name)
+            except ValueError as e:
+                failed_uploads.append(f"{uploaded_file.name}: {str(e)}")
+                status_text.error(f"❌ Security validation failed: {uploaded_file.name}")
                 continue
-        
-        # Post-process the extracted text
-        if best_concerns_text:
-            return _post_process_concerns_text(best_concerns_text)
-        
-        return ""
-        
-    except Exception as e:
-        logging.error(f"Error in extract_concern_text: {e}")
-        return ""
-
-def _normalize_pdf_text(text: str) -> str:
-    """
-    Normalize PDF text to handle common extraction issues
-    """
-    if not text:
-        return ""
-    
-    # Basic normalization - collapse whitespace but preserve structure
-    text = ' '.join(text.split())
-    
-    # Fix common OCR issues
-    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)  # Add spaces between words
-    text = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', text)  # Add spaces before numbers
-    text = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', text)  # Add spaces after numbers
-    
-    # Fix common character substitutions
-    text = text.replace('l', 'I')  # OCR often confuses l and I
-    text = text.replace('0', 'O')  # OCR often confuses 0 and O in words
-    
-    # Normalize punctuation spacing
-    text = re.sub(r'\s*:\s*', ': ', text)
-    text = re.sub(r'\s*\.\s*', '. ', text)
-    
-    return text.strip()
-
-def _calculate_extraction_confidence(text: str, pattern: str) -> float:
-    """
-    Calculate confidence score for extracted concern text
-    """
-    base_confidence = 0.6
-    
-    # Length indicators (longer text often more complete)
-    if len(text) > 50:
-        base_confidence += 0.1
-    if len(text) > 200:
-        base_confidence += 0.1
-    if len(text) > 500:
-        base_confidence += 0.1
-    
-    # Structure indicators
-    structure_indicators = [
-        (r'\d+\.', 0.1),  # Numbered points (1., 2., etc.)
-        (r'[A-Z][a-z]+:', 0.05),  # Section headers (Patient:, etc.)
-        (r'(?:should|must|ought\s+to|need\s+to)', 0.05),  # Action words
-        (r'(?:concern|issue|problem|risk|safety|patient)', 0.05),  # Key concern words
-        (r'(?:hospital|medical|treatment|care)', 0.03),  # Healthcare context
-        (r'(?:therefore|however|furthermore|additionally)', 0.03),  # Connective words
-    ]
-    
-    for indicator_pattern, confidence_boost in structure_indicators:
-        if re.search(indicator_pattern, text, re.IGNORECASE):
-            base_confidence += confidence_boost
-    
-    # Pattern-specific confidence adjustments
-    if "CORONER'S CONCERNS" in pattern.upper():
-        base_confidence += 0.1  # Most reliable pattern
-    elif "MATTERS OF CONCERN" in pattern.upper():
-        base_confidence += 0.08  # Very reliable
-    elif "SAFETY CONCERNS" in pattern.upper():
-        base_confidence += 0.05  # Moderately reliable
-    
-    return min(base_confidence, 1.0)
-
-def _post_process_concerns_text(text: str) -> str:
-    """
-    Post-process extracted concerns text to clean it up
-    """
-    if not text:
-        return ""
-    
-    # Remove leading/trailing whitespace
-    text = text.strip()
-    
-    # Remove any remaining end markers that might have been captured
-    end_markers = [
-        "ACTION SHOULD BE TAKEN",
-        "CONCLUSIONS",
-        "YOUR RESPONSE", 
-        "COPIES",
-        "SIGNED:",
-        "DATED THIS",
-        "NEXT STEPS",
-        "YOU ARE UNDER A DUTY",
-        "RESPONSE REQUIRED",
-        "CHIEF CORONER",
-        "REGULATION 28"
-    ]
-    
-    for marker in end_markers:
-        # Case-insensitive removal
-        marker_pos = text.upper().find(marker.upper())
-        if marker_pos != -1:
-            text = text[:marker_pos].strip()
-    
-    # Clean up incomplete sentences at the end
-    if text and not text.endswith(('.', '!', '?', ':')):
-        # Find the last complete sentence
-        last_period = text.rfind('.')
-        last_exclamation = text.rfind('!')
-        last_question = text.rfind('?')
-        
-        last_punctuation = max(last_period, last_exclamation, last_question)
-        
-        # If we found punctuation and it's in the latter part of the text, cut there
-        if last_punctuation != -1 and last_punctuation > len(text) * 0.7:
-            text = text[:last_punctuation + 1].strip()
-    
-    # Remove any leftover artifacts
-    text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
-    text = re.sub(r'^[:\-\s]+', '', text)  # Remove leading punctuation
-    
-    return text.strip()
-
-class SecurityValidator:
-    """Security validation for file operations"""
-    
-    @staticmethod
-    def validate_file_upload(file_content: bytes, filename: str) -> bool:
-        """Validate uploaded files for security"""
-        MAX_SIZE = 500 * 1024 * 1024  # 500MB
-        if len(file_content) > MAX_SIZE:
-            raise ValueError(f"File too large: {len(file_content)/1024/1024:.1f}MB > {MAX_SIZE/1024/1024}MB")
-        
-        allowed_extensions = {'.pdf'}
-        file_ext = Path(filename).suffix.lower()
-        if file_ext not in allowed_extensions:
-            raise ValueError(f"Invalid file type: {file_ext}")
-        
-        if not file_content.startswith(b'%PDF'):
-            raise ValueError("Invalid PDF file format")
-        
-        return True
-    
-    @staticmethod
-    def sanitize_filename(filename: str) -> str:
-        """Sanitize filename for safe storage"""
-        import os
-        filename = os.path.basename(filename)
-        filename = re.sub(r'[^\w\-_\.]', '_', filename)
-        if len(filename) > 255:
-            name, ext = os.path.splitext(filename)
-            filename = name[:250] + ext
-        return filename
-
-# Additional helper functions for metadata extraction
-def extract_metadata(content: str) -> Dict[str, str]:
-    """
-    Extract metadata from document content (ref, names, dates, etc.)
-    """
-    metadata = {}
-    
-    if not content or pd.isna(content):
-        return metadata
-    
-    try:
-        # Reference number patterns
-        ref_patterns = [
-            r"(?:Ref|Reference)\.?\s*:?\s*([-\d\w]+)",
-            r"(?:Case|Matter)\s+(?:Ref|Reference|No)\.?\s*:?\s*([-\d\w]+)",
-            r"(?:PFD|Regulation\s+28)\s*[-:\s]?\s*([-\d\w]+)"
-        ]
-        
-        for pattern in ref_patterns:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                metadata["ref"] = match.group(1).strip()
-                break
-        
-        # Deceased name
-        name_patterns = [
-            r"Deceased\s+name:?\s*([^\n]+)",
-            r"Name\s+of\s+deceased:?\s*([^\n]+)",
-            r"(?:The\s+)?deceased:?\s*([^\n]+)"
-        ]
-        
-        for pattern in name_patterns:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                name = match.group(1).strip()
-                # Clean up the name
-                name = re.sub(r'\s*\([^)]*\)', '', name)  # Remove parenthetical info
-                name = re.sub(r'\s*,.*$', '', name)  # Remove comma and everything after
-                metadata["deceased_name"] = name.strip()
-                break
-        
-        # Coroner name
-        coroner_patterns = [
-            r"Coroner(?:\'?s)?\s+name:?\s*([^\n]+)",
-            r"(?:Senior\s+)?Coroner:?\s*([^\n]+)",
-            r"(?:HM\s+)?Coroner\s+for\s+[^:]+:?\s*([^\n]+)"
-        ]
-        
-        for pattern in coroner_patterns:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                metadata["coroner_name"] = match.group(1).strip()
-                break
-        
-        # Coroner area
-        area_patterns = [
-            r"Coroner(?:\'?s)?\s+Area:?\s*([^\n]+)",
-            r"Area\s+of\s+Jurisdiction:?\s*([^\n]+)",
-            r"(?:HM\s+)?Coroner\s+for\s+([^:\n]+)"
-        ]
-        
-        for pattern in area_patterns:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                metadata["coroner_area"] = match.group(1).strip()
-                break
-        
-        # Date of report
-        date_patterns = [
-            r"(?:Date|Dated):?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})",
-            r"(?:Date|Dated):?\s*(\d{1,2}(?:st|nd|rd|th)?\s+\w+\s+\d{4})",
-            r"Report\s+dated:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})",
-            r"(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})"  # Any date pattern
-        ]
-        
-        for pattern in date_patterns:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                metadata["date_of_report"] = match.group(1).strip()
-                break
-        
-    except Exception as e:
-        logging.error(f"Error extracting metadata: {e}")
-    
-    return metadata
-
-def process_scraped_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Process and clean scraped data with metadata extraction and concern extraction"""
-    try:
-        if df is None or len(df) == 0:
-            return pd.DataFrame()
-
-        # Create a copy
-        df = df.copy()
-
-        # Extract metadata from Content field if it exists
-        if "Content" in df.columns:
-            # Process each row
-            processed_rows = []
-            for _, row in df.iterrows():
-                # Start with original row data
-                processed_row = row.to_dict()
-
-                # Extract metadata using existing function
-                content = str(row.get("Content", ""))
-                metadata = extract_metadata(content)
-
-                # Extract concerns text using the enhanced function
-                processed_row["Extracted_Concerns"] = extract_concern_text(content)
-
-                # Update row with metadata
-                processed_row.update(metadata)
-                processed_rows.append(processed_row)
-
-            # Create new DataFrame from processed rows
-            result = pd.DataFrame(processed_rows)
-        else:
-            result = df.copy()
-
-        # Convert date_of_report to datetime with UK format handling
-        if "date_of_report" in result.columns:
-
-            def parse_date(date_str):
-                if pd.isna(date_str):
-                    return pd.NaT
-
-                date_str = str(date_str).strip()
-
-                # If already in DD/MM/YYYY format
-                if re.match(r"\d{1,2}/\d{1,2}/\d{4}", date_str):
-                    return pd.to_datetime(date_str, format="%d/%m/%Y")
-
-                # Remove ordinal indicators
-                date_str = re.sub(r"(\d)(st|nd|rd|th)", r"\1", date_str)
-
-                # Try different formats
-                formats = ["%Y-%m-%d", "%d-%m-%Y", "%d %B %Y", "%d %b %Y"]
-
-                for fmt in formats:
-                    try:
-                        return pd.to_datetime(date_str, format=fmt)
-                    except ValueError:
-                        continue
-
+            
+            # Create temporary file for processing
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                tmp_file.write(file_content)
+                tmp_file_path = tmp_file.name
+            
+            try:
+                # ✅ UPDATED: Extract text with section extraction option
+                doc_data = processor.extract_text_from_pdf(tmp_file_path, extract_sections_only=extract_sections_only)
+                
+                if doc_data and doc_data.get('content'):
+                    # Determine document type
+                    doc_type = determine_document_type(doc_data['content'])
+                    
+                    # ✅ UPDATED: Create document info with section support
+                    doc_info = {
+                        'filename': validator.sanitize_filename(uploaded_file.name),
+                        'original_filename': uploaded_file.name,
+                        'content': doc_data['content'],
+                        'metadata': doc_data.get('metadata', {}),
+                        'sections': doc_data.get('sections', []),  # NEW: Add sections data
+                        'extraction_type': doc_data.get('extraction_type', 'unknown'),  # NEW: Track extraction type
+                        'document_type': doc_type,
+                        'upload_time': datetime.now().isoformat(),
+                        'file_size': len(file_content),
+                        'processing_status': 'completed'
+                    }
+                    
+                    # Check for duplicates
+                    existing_names = [doc['filename'] for doc in st.session_state.uploaded_documents]
+                    if doc_info['filename'] not in existing_names:
+                        st.session_state.uploaded_documents.append(doc_info)
+                        successful_uploads += 1
+                        
+                        # ✅ UPDATED: Better success messaging with section info
+                        sections = doc_data.get('sections', [])
+                        if sections:
+                            sections_count = len(sections)
+                            rec_sections = len([s for s in sections if s['type'] == 'recommendations'])
+                            resp_sections = len([s for s in sections if s['type'] == 'responses'])
+                            
+                            sections_summary['total_sections'] += sections_count
+                            sections_summary['recommendations'] += rec_sections
+                            sections_summary['responses'] += resp_sections
+                            
+                            status_text.success(f"✅ Found {sections_count} relevant sections in: {uploaded_file.name}")
+                            st.info(f"📋 Sections: {rec_sections} recommendations, {resp_sections} responses")
+                        else:
+                            if extract_sections_only:
+                                status_text.warning(f"⚠️ No recommendations/responses sections found in: {uploaded_file.name}")
+                            else:
+                                status_text.success(f"✅ Successfully processed (full document): {uploaded_file.name}")
+                    else:
+                        status_text.warning(f"⚠️ Duplicate file skipped: {uploaded_file.name}")
+                
+                else:
+                    failed_uploads.append(f"{uploaded_file.name}: No readable text found")
+                    status_text.error(f"❌ No text extracted from: {uploaded_file.name}")
+                
+            finally:
+                # Cleanup temporary file
                 try:
-                    return pd.to_datetime(date_str)
+                    os.unlink(tmp_file_path)
                 except:
-                    return pd.NaT
-
-            result["date_of_report"] = result["date_of_report"].apply(parse_date)
-
-        return result
-
-    except Exception as e:
-        logging.error(f"Error in process_scraped_data: {e}")
-        return df
-
-def is_response_document(row: pd.Series) -> bool:
-    """Check if a document is a response based on its metadata and content."""
-    try:
-        title = str(row.get('Title', '')).lower()
-        url = str(row.get('URL', '')).lower()
-        content = str(row.get('Content', '')).lower()
-        
-        # Response indicators in title/URL
-        response_keywords = [
-            'response', 'reply', 'answer', 'action taken',
-            'implementation', 'progress', 'update'
-        ]
-        
-        for keyword in response_keywords:
-            if keyword in title or keyword in url:
-                return True
-        
-        # Check content for response patterns
-        response_patterns = [
-            r'response\s+to\s+regulation\s+28',
-            r'action\s+taken',
-            r'in\s+response\s+to',
-            r'following\s+the\s+regulation\s+28',
-            r'we\s+have\s+implemented',
-            r'steps\s+taken'
-        ]
-        
-        for pattern in response_patterns:
-            if re.search(pattern, content, re.IGNORECASE):
-                return True
-        
-        return False
-        
-    except Exception as e:
-        logging.error(f"Error in is_response_document: {e}")
-        return False
-
-def format_date_uk(date_obj) -> str:
-    """Format date in UK format (DD/MM/YYYY)"""
-    if pd.isna(date_obj):
-        return ""
+                    pass
+            
+        except Exception as e:
+            error_msg = f"{uploaded_file.name}: {str(e)}"
+            failed_uploads.append(error_msg)
+            add_error_message(f"Failed to process {uploaded_file.name}: {str(e)}")
+            status_text.error(f"❌ Processing error: {uploaded_file.name}")
+            logging.error(f"File processing error: {e}", exc_info=True)
     
-    try:
-        if isinstance(date_obj, str):
-            # Try to parse if it's a string
-            date_obj = pd.to_datetime(date_obj)
-        
-        return date_obj.strftime("%d/%m/%Y")
-    except:
-        return str(date_obj)
-
-def export_to_excel(data: pd.DataFrame, filename: str = None) -> bytes:
-    """Export DataFrame to Excel format"""
-    if filename is None:
-        filename = f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    # Final status update
+    progress_container.empty()
+    status_container.empty()
     
-    try:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            data.to_excel(writer, sheet_name='Data', index=False)
+    # ✅ UPDATED: Enhanced results summary with section information
+    if successful_uploads > 0:
+        st.success(f"✅ Successfully processed {successful_uploads} of {total_files} files!")
         
-        output.seek(0)
-        return output.getvalue()
+        if extract_sections_only and sections_summary['total_sections'] > 0:
+            st.info(f"""
+            📊 **Sections Summary:**
+            • Total sections found: {sections_summary['total_sections']}
+            • Recommendations sections: {sections_summary['recommendations']}
+            • Responses sections: {sections_summary['responses']}
+            """)
     
-    except Exception as e:
-        logging.error(f"Error exporting to Excel: {e}")
-        raise
+    if failed_uploads:
+        st.error(f"❌ Failed to process {len(failed_uploads)} files:")
+        for error in failed_uploads:
+            st.write(f"• {error}")
+    
+    # Trigger rerun to update document library
+    if successful_uploads > 0:
+        st.rerun()
 
-# Additional utility functions for PFD categories
-def get_pfd_categories() -> List[str]:
-    """Get standard PFD report categories - these are the actual UK coroner report categories"""
-    return [
-        "Accident at Work and Health and Safety related deaths",
-        "Alcohol drug and medication related deaths",
-        "Care Home Health related deaths", 
-        "Child Death from 2015",
-        "Community health care and emergency services related deaths",
-        "Emergency services related deaths 2019 onwards",
-        "Hospital Death Clinical Procedures and medical management related deaths",
-        "Mental Health related deaths", 
-        "Other related deaths", 
-        "Police related deaths",
-        "Product related deaths", 
-        "Railway related deaths", 
-        "Road Highways Safety related deaths",
-        "Service Personnel related deaths", 
-        "State Custody related deaths", 
-        "Suicide from 2015",
-        "Wales prevention of future deaths reports 2019 onwards"
+def determine_document_type(content: str) -> str:
+    """Intelligently determine document type based on content analysis"""
+    if not content:
+        return 'Unknown'
+    
+    content_lower = content.lower()
+    
+    # Response indicators (stronger signals)
+    response_indicators = [
+        'in response to', 'responding to', 'implementation of', 
+        'accepted recommendation', 'rejected recommendation', 'under review', 
+        'action taken', 'actions completed', 'following the recommendation', 
+        'as recommended', 'we have implemented', 'steps taken',
+        'progress report', 'status update', 'implementation plan'
     ]
+    
+    # Recommendation indicators
+    recommendation_indicators = [
+        'recommendation', 'recommend that', 'should implement',
+        'must establish', 'needs to', 'ought to', 'suggests that',
+        'proposes that', 'advises that', 'urges that', 'coroner\'s concerns',
+        'matters of concern'
+    ]
+    
+    # Concern indicators
+    concern_indicators = [
+        'concern about', 'worried about', 'issue with', 'problem identified',
+        'risk of', 'difficulty in', 'challenge faced', 'failure to'
+    ]
+    
+    # Count occurrences
+    response_score = sum(1 for indicator in response_indicators if indicator in content_lower)
+    recommendation_score = sum(1 for indicator in recommendation_indicators if indicator in content_lower)
+    concern_score = sum(1 for indicator in concern_indicators if indicator in content_lower)
+    
+    # Determine type based on scores
+    if response_score > max(recommendation_score, concern_score):
+        return 'Response Document'
+    elif recommendation_score > max(response_score, concern_score):
+        return 'Recommendation Document'
+    elif concern_score > max(response_score, recommendation_score):
+        return 'Concern Document'
+    elif recommendation_score > 0:
+        return 'Mixed Content'
+    else:
+        return 'General Document'
+
+def render_document_library():
+    """Render the document library with enhanced section information"""
+    if not st.session_state.uploaded_documents:
+        st.info("📝 No documents uploaded yet. Upload some PDF files to get started!")
+        return
+    
+    st.subheader("📚 Document Library")
+    
+    # ✅ UPDATED: Enhanced document summary with section information
+    docs_data = []
+    for i, doc in enumerate(st.session_state.uploaded_documents):
+        sections = doc.get('sections', [])
+        sections_info = f"{len(sections)} sections" if sections else "Full document"
+        
+        docs_data.append({
+            "Index": i,
+            "Filename": doc.get('filename', 'Unknown'),
+            "Type": doc.get('document_type', 'Unknown'),
+            "Extraction": doc.get('extraction_type', 'unknown'),
+            "Sections": sections_info,
+            "Pages": doc.get('metadata', {}).get('page_count', 'N/A'),
+            "Size (KB)": round(doc.get('file_size', 0) / 1024, 1),
+            "Upload Time": doc.get('upload_time', '')[:19] if doc.get('upload_time') else 'Unknown',
+            "Status": "✅ Ready" if doc.get('processing_status') == 'completed' else "⚠️ Processing"
+        })
+    
+    # Display as interactive dataframe
+    df = pd.DataFrame(docs_data)
+    
+    # Enhanced filters
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        type_filter = st.selectbox(
+            "Filter by Type:",
+            options=['All'] + sorted(df['Type'].unique().tolist()),
+            key="doc_type_filter"
+        )
+    
+    with col2:
+        extraction_filter = st.selectbox(
+            "Filter by Extraction:",
+            options=['All'] + sorted(df['Extraction'].unique().tolist()),
+            key="doc_extraction_filter"
+        )
+    
+    with col3:
+        sort_by = st.selectbox(
+            "Sort by:",
+            options=['Upload Time', 'Filename', 'Size (KB)', 'Type', 'Sections'],
+            key="doc_sort_by"
+        )
+    
+    with col4:
+        sort_order = st.selectbox(
+            "Order:",
+            options=['Descending', 'Ascending'],
+            key="doc_sort_order"
+        )
+    
+    # Apply filters and sorting
+    filtered_df = df.copy()
+    
+    if type_filter != 'All':
+        filtered_df = filtered_df[filtered_df['Type'] == type_filter]
+    
+    if extraction_filter != 'All':
+        filtered_df = filtered_df[filtered_df['Extraction'] == extraction_filter]
+    
+    # Sort dataframe
+    ascending = sort_order == 'Ascending'
+    filtered_df = filtered_df.sort_values(by=sort_by, ascending=ascending)
+    
+    # Display filtered dataframe
+    if not filtered_df.empty:
+        st.dataframe(
+            filtered_df.drop('Index', axis=1),  # Hide index column
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Selection for detailed view
+        selected_doc_name = st.selectbox(
+            "View Details:",
+            options=['Select a document...'] + filtered_df['Filename'].tolist(),
+            key="selected_doc_detail"
+        )
+        
+        if selected_doc_name != 'Select a document...':
+            display_document_details(selected_doc_name)
+    
+    else:
+        st.warning(f"No documents found matching filters.")
+
+def display_document_details(filename: str):
+    """Display detailed information for a selected document with section support"""
+    # Find the document
+    doc = next((d for d in st.session_state.uploaded_documents if d['filename'] == filename), None)
+    
+    if not doc:
+        st.error(f"Document not found: {filename}")
+        return
+    
+    with st.expander(f"📄 Document Details: {filename}", expanded=True):
+        # Create detail columns
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Basic Information:**")
+            st.write(f"• **Original Name:** {doc.get('original_filename', 'N/A')}")
+            st.write(f"• **Document Type:** {doc.get('document_type', 'Unknown')}")
+            st.write(f"• **Extraction Type:** {doc.get('extraction_type', 'Unknown')}")
+            st.write(f"• **File Size:** {doc.get('file_size', 0):,} bytes")
+            st.write(f"• **Upload Time:** {doc.get('upload_time', 'Unknown')}")
+        
+        with col2:
+            metadata = doc.get('metadata', {})
+            st.write("**Document Metadata:**")
+            st.write(f"• **Page Count:** {metadata.get('page_count', 'N/A')}")
+            st.write(f"• **Author:** {metadata.get('author', 'N/A')}")
+            st.write(f"• **Title:** {metadata.get('title', 'N/A')}")
+            st.write(f"• **Created:** {metadata.get('creationDate', 'N/A')}")
+        
+        # ✅ NEW: Show sections information if available
+        if 'sections' in doc and doc['sections']:
+            st.write("**📋 Sections Found:**")
+            sections = doc['sections']
+            
+            for i, section in enumerate(sections, 1):
+                with st.container():
+                    st.write(f"**Section {i}: {section['type'].title()}**")
+                    
+                    # Create columns for section details
+                    sec_col1, sec_col2 = st.columns(2)
+                    
+                    with sec_col1:
+                        st.write(f"• **Title:** {section['title']}")
+                        st.write(f"• **Pages:** {section['page_start']}-{section['page_end']}")
+                    
+                    with sec_col2:
+                        content_stats = section.get('content_stats', {})
+                        st.write(f"• **Words:** {content_stats.get('word_count', 'Unknown')}")
+                        st.write(f"• **Characters:** {content_stats.get('character_count', 'Unknown')}")
+                    
+                    # Show content preview
+                    content_preview = section.get('content', '')[:200]
+                    if content_preview:
+                        st.text_area(
+                            f"Preview (Section {i}):",
+                            value=content_preview + "..." if len(section.get('content', '')) > 200 else content_preview,
+                            height=80,
+                            disabled=True,
+                            key=f"section_preview_{filename}_{i}"
+                        )
+                    
+                    st.write("---")
+                    
+        elif doc.get('extraction_type') == 'sections_only':
+            st.warning("📋 Document was processed for sections but none were found.")
+            st.markdown("""
+            **Possible reasons:**
+            • Document doesn't contain standard recommendation/response sections
+            • Sections might be formatted differently than expected
+            • Try switching to 'Full Document' extraction mode
+            """)
+        
+        # Content preview (full content)
+        content = doc.get('content', '')
+        if content:
+            st.write("**📄 Content Preview:**")
+            preview_length = 500
+            preview_text = content[:preview_length]
+            if len(content) > preview_length:
+                preview_text += "..."
+            
+            st.text_area(
+                "First 500 characters:",
+                value=preview_text,
+                height=100,
+                disabled=True,
+                key=f"full_preview_{filename}"
+            )
+            
+            st.write(f"**Total Content Length:** {len(content):,} characters")
+        else:
+            st.warning("No content available for this document.")
+
+def render_batch_operations():
+    """Render batch operations for document management"""
+    if not st.session_state.uploaded_documents:
+        return
+    
+    st.subheader("🔧 Batch Operations")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        if st.button("📊 Export Document List", use_container_width=True):
+            export_document_list()
+    
+    with col2:
+        if st.button("🔄 Reprocess All", use_container_width=True):
+            reprocess_all_documents()
+    
+    with col3:
+        if st.button("🗑️ Clear All Documents", use_container_width=True):
+            clear_all_documents()
+    
+    with col4:
+        if st.button("📋 Document Statistics", use_container_width=True):
+            show_document_statistics()
+
+def export_document_list():
+    """Export document list as CSV with section information"""
+    if not st.session_state.uploaded_documents:
+        st.warning("No documents to export.")
+        return
+    
+    # ✅ UPDATED: Include section information in export
+    export_data = []
+    for doc in st.session_state.uploaded_documents:
+        sections = doc.get('sections', [])
+        
+        base_info = {
+            'filename': doc.get('filename', ''),
+            'document_type': doc.get('document_type', ''),
+            'extraction_type': doc.get('extraction_type', ''),
+            'file_size_kb': round(doc.get('file_size', 0) / 1024, 1),
+            'upload_time': doc.get('upload_time', ''),
+            'page_count': doc.get('metadata', {}).get('page_count', ''),
+            'total_sections': len(sections),
+            'recommendations_sections': len([s for s in sections if s['type'] == 'recommendations']),
+            'responses_sections': len([s for s in sections if s['type'] == 'responses'])
+        }
+        
+        if sections:
+            # Add detailed section information
+            for i, section in enumerate(sections, 1):
+                section_info = base_info.copy()
+                section_info.update({
+                    'section_number': i,
+                    'section_type': section['type'],
+                    'section_title': section['title'],
+                    'section_pages': f"{section['page_start']}-{section['page_end']}",
+                    'section_words': section.get('content_stats', {}).get('word_count', 0)
+                })
+                export_data.append(section_info)
+        else:
+            # No sections, just add the base info
+            export_data.append(base_info)
+    
+    # Create DataFrame and export
+    df = pd.DataFrame(export_data)
+    csv_data = df.to_csv(index=False)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"document_analysis_{timestamp}.csv"
+    
+    st.download_button(
+        label="📥 Download CSV",
+        data=csv_data,
+        file_name=filename,
+        mime="text/csv"
+    )
+    
+    st.success(f"✅ Document list exported! {len(export_data)} rows generated.")
+
+def reprocess_all_documents():
+    """Reprocess all uploaded documents with current settings"""
+    if st.button("⚠️ Confirm Reprocess All", type="secondary"):
+        st.warning("This will reprocess all documents. Current analysis will be lost.")
+        
+        # Clear current data
+        st.session_state.uploaded_documents = []
+        st.session_state.extracted_recommendations = []
+        st.session_state.extracted_concerns = []
+        
+        st.success("✅ Documents cleared. Re-upload your files to reprocess with current settings.")
+        st.rerun()
+
+def clear_all_documents():
+    """Clear all uploaded documents"""
+    if st.button("⚠️ Confirm Clear All", type="secondary"):
+        st.session_state.uploaded_documents = []
+        st.session_state.extracted_recommendations = []
+        st.session_state.extracted_concerns = []
+        st.success("✅ All documents cleared!")
+        st.rerun()
+
+def show_document_statistics():
+    """Show comprehensive document statistics"""
+    docs = st.session_state.uploaded_documents
+    
+    if not docs:
+        st.warning("No documents to analyze.")
+        return
+    
+    # ✅ UPDATED: Enhanced statistics with section information
+    st.subheader("📊 Document Statistics")
+    
+    # Basic stats
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Documents", len(docs))
+    
+    with col2:
+        total_size = sum(doc.get('file_size', 0) for doc in docs)
+        st.metric("Total Size", f"{total_size / (1024*1024):.1f} MB")
+    
+    with col3:
+        total_pages = sum(doc.get('metadata', {}).get('page_count', 0) for doc in docs)
+        st.metric("Total Pages", total_pages)
+    
+    with col4:
+        total_sections = sum(len(doc.get('sections', [])) for doc in docs)
+        st.metric("Total Sections", total_sections)
+    
+    # Section breakdown
+    if total_sections > 0:
+        st.subheader("📋 Section Analysis")
+        
+        section_types = {}
+        extraction_types = {}
+        
+        for doc in docs:
+            # Count extraction types
+            ext_type = doc.get('extraction_type', 'unknown')
+            extraction_types[ext_type] = extraction_types.get(ext_type, 0) + 1
+            
+            # Count section types
+            for section in doc.get('sections', []):
+                sec_type = section['type']
+                section_types[sec_type] = section_types.get(sec_type, 0) + 1
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Extraction Types:**")
+            for ext_type, count in extraction_types.items():
+                st.write(f"• {ext_type.replace('_', ' ').title()}: {count}")
+        
+        with col2:
+            st.write("**Section Types:**")
+            for sec_type, count in section_types.items():
+                st.write(f"• {sec_type.replace('_', ' ').title()}: {count}")
+
+# ✅ NEW: Test function to verify section extraction
+def test_section_extraction():
+    """Test function to verify section extraction is working correctly"""
+    st.subheader("🧪 Section Extraction Test")
+    
+    if st.button("Test Section Extraction"):
+        if st.session_state.uploaded_documents:
+            st.write("Testing section extraction on uploaded documents...")
+            
+            for doc in st.session_state.uploaded_documents[:3]:  # Test first 3 docs
+                st.write(f"**Document**: {doc['filename']}")
+                
+                if 'sections' in doc and doc['sections']:
+                    sections = doc['sections']
+                    st.success(f"✅ Found {len(sections)} sections:")
+                    for section in sections:
+                        st.write(f"  - {section['type']}: Pages {section['page_start']}-{section['page_end']}")
+                elif doc.get('extraction_type') == 'sections_only':
+                    st.warning("❌ No sections found - document processed for sections but none detected")
+                else:
+                    st.info("ℹ️ Full document extraction - no section data available")
+                
+                st.write("---")
+        else:
+            st.warning("Upload some documents first to test extraction")
+
+# Initialize session state for uploaded documents
+if 'uploaded_documents' not in st.session_state:
+    st.session_state.uploaded_documents = []
+
+# Initialize other required session state variables
+if 'extracted_recommendations' not in st.session_state:
+    st.session_state.extracted_recommendations = []
+
+if 'extracted_concerns' not in st.session_state:
+    st.session_state.extracted_concerns = []
+
+if 'extract_sections_only' not in st.session_state:
+    st.session_state.extract_sections_only = True  # Default to sections only
+
+
+# Error handling and logging setup
+def setup_upload_logging():
+    """Setup logging for upload components"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
+
+# Utility function for backwards compatibility
+def get_uploaded_documents_summary():
+    """Get summary of uploaded documents for other components"""
+    docs = st.session_state.get('uploaded_documents', [])
+    
+    summary = {
+        'total_documents': len(docs),
+        'documents_with_sections': len([d for d in docs if d.get('sections')]),
+        'total_sections': sum(len(d.get('sections', [])) for d in docs),
+        'section_types': {},
+        'document_types': {}
+    }
+    
+    # Count section and document types
+    for doc in docs:
+        doc_type = doc.get('document_type', 'Unknown')
+        summary['document_types'][doc_type] = summary['document_types'].get(doc_type, 0) + 1
+        
+        for section in doc.get('sections', []):
+            sec_type = section['type']
+            summary['section_types'][sec_type] = summary['section_types'].get(sec_type, 0) + 1
+    
+    return summary
+
+
+# Main module initialization
+if __name__ == "__main__":
+    # This would be used for testing the module independently
+    setup_upload_logging()
+    print("Upload components module loaded successfully")
+    
+    # Test imports
+    try:
+        from document_processor import DocumentProcessor
+        print("✅ DocumentProcessor imported successfully")
+    except ImportError as e:
+        print(f"❌ DocumentProcessor import failed: {e}")
+    
+    try:
+        from core_utils import SecurityValidator
+        print("✅ SecurityValidator imported successfully")
+    except ImportError as e:
+        print(f"❌ SecurityValidator import failed: {e}")
