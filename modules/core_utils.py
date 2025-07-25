@@ -326,7 +326,7 @@ class SecurityValidator:
     @staticmethod
     def validate_file_upload(file_content: bytes, filename: str) -> bool:
         """Validate uploaded files for security"""
-        MAX_SIZE = 100 * 1024 * 1024  # 100MB
+        MAX_SIZE = 500 * 1024 * 1024  # 500MB
         if len(file_content) > MAX_SIZE:
             raise ValueError(f"File too large: {len(file_content)/1024/1024:.1f}MB > {MAX_SIZE/1024/1024}MB")
         
