@@ -23,3 +23,54 @@ collection_name = "recommendations_responses"
 level = "INFO"
 file = "app.log"
 format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# ===============================================
+# STREAMLIT CONFIGURATION
+# ===============================================
+
+[server]
+maxUploadSize = 500  # 500MB upload limit for Streamlit
+maxMessageSize = 500  # 500MB message size limit
+enableCORS = false
+enableXsrfProtection = true
+headless = false
+runOnSave = false
+allowRunOnSave = false
+port = 8501
+baseUrlPath = ""
+
+[browser]
+gatherUsageStats = false
+showErrorDetails = true
+serverAddress = "localhost"
+serverPort = 8501
+
+[client]
+toolbarMode = "auto"
+showErrorDetails = true
+displayEnabled = true
+
+[runner]
+magicEnabled = true
+installTracer = false
+fixMatplotlib = true
+postScriptGC = true
+fastReruns = true
+
+[logger]
+level = "info"
+messageFormat = "%(asctime)s %(message)s"
+enableLogging = true
+
+[theme]
+base = "light"
+primaryColor = "#1f77b4"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f2f6"
+textColor = "#262730"
+font = "sans serif"
+
+[global]
+developmentMode = false
+logLevel = "info"
+unitTest = false
