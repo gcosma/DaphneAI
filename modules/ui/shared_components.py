@@ -1,12 +1,17 @@
 # ===============================================
-# FILE: modules/ui/shared_components.py (COMPLETE VERSION)
+# FILE: modules/ui/shared_components.py - COMPLETE FIXED VERSION
 # ===============================================
+
 import streamlit as st
 import logging
+import os
 from typing import Tuple, List, Dict, Any
 from datetime import datetime
 import json
-import os
+
+# ===============================================
+# SESSION STATE MANAGEMENT
+# ===============================================
 
 def initialize_session_state():
     """Initialize all session state variables"""
@@ -16,7 +21,7 @@ def initialize_session_state():
         # Document management
         st.session_state.uploaded_documents = []
         
-        # Extraction results - Updated for recommendations
+        # Extraction results
         st.session_state.extracted_recommendations = []
         st.session_state.extracted_concerns = []  # Keep for backward compatibility
         st.session_state.extraction_results = {}
@@ -43,7 +48,7 @@ def initialize_session_state():
         st.session_state.current_tab = "upload"
         st.session_state.export_ready = False
         
-        # New extraction-specific states
+        # Extraction-specific states
         st.session_state.selected_extraction_docs = []
         st.session_state.extraction_method_used = None
         st.session_state.last_extraction_timestamp = None
@@ -56,6 +61,10 @@ def initialize_session_state():
         st.session_state.batch_size = 10
         st.session_state.use_advanced_ai = True
         st.session_state.model_temperature = 0.1
+
+# ===============================================
+# HEADER AND NAVIGATION
+# ===============================================
 
 def render_header():
     """Render the main application header with status indicators"""
@@ -103,7 +112,85 @@ def render_navigation_tabs():
     return tabs
 
 # ===============================================
-# SIDEBAR AND ERROR HANDLING FUNCTIONS
+# ERROR HANDLING FUNCTIONS
+# ===============================================
+
+def add_error_message(message: str, error_type: str = "error"):
+    """Add an error message to the session state"""
+    if 'error_messages' not in st.session_state:
+        st.session_state.error_messages = []
+    
+    st.session_state.error_messages.append({
+        'message': message,
+        'type': error_type,
+        'timestamp': datetime.now().isoformat()
+    })
+
+def show_error_messages():
+    """Show any pending error messages"""
+    if 'error_messages' in st.session_state and st.session_state.error_messages:
+        for error in st.session_state.error_messages[-3:]:  # Show last 3 errors
+            if error['type'] == 'error':
+                st.error(error['message'])
+            elif error['type'] == 'warning':
+                st.warning(error['message'])
+            elif error['type'] == 'info':
+                st.info(error['message'])
+            elif error['type'] == 'success':
+                st.success(error['message'])
+
+def clear_error_messages():
+    """Clear all error messages"""
+    if 'error_messages' in st.session_state:
+        st.session_state.error_messages = []
+
+def display_error_messages():
+    """Display any pending error messages (alias for show_error_messages)"""
+    show_error_messages()
+
+# ===============================================
+# PROGRESS INDICATOR FUNCTIONS
+# ===============================================
+
+def show_progress_indicator(current: int = None, total: int = None, message: str = "Processing..."):
+    """Show a progress indicator - supports both simple spinner and progress bar modes
+    
+    Args:
+        current: Current progress value (for progress bar mode)
+        total: Total progress value (for progress bar mode)  
+        message: Message to display
+        
+    Returns:
+        Context manager for spinner mode, or None for progress bar mode
+    """
+    
+    # Progress bar mode: if both current and total are provided
+    if current is not None and total is not None:
+        if total > 0:
+            progress = current / total
+            st.progress(progress, text=f"{message}: {current}/{total}")
+        else:
+            st.info(f"{message}...")
+        return None  # No context manager for progress bar mode
+    
+    # Spinner mode: if called with just message or no arguments
+    elif isinstance(current, str):
+        # Handle case where first arg is actually the message
+        return st.spinner(current)
+    else:
+        # Default spinner mode
+        return st.spinner(message)
+
+def render_progress_indicator(current: int, total: int, description: str = "Processing"):
+    """Render a progress indicator (alternative function name for compatibility)"""
+    if total > 0:
+        progress = current / total
+        st.progress(progress, text=f"{description}: {current}/{total}")
+    else:
+        st.info(f"{description}...")
+
+# ===============================================
+# SIDEBAR AND API STATUS FUNCTIONS
 # ===============================================
 
 def render_sidebar_info():
@@ -124,121 +211,26 @@ def render_sidebar_info():
                 **To enable AI features:**
                 1. Get an API key from [OpenAI](https://platform.openai.com/api-keys)
                 2. Set environment variable: `OPENAI_API_KEY=your_key`
-                3. Or upload a `.env` file with your key
-                
-                **Current functionality without API key:**
-                - ✅ Document upload and processing
-                - ✅ Pattern-based extraction  
-                - ✅ Mock AI responses for testing
-                - ❌ Real AI-powered extraction
-                - ❌ BERT annotation
+                3. Restart the application
                 """)
         
         # Processing status
         status = st.session_state.get('processing_status', 'idle')
         if status == 'idle':
-            st.info("🟡 Status: Ready")
+            st.success("✅ System Ready")
         elif status == 'processing':
-            st.warning("🟠 Status: Processing...")
+            st.warning("⏳ Processing...")
         elif status == 'error':
-            st.error("🔴 Status: Error")
+            st.error("❌ System Error")
         
-        # Quick stats
-        st.subheader("📊 Quick Stats")
-        st.write(f"Documents: {len(st.session_state.get('uploaded_documents', []))}")
-        st.write(f"Recommendations: {len(st.session_state.get('extracted_recommendations', []))}")
-        st.write(f"Annotations: {len(st.session_state.get('annotation_results', {}))}")
-        
-        # Settings
-        st.subheader("⚙️ Settings")
-        
-        # Processing settings
-        batch_size = st.slider("Batch Size", 1, 20, st.session_state.get('batch_size', 10))
-        st.session_state.batch_size = batch_size
-        
-        # Model settings
-        if st.checkbox("Use Advanced AI", value=st.session_state.get('use_advanced_ai', True)):
-            st.session_state.use_advanced_ai = True
-            model_temp = st.slider("Temperature", 0.0, 1.0, st.session_state.get('model_temperature', 0.1))
-            st.session_state.model_temperature = model_temp
-        else:
-            st.session_state.use_advanced_ai = False
-        
-        # Debug mode
-        if st.checkbox("Debug Mode"):
-            st.session_state.debug_mode = True
-            display_debug_info()
-        else:
-            st.session_state.debug_mode = False
-
-def show_error_messages():
-    """Show any pending error messages"""
-    if 'error_messages' in st.session_state and st.session_state.error_messages:
-        for error in st.session_state.error_messages[-3:]:  # Show last 3 errors
-            if error['type'] == 'error':
-                st.error(error['message'])
-            elif error['type'] == 'warning':
-                st.warning(error['message'])
-            elif error['type'] == 'info':
-                st.info(error['message'])
-            elif error['type'] == 'success':
-                st.success(error['message'])
-
-def clear_error_messages():
-    """Clear all error messages"""
-    if 'error_messages' in st.session_state:
-        st.session_state.error_messages = []
-
-def add_error_message(message: str, error_type: str = "error"):
-    """Add an error message to the session state"""
-    if 'error_messages' not in st.session_state:
-        st.session_state.error_messages = []
-    
-    st.session_state.error_messages.append({
-        'message': message,
-        'type': error_type,
-        'timestamp': datetime.now().isoformat()
-    })
-
-def display_error_messages():
-    """Display any pending error messages (alias for show_error_messages)"""
-    show_error_messages()
-
-# ===============================================
-# PROGRESS AND PROCESSING FUNCTIONS
-# ===============================================
-
-def show_progress_indicator(current: int = None, total: int = None, message: str = "Processing..."):
-    """Show a progress indicator - supports both simple spinner and progress bar modes"""
-    
-    # If called with 3 arguments (current, total, message) - show progress bar
-    if current is not None and total is not None:
-        if total > 0:
-            progress = current / total
-            st.progress(progress, text=f"{message}: {current}/{total}")
-        else:
-            st.info(f"{message}...")
-        return None  # No context manager for progress bar mode
-    
-    # If called with just message or no arguments - show spinner
-    elif isinstance(current, str):
-        # Handle case where first arg is actually the message
-        return st.spinner(current)
-    else:
-        # Default spinner mode
-        return st.spinner(message)
-
-def render_progress_indicator(current: int, total: int, description: str = "Processing"):
-    """Render a progress indicator (alternative function name for compatibility)"""
-    if total > 0:
-        progress = current / total
-        st.progress(progress, text=f"{description}: {current}/{total}")
-    else:
-        st.info(f"{description}...")
-
-# ===============================================
-# VALIDATION AND UTILITY FUNCTIONS
-# ===============================================
+        # Debug information
+        if st.checkbox("🔍 Show Debug Info"):
+            st.json({
+                'session_keys': list(st.session_state.keys()),
+                'document_count': len(st.session_state.get('uploaded_documents', [])),
+                'recommendation_count': len(st.session_state.get('extracted_recommendations', [])),
+                'processing_status': st.session_state.get('processing_status', 'unknown')
+            })
 
 def validate_api_keys():
     """Validate required API keys - OPTIONAL for this app"""
@@ -269,6 +261,10 @@ def show_ai_status_message():
     else:
         st.info("🔧 Running in pattern-matching mode (no OpenAI API key)")
         st.caption("Upload documents and try pattern-based extraction!")
+
+# ===============================================
+# UTILITY FUNCTIONS
+# ===============================================
 
 def log_user_action(action: str, details: str = ""):
     """Log user actions for debugging"""
@@ -302,6 +298,32 @@ def display_debug_info():
             })
 
 # ===============================================
+# FILE MANAGEMENT UTILITIES
+# ===============================================
+
+def safe_filename(filename: str) -> str:
+    """Create a safe filename for downloads"""
+    import re
+    # Remove or replace unsafe characters
+    safe_name = re.sub(r'[^\w\-_\.]', '_', filename)
+    # Ensure it has an extension
+    if '.' not in safe_name:
+        safe_name += '.txt'
+    return safe_name
+
+def format_file_size(size_bytes: int) -> str:
+    """Format file size in human readable format"""
+    if size_bytes == 0:
+        return "0 B"
+    
+    size_names = ["B", "KB", "MB", "GB"]
+    import math
+    i = int(math.floor(math.log(size_bytes, 1024)))
+    p = math.pow(1024, i)
+    s = round(size_bytes / p, 2)
+    return f"{s} {size_names[i]}"
+
+# ===============================================
 # MOCK DATA FUNCTIONS (FOR NO API KEY)
 # ===============================================
 
@@ -310,111 +332,58 @@ def generate_mock_recommendations(doc_name: str, num_recommendations: int = 3):
     mock_recommendations = [
         {
             'id': f"REC-{i+1}",
-            'text': f"Sample recommendation {i+1} extracted from {doc_name}. This is a demonstration of pattern-based extraction working without an API key.",
-            'type': 'recommendation',
-            'source_document': doc_name,
+            'text': f"Sample recommendation {i+1} extracted from {doc_name}. This demonstrates pattern-based extraction without an API key.",
+            'source': doc_name,
+            'confidence': 0.85 + (i * 0.05),
+            'extraction_method': 'pattern-based',
             'page_number': i + 1,
-            'confidence': 0.85,
-            'extraction_method': 'pattern_based'
+            'section': f"Section {i+1}"
         }
         for i in range(num_recommendations)
     ]
     return mock_recommendations
 
-def get_mock_annotation_results(recommendations: list):
+def generate_mock_annotation(text: str, frameworks: List[str]):
     """Generate mock annotation results"""
-    mock_themes = ['Communication', 'Process Improvement', 'Training', 'Technology', 'Policy']
+    mock_results = {}
     
-    results = {}
-    for i, rec in enumerate(recommendations):
-        theme = mock_themes[i % len(mock_themes)]
-        results[rec.get('id', f'rec_{i}')] = {
-            'primary_theme': theme,
-            'confidence': 0.78,
-            'all_themes': {theme: 0.78},
-            'method': 'mock_bert'
-        }
+    for framework in frameworks:
+        if framework == "I-SIRch":
+            mock_results[framework] = [
+                {"theme": "System factors", "confidence": 0.75, "keywords": ["process", "system"]},
+                {"theme": "Technology factors", "confidence": 0.65, "keywords": ["technology", "tools"]}
+            ]
+        elif framework == "House of Commons":
+            mock_results[framework] = [
+                {"theme": "Communication", "confidence": 0.80, "keywords": ["communication", "information"]},
+                {"theme": "Workforce pressures", "confidence": 0.70, "keywords": ["staff", "resources"]}
+            ]
     
-    return results
+    return mock_results, {}
 
 # ===============================================
-# ADDITIONAL UTILITY FUNCTIONS
+# EXPORT ALL FUNCTIONS
 # ===============================================
 
-def render_sidebar_controls():
-    """Render sidebar controls for global settings"""
-    with st.sidebar:
-        st.header("⚙️ Settings")
-        
-        # Processing settings
-        st.subheader("Processing Options")
-        batch_size = st.slider("Batch Size", 1, 20, 10)
-        st.session_state.batch_size = batch_size
-        
-        # Model settings
-        st.subheader("AI Model Settings")
-        if st.checkbox("Use Advanced AI", value=True):
-            st.session_state.use_advanced_ai = True
-            model_temp = st.slider("Temperature", 0.0, 1.0, 0.1)
-            st.session_state.model_temperature = model_temp
-        else:
-            st.session_state.use_advanced_ai = False
-
-def safe_get_text_length(text: str) -> int:
-    """Safely get text length"""
-    return len(text) if text else 0
-
-def truncate_text(text: str, max_length: int = 100) -> str:
-    """Truncate text to specified length"""
-    if not text:
-        return ""
-    return text[:max_length] + "..." if len(text) > max_length else text
-
-def format_timestamp(timestamp: str) -> str:
-    """Format timestamp for display"""
-    try:
-        dt = datetime.fromisoformat(timestamp)
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except:
-        return timestamp
-
-def render_document_selector(documents: List[Dict], key_prefix: str = "selector") -> List[Dict]:
-    """Render document selector with checkboxes"""
-    if not documents:
-        st.info("Please upload documents first.")
-        return []
-    
-    st.subheader("📄 Select Documents")
-    
-    # Select all/none controls
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Select All", key=f"{key_prefix}_all"):
-            st.session_state[f"{key_prefix}_selected"] = list(range(len(documents)))
-    
-    with col2:
-        if st.button("Select None", key=f"{key_prefix}_none"):
-            st.session_state[f"{key_prefix}_selected"] = []
-    
-    # Initialize selection state
-    if f"{key_prefix}_selected" not in st.session_state:
-        st.session_state[f"{key_prefix}_selected"] = []
-    
-    # Document checkboxes
-    selected_docs = []
-    for i, doc in enumerate(documents):
-        is_selected = i in st.session_state[f"{key_prefix}_selected"]
-        
-        if st.checkbox(
-            f"📄 {doc.get('name', f'Document {i+1}')} ({len(doc.get('content', ''))} chars)",
-            value=is_selected,
-            key=f"{key_prefix}_{i}"
-        ):
-            if i not in st.session_state[f"{key_prefix}_selected"]:
-                st.session_state[f"{key_prefix}_selected"].append(i)
-            selected_docs.append(doc)
-        else:
-            if i in st.session_state[f"{key_prefix}_selected"]:
-                st.session_state[f"{key_prefix}_selected"].remove(i)
-    
-    return selected_docs
+__all__ = [
+    'initialize_session_state',
+    'render_header',
+    'render_status_indicators', 
+    'render_navigation_tabs',
+    'render_sidebar_info',
+    'add_error_message',
+    'show_error_messages',
+    'clear_error_messages',
+    'display_error_messages',
+    'show_progress_indicator',
+    'render_progress_indicator',
+    'validate_api_keys',
+    'check_ai_availability',
+    'show_ai_status_message',
+    'log_user_action',
+    'display_debug_info',
+    'safe_filename',
+    'format_file_size',
+    'generate_mock_recommendations',
+    'generate_mock_annotation'
+]
