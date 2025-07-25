@@ -1,5 +1,5 @@
 # ===============================================
-# FILE: modules/ui/upload_components.py
+# FILE: modules/ui/upload_components.py (UPDATED VERSION)
 # ===============================================
 
 import streamlit as st
@@ -22,7 +22,7 @@ except ImportError as e:
     logging.error(f"Import error in upload_components: {e}")
     # Create mock classes for development
     class DocumentProcessor:
-        def extract_text_from_pdf(self, path): return None
+        def extract_text_from_pdf(self, path, extract_sections_only=True): return None
     class SecurityValidator:
         @staticmethod
         def validate_file_upload(content, filename): return True
@@ -35,7 +35,7 @@ def render_upload_tab():
     
     st.markdown("""
     Upload PDF documents containing recommendations and responses. The system will automatically 
-    process and categorize them for analysis.
+    process and extract only the relevant sections for analysis.
     """)
     
     # Upload interface
@@ -51,8 +51,19 @@ def render_upload_interface():
     """Render the file upload interface"""
     st.subheader("📤 Upload New Documents")
     
-    # Create upload columns
-    col1, col2 = st.columns([2, 1])
+    # NEW: Add extraction mode selection
+    col1, col2 = st.columns([3, 1])
+    
+    with col2:
+        extraction_mode = st.radio(
+            "Extraction Mode:",
+            options=["Sections Only", "Full Document"],
+            help="Sections Only extracts just recommendations/responses sections (recommended). Full Document extracts everything.",
+            key="extraction_mode"
+        )
+        
+        # Store the choice for processing
+        st.session_state.extract_sections_only = (extraction_mode == "Sections Only")
     
     with col1:
         uploaded_files = st.file_uploader(
@@ -63,11 +74,16 @@ def render_upload_interface():
             key="document_uploader"
         )
     
-    with col2:
-        st.markdown("**Upload Guidelines:**")
+    # Guidelines
+    st.markdown("**Upload Guidelines:**")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
         st.markdown("• Max file size: 100MB")
+    with col2:
         st.markdown("• Supported format: PDF")
-        st.markdown("• Text must be readable (not scanned images)")
+    with col3:
+        st.markdown("• Text must be readable")
+    with col4:
         st.markdown("• Multiple files supported")
     
     # Process uploaded files
@@ -76,13 +92,16 @@ def render_upload_interface():
             process_uploaded_files(uploaded_files)
 
 def process_uploaded_files(uploaded_files: List):
-    """Process uploaded PDF files with comprehensive error handling"""
+    """Process uploaded PDF files with section extraction"""
     processor = DocumentProcessor()
     validator = SecurityValidator()
     
     if not uploaded_files:
         st.warning("No files selected for processing.")
         return
+    
+    # Get user preference for extraction mode
+    extract_sections_only = st.session_state.get('extract_sections_only', True)
     
     # Initialize progress tracking
     total_files = len(uploaded_files)
@@ -91,6 +110,7 @@ def process_uploaded_files(uploaded_files: List):
     
     successful_uploads = 0
     failed_uploads = []
+    sections_summary = {'total_sections': 0, 'recommendations': 0, 'responses': 0}
     
     # Process each file
     for i, uploaded_file in enumerate(uploaded_files):
@@ -121,19 +141,21 @@ def process_uploaded_files(uploaded_files: List):
                 tmp_file_path = tmp_file.name
             
             try:
-                # Extract text and metadata
-                doc_data = processor.extract_text_from_pdf(tmp_file_path)
+                # ✅ UPDATED: Extract text with section extraction option
+                doc_data = processor.extract_text_from_pdf(tmp_file_path, extract_sections_only=extract_sections_only)
                 
                 if doc_data and doc_data.get('content'):
                     # Determine document type
                     doc_type = determine_document_type(doc_data['content'])
                     
-                    # Create document info
+                    # ✅ UPDATED: Create document info with section support
                     doc_info = {
                         'filename': validator.sanitize_filename(uploaded_file.name),
                         'original_filename': uploaded_file.name,
                         'content': doc_data['content'],
                         'metadata': doc_data.get('metadata', {}),
+                        'sections': doc_data.get('sections', []),  # NEW: Add sections data
+                        'extraction_type': doc_data.get('extraction_type', 'unknown'),  # NEW: Track extraction type
                         'document_type': doc_type,
                         'upload_time': datetime.now().isoformat(),
                         'file_size': len(file_content),
@@ -145,7 +167,25 @@ def process_uploaded_files(uploaded_files: List):
                     if doc_info['filename'] not in existing_names:
                         st.session_state.uploaded_documents.append(doc_info)
                         successful_uploads += 1
-                        status_text.success(f"✅ Successfully processed: {uploaded_file.name}")
+                        
+                        # ✅ UPDATED: Better success messaging with section info
+                        sections = doc_data.get('sections', [])
+                        if sections:
+                            sections_count = len(sections)
+                            rec_sections = len([s for s in sections if s['type'] == 'recommendations'])
+                            resp_sections = len([s for s in sections if s['type'] == 'responses'])
+                            
+                            sections_summary['total_sections'] += sections_count
+                            sections_summary['recommendations'] += rec_sections
+                            sections_summary['responses'] += resp_sections
+                            
+                            status_text.success(f"✅ Found {sections_count} relevant sections in: {uploaded_file.name}")
+                            st.info(f"📋 Sections: {rec_sections} recommendations, {resp_sections} responses")
+                        else:
+                            if extract_sections_only:
+                                status_text.warning(f"⚠️ No recommendations/responses sections found in: {uploaded_file.name}")
+                            else:
+                                status_text.success(f"✅ Successfully processed (full document): {uploaded_file.name}")
                     else:
                         status_text.warning(f"⚠️ Duplicate file skipped: {uploaded_file.name}")
                 
@@ -171,9 +211,17 @@ def process_uploaded_files(uploaded_files: List):
     progress_container.empty()
     status_container.empty()
     
-    # Show results summary
+    # ✅ UPDATED: Enhanced results summary with section information
     if successful_uploads > 0:
         st.success(f"✅ Successfully processed {successful_uploads} of {total_files} files!")
+        
+        if extract_sections_only and sections_summary['total_sections'] > 0:
+            st.info(f"""
+            📊 **Sections Summary:**
+            • Total sections found: {sections_summary['total_sections']}
+            • Recommendations sections: {sections_summary['recommendations']}
+            • Responses sections: {sections_summary['responses']}
+            """)
     
     if failed_uploads:
         st.error(f"❌ Failed to process {len(failed_uploads)} files:")
@@ -204,7 +252,8 @@ def determine_document_type(content: str) -> str:
     recommendation_indicators = [
         'recommendation', 'recommend that', 'should implement',
         'must establish', 'needs to', 'ought to', 'suggests that',
-        'proposes that', 'advises that', 'urges that'
+        'proposes that', 'advises that', 'urges that', 'coroner\'s concerns',
+        'matters of concern'
     ]
     
     # Concern indicators
@@ -231,20 +280,25 @@ def determine_document_type(content: str) -> str:
         return 'General Document'
 
 def render_document_library():
-    """Render the document library with management options"""
+    """Render the document library with enhanced section information"""
     if not st.session_state.uploaded_documents:
         st.info("📝 No documents uploaded yet. Upload some PDF files to get started!")
         return
     
     st.subheader("📚 Document Library")
     
-    # Create document summary
+    # ✅ UPDATED: Enhanced document summary with section information
     docs_data = []
     for i, doc in enumerate(st.session_state.uploaded_documents):
+        sections = doc.get('sections', [])
+        sections_info = f"{len(sections)} sections" if sections else "Full document"
+        
         docs_data.append({
             "Index": i,
             "Filename": doc.get('filename', 'Unknown'),
             "Type": doc.get('document_type', 'Unknown'),
+            "Extraction": doc.get('extraction_type', 'unknown'),
+            "Sections": sections_info,
             "Pages": doc.get('metadata', {}).get('page_count', 'N/A'),
             "Size (KB)": round(doc.get('file_size', 0) / 1024, 1),
             "Upload Time": doc.get('upload_time', '')[:19] if doc.get('upload_time') else 'Unknown',
@@ -254,8 +308,8 @@ def render_document_library():
     # Display as interactive dataframe
     df = pd.DataFrame(docs_data)
     
-    # Document type filter
-    col1, col2, col3 = st.columns(3)
+    # Enhanced filters
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         type_filter = st.selectbox(
@@ -265,13 +319,20 @@ def render_document_library():
         )
     
     with col2:
-        sort_by = st.selectbox(
-            "Sort by:",
-            options=['Upload Time', 'Filename', 'Size (KB)', 'Type'],
-            key="doc_sort_by"
+        extraction_filter = st.selectbox(
+            "Filter by Extraction:",
+            options=['All'] + sorted(df['Extraction'].unique().tolist()),
+            key="doc_extraction_filter"
         )
     
     with col3:
+        sort_by = st.selectbox(
+            "Sort by:",
+            options=['Upload Time', 'Filename', 'Size (KB)', 'Type', 'Sections'],
+            key="doc_sort_by"
+        )
+    
+    with col4:
         sort_order = st.selectbox(
             "Order:",
             options=['Descending', 'Ascending'],
@@ -283,6 +344,9 @@ def render_document_library():
     
     if type_filter != 'All':
         filtered_df = filtered_df[filtered_df['Type'] == type_filter]
+    
+    if extraction_filter != 'All':
+        filtered_df = filtered_df[filtered_df['Extraction'] == extraction_filter]
     
     # Sort dataframe
     ascending = sort_order == 'Ascending'
@@ -307,10 +371,10 @@ def render_document_library():
             display_document_details(selected_doc_name)
     
     else:
-        st.warning(f"No documents found matching filter: {type_filter}")
+        st.warning(f"No documents found matching filters.")
 
 def display_document_details(filename: str):
-    """Display detailed information for a selected document"""
+    """Display detailed information for a selected document with section support"""
     # Find the document
     doc = next((d for d in st.session_state.uploaded_documents if d['filename'] == filename), None)
     
@@ -326,6 +390,7 @@ def display_document_details(filename: str):
             st.write("**Basic Information:**")
             st.write(f"• **Original Name:** {doc.get('original_filename', 'N/A')}")
             st.write(f"• **Document Type:** {doc.get('document_type', 'Unknown')}")
+            st.write(f"• **Extraction Type:** {doc.get('extraction_type', 'Unknown')}")
             st.write(f"• **File Size:** {doc.get('file_size', 0):,} bytes")
             st.write(f"• **Upload Time:** {doc.get('upload_time', 'Unknown')}")
         
@@ -337,10 +402,53 @@ def display_document_details(filename: str):
             st.write(f"• **Title:** {metadata.get('title', 'N/A')}")
             st.write(f"• **Created:** {metadata.get('creationDate', 'N/A')}")
         
-        # Content preview
+        # ✅ NEW: Show sections information if available
+        if 'sections' in doc and doc['sections']:
+            st.write("**📋 Sections Found:**")
+            sections = doc['sections']
+            
+            for i, section in enumerate(sections, 1):
+                with st.container():
+                    st.write(f"**Section {i}: {section['type'].title()}**")
+                    
+                    # Create columns for section details
+                    sec_col1, sec_col2 = st.columns(2)
+                    
+                    with sec_col1:
+                        st.write(f"• **Title:** {section['title']}")
+                        st.write(f"• **Pages:** {section['page_start']}-{section['page_end']}")
+                    
+                    with sec_col2:
+                        content_stats = section.get('content_stats', {})
+                        st.write(f"• **Words:** {content_stats.get('word_count', 'Unknown')}")
+                        st.write(f"• **Characters:** {content_stats.get('character_count', 'Unknown')}")
+                    
+                    # Show content preview
+                    content_preview = section.get('content', '')[:200]
+                    if content_preview:
+                        st.text_area(
+                            f"Preview (Section {i}):",
+                            value=content_preview + "..." if len(section.get('content', '')) > 200 else content_preview,
+                            height=80,
+                            disabled=True,
+                            key=f"section_preview_{filename}_{i}"
+                        )
+                    
+                    st.write("---")
+                    
+        elif doc.get('extraction_type') == 'sections_only':
+            st.warning("📋 Document was processed for sections but none were found.")
+            st.markdown("""
+            **Possible reasons:**
+            • Document doesn't contain standard recommendation/response sections
+            • Sections might be formatted differently than expected
+            • Try switching to 'Full Document' extraction mode
+            """)
+        
+        # Content preview (full content)
         content = doc.get('content', '')
         if content:
-            st.write("**Content Preview:**")
+            st.write("**📄 Content Preview:**")
             preview_length = 500
             preview_text = content[:preview_length]
             if len(content) > preview_length:
@@ -351,7 +459,7 @@ def display_document_details(filename: str):
                 value=preview_text,
                 height=100,
                 disabled=True,
-                key=f"preview_{filename}"
+                key=f"full_preview_{filename}"
             )
             
             st.write(f"**Total Content Length:** {len(content):,} characters")
@@ -384,120 +492,230 @@ def render_batch_operations():
             show_document_statistics()
 
 def export_document_list():
-    """Export document list as CSV"""
+    """Export document list as CSV with section information"""
     if not st.session_state.uploaded_documents:
         st.warning("No documents to export.")
         return
     
-    # Prepare export data
+    # ✅ UPDATED: Include section information in export
     export_data = []
     for doc in st.session_state.uploaded_documents:
-        export_data.append({
-            'Filename': doc.get('filename', ''),
-            'Original_Filename': doc.get('original_filename', ''),
-            'Document_Type': doc.get('document_type', ''),
-            'File_Size_Bytes': doc.get('file_size', 0),
-            'Upload_Time': doc.get('upload_time', ''),
-            'Page_Count': doc.get('metadata', {}).get('page_count', ''),
-            'Content_Length': len(doc.get('content', '')),
-            'Processing_Status': doc.get('processing_status', '')
-        })
+        sections = doc.get('sections', [])
+        
+        base_info = {
+            'filename': doc.get('filename', ''),
+            'document_type': doc.get('document_type', ''),
+            'extraction_type': doc.get('extraction_type', ''),
+            'file_size_kb': round(doc.get('file_size', 0) / 1024, 1),
+            'upload_time': doc.get('upload_time', ''),
+            'page_count': doc.get('metadata', {}).get('page_count', ''),
+            'total_sections': len(sections),
+            'recommendations_sections': len([s for s in sections if s['type'] == 'recommendations']),
+            'responses_sections': len([s for s in sections if s['type'] == 'responses'])
+        }
+        
+        if sections:
+            # Add detailed section information
+            for i, section in enumerate(sections, 1):
+                section_info = base_info.copy()
+                section_info.update({
+                    'section_number': i,
+                    'section_type': section['type'],
+                    'section_title': section['title'],
+                    'section_pages': f"{section['page_start']}-{section['page_end']}",
+                    'section_words': section.get('content_stats', {}).get('word_count', 0)
+                })
+                export_data.append(section_info)
+        else:
+            # No sections, just add the base info
+            export_data.append(base_info)
     
-    # Create DataFrame and CSV
+    # Create DataFrame and export
     df = pd.DataFrame(export_data)
-    csv = df.to_csv(index=False).encode('utf-8')
+    csv_data = df.to_csv(index=False)
     
-    # Provide download
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"document_analysis_{timestamp}.csv"
+    
     st.download_button(
-        label="📥 Download Document List CSV",
-        data=csv,
-        file_name=f"document_list_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv",
-        use_container_width=True
+        label="📥 Download CSV",
+        data=csv_data,
+        file_name=filename,
+        mime="text/csv"
     )
     
-    st.success(f"✅ Document list ready for download ({len(export_data)} documents)")
+    st.success(f"✅ Document list exported! {len(export_data)} rows generated.")
 
 def reprocess_all_documents():
-    """Reprocess all uploaded documents"""
-    if st.button("⚠️ Confirm Reprocessing", type="secondary"):
-        st.warning("This will reprocess all documents and may take some time.")
+    """Reprocess all uploaded documents with current settings"""
+    if st.button("⚠️ Confirm Reprocess All", type="secondary"):
+        st.warning("This will reprocess all documents. Current analysis will be lost.")
         
-        # Reset processing status
-        for doc in st.session_state.uploaded_documents:
-            doc['processing_status'] = 'pending'
-        
-        st.info("🔄 Documents marked for reprocessing. This feature is under development.")
-        # TODO: Implement actual reprocessing logic
-
-def clear_all_documents():
-    """Clear all uploaded documents with confirmation"""
-    st.warning("⚠️ This will permanently delete all uploaded documents from the session.")
-    
-    if st.button("🗑️ Confirm Clear All", type="secondary"):
+        # Clear current data
         st.session_state.uploaded_documents = []
         st.session_state.extracted_recommendations = []
         st.session_state.extracted_concerns = []
-        st.session_state.annotation_results = {}
-        st.session_state.matching_results = {}
-        st.success("✅ All documents cleared successfully.")
+        
+        st.success("✅ Documents cleared. Re-upload your files to reprocess with current settings.")
+        st.rerun()
+
+def clear_all_documents():
+    """Clear all uploaded documents"""
+    if st.button("⚠️ Confirm Clear All", type="secondary"):
+        st.session_state.uploaded_documents = []
+        st.session_state.extracted_recommendations = []
+        st.session_state.extracted_concerns = []
+        st.success("✅ All documents cleared!")
         st.rerun()
 
 def show_document_statistics():
-    """Display comprehensive document statistics"""
-    if not st.session_state.uploaded_documents:
-        st.info("No documents to analyze.")
-        return
-    
+    """Show comprehensive document statistics"""
     docs = st.session_state.uploaded_documents
     
-    # Calculate statistics
-    total_docs = len(docs)
-    total_size = sum(doc.get('file_size', 0) for doc in docs)
-    total_pages = sum(
-        doc.get('metadata', {}).get('page_count', 0) 
-        for doc in docs 
-        if isinstance(doc.get('metadata', {}).get('page_count'), int)
-    )
-    total_content = sum(len(doc.get('content', '')) for doc in docs)
+    if not docs:
+        st.warning("No documents to analyze.")
+        return
     
-    # Document type distribution
-    type_counts = {}
+    # ✅ UPDATED: Enhanced statistics with section information
+    st.subheader("📊 Document Statistics")
+    
+    # Basic stats
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Documents", len(docs))
+    
+    with col2:
+        total_size = sum(doc.get('file_size', 0) for doc in docs)
+        st.metric("Total Size", f"{total_size / (1024*1024):.1f} MB")
+    
+    with col3:
+        total_pages = sum(doc.get('metadata', {}).get('page_count', 0) for doc in docs)
+        st.metric("Total Pages", total_pages)
+    
+    with col4:
+        total_sections = sum(len(doc.get('sections', [])) for doc in docs)
+        st.metric("Total Sections", total_sections)
+    
+    # Section breakdown
+    if total_sections > 0:
+        st.subheader("📋 Section Analysis")
+        
+        section_types = {}
+        extraction_types = {}
+        
+        for doc in docs:
+            # Count extraction types
+            ext_type = doc.get('extraction_type', 'unknown')
+            extraction_types[ext_type] = extraction_types.get(ext_type, 0) + 1
+            
+            # Count section types
+            for section in doc.get('sections', []):
+                sec_type = section['type']
+                section_types[sec_type] = section_types.get(sec_type, 0) + 1
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Extraction Types:**")
+            for ext_type, count in extraction_types.items():
+                st.write(f"• {ext_type.replace('_', ' ').title()}: {count}")
+        
+        with col2:
+            st.write("**Section Types:**")
+            for sec_type, count in section_types.items():
+                st.write(f"• {sec_type.replace('_', ' ').title()}: {count}")
+
+# ✅ NEW: Test function to verify section extraction
+def test_section_extraction():
+    """Test function to verify section extraction is working correctly"""
+    st.subheader("🧪 Section Extraction Test")
+    
+    if st.button("Test Section Extraction"):
+        if st.session_state.uploaded_documents:
+            st.write("Testing section extraction on uploaded documents...")
+            
+            for doc in st.session_state.uploaded_documents[:3]:  # Test first 3 docs
+                st.write(f"**Document**: {doc['filename']}")
+                
+                if 'sections' in doc and doc['sections']:
+                    sections = doc['sections']
+                    st.success(f"✅ Found {len(sections)} sections:")
+                    for section in sections:
+                        st.write(f"  - {section['type']}: Pages {section['page_start']}-{section['page_end']}")
+                elif doc.get('extraction_type') == 'sections_only':
+                    st.warning("❌ No sections found - document processed for sections but none detected")
+                else:
+                    st.info("ℹ️ Full document extraction - no section data available")
+                
+                st.write("---")
+        else:
+            st.warning("Upload some documents first to test extraction")
+
+# Initialize session state for uploaded documents
+if 'uploaded_documents' not in st.session_state:
+    st.session_state.uploaded_documents = []
+
+# Initialize other required session state variables
+if 'extracted_recommendations' not in st.session_state:
+    st.session_state.extracted_recommendations = []
+
+if 'extracted_concerns' not in st.session_state:
+    st.session_state.extracted_concerns = []
+
+if 'extract_sections_only' not in st.session_state:
+    st.session_state.extract_sections_only = True  # Default to sections only
+
+
+# Error handling and logging setup
+def setup_upload_logging():
+    """Setup logging for upload components"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
+
+# Utility function for backwards compatibility
+def get_uploaded_documents_summary():
+    """Get summary of uploaded documents for other components"""
+    docs = st.session_state.get('uploaded_documents', [])
+    
+    summary = {
+        'total_documents': len(docs),
+        'documents_with_sections': len([d for d in docs if d.get('sections')]),
+        'total_sections': sum(len(d.get('sections', [])) for d in docs),
+        'section_types': {},
+        'document_types': {}
+    }
+    
+    # Count section and document types
     for doc in docs:
         doc_type = doc.get('document_type', 'Unknown')
-        type_counts[doc_type] = type_counts.get(doc_type, 0) + 1
+        summary['document_types'][doc_type] = summary['document_types'].get(doc_type, 0) + 1
+        
+        for section in doc.get('sections', []):
+            sec_type = section['type']
+            summary['section_types'][sec_type] = summary['section_types'].get(sec_type, 0) + 1
     
-    # Display statistics
-    st.markdown("### 📊 Document Statistics")
+    return summary
+
+
+# Main module initialization
+if __name__ == "__main__":
+    # This would be used for testing the module independently
+    setup_upload_logging()
+    print("Upload components module loaded successfully")
     
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Documents", total_docs)
-    with col2:
-        st.metric("Total Size", f"{total_size / (1024*1024):.1f} MB")
-    with col3:
-        st.metric("Total Pages", total_pages if total_pages > 0 else "N/A")
-    with col4:
-        st.metric("Avg Size", f"{(total_size / total_docs) / 1024:.1f} KB" if total_docs > 0 else "0 KB")
+    # Test imports
+    try:
+        from document_processor import DocumentProcessor
+        print("✅ DocumentProcessor imported successfully")
+    except ImportError as e:
+        print(f"❌ DocumentProcessor import failed: {e}")
     
-    # Document type distribution chart
-    if type_counts:
-        st.markdown("### 📈 Document Type Distribution")
-        type_df = pd.DataFrame(list(type_counts.items()), columns=['Type', 'Count'])
-        st.bar_chart(type_df.set_index('Type'))
-    
-    # Content length distribution
-    st.markdown("### 📝 Content Analysis")
-    content_lengths = [len(doc.get('content', '')) for doc in docs]
-    avg_content_length = sum(content_lengths) / len(content_lengths) if content_lengths else 0
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Avg Content Length", f"{avg_content_length:,.0f} chars")
-    with col2:
-        st.metric("Total Content", f"{total_content:,.0f} chars")
-    
-    # Show content length histogram
-    if content_lengths:
-        content_df = pd.DataFrame({'Content Length': content_lengths})
-        st.bar_chart(content_df)
+    try:
+        from core_utils import SecurityValidator
+        print("✅ SecurityValidator imported successfully")
+    except ImportError as e:
+        print(f"❌ SecurityValidator import failed: {e}")
