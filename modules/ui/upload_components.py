@@ -78,7 +78,7 @@ def render_upload_interface():
     st.markdown("**Upload Guidelines:**")
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.markdown("• Max file size: 100MB")
+        st.markdown("• Max file size: 500MB")
     with col2:
         st.markdown("• Supported format: PDF")
     with col3:
