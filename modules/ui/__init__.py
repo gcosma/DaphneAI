@@ -28,20 +28,61 @@ try:
     from .upload_components import render_upload_tab
     UPLOAD_COMPONENTS_AVAILABLE = True
     logging.info("✅ Upload components imported successfully")
-except ImportError as e:
+except ImportError as upload_error:
     UPLOAD_COMPONENTS_AVAILABLE = False
-    logging.error(f"❌ Failed to import upload components: {e}")
+    logging.error(f"❌ Failed to import upload components: {upload_error}")
     
     def render_upload_tab():
-        """Fallback upload tab"""
+        """Fallback upload tab with basic functionality"""
         st.header("📁 Document Upload & Management")
-        st.error("❌ Upload component not available")
-        st.info("""
+        st.warning("⚠️ Upload component not available - using fallback mode")
+        
+        st.markdown(f"""
+        **Import Error:** `{str(upload_error)}`
+        
         **Troubleshooting:**
         1. Check that `modules/ui/upload_components.py` exists
         2. Verify all dependencies are installed
         3. Check the application logs for detailed errors
         """)
+        
+        # Basic file uploader fallback
+        st.subheader("🚧 Basic File Upload (Fallback Mode)")
+        uploaded_file = st.file_uploader(
+            "Choose a PDF file",
+            type=['pdf'],
+            help="Upload your PDF document here"
+        )
+        
+        if uploaded_file is not None:
+            st.success(f"✅ File uploaded: {uploaded_file.name}")
+            st.info("ℹ️ File uploaded successfully, but full processing requires the upload component to be working.")
+            
+            # Show file details
+            file_details = {
+                "Filename": uploaded_file.name,
+                "File size": f"{uploaded_file.size / 1024:.1f} KB",
+                "File type": uploaded_file.type
+            }
+            
+            for key, value in file_details.items():
+                st.write(f"**{key}:** {value}")
+                
+            # Store in session state
+            if 'uploaded_documents' not in st.session_state:
+                st.session_state.uploaded_documents = []
+            
+            # Add to uploaded documents if not already there
+            doc_exists = any(doc['name'] == uploaded_file.name for doc in st.session_state.uploaded_documents)
+            if not doc_exists:
+                st.session_state.uploaded_documents.append({
+                    'name': uploaded_file.name,
+                    'size': uploaded_file.size,
+                    'type': uploaded_file.type,
+                    'status': 'uploaded_fallback'
+                })
+                st.success("📋 Document added to session!")
+        
         if st.button("🔄 Retry Import"):
             st.rerun()
 
