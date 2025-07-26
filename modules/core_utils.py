@@ -1,751 +1,566 @@
-# ===============================================
-# FILE: modules/core_utils.py (COMPLETE VERSION)
-# ===============================================
+# modules/core_utils.py
+# COMPLETE CORE UTILITIES FILE - With all missing classes and functions
 
-import re
 import logging
-import unicodedata
-import hashlib
-import base64
-from datetime import datetime
-from typing import Dict, List, Any, Optional, Union, Tuple
-from pathlib import Path
-import pandas as pd
-import urllib3
-from sklearn.feature_extraction.text import TfidfVectorizer
-import io
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.utils import get_column_letter
-import math
-import plotly.express as px
-import plotly.graph_objects as go
-import streamlit as st
-import time
+import re
 import os
-import zipfile
-import asyncio
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s: %(message)s",
-    handlers=[logging.FileHandler("app.log"), logging.StreamHandler()],
-)
-
-# Disable SSL warnings
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# Global headers for all requests
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Connection": "keep-alive",
-    "Referer": "https://judiciary.uk/",
-}
+import time
+import hashlib
+import pandas as pd
+from datetime import datetime
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Any, Optional, Tuple, Union
+from pathlib import Path
+import streamlit as st
 
 # ===============================================
-# TEXT CLEANING AND PROCESSING
+# MISSING DATACLASSES - CRITICAL FIXES
 # ===============================================
 
-def clean_text(text: str) -> str:
-    """Clean text while preserving structure and metadata formatting"""
-    if not text:
-        return ""
-
-    try:
-        text = str(text)
-        text = unicodedata.normalize("NFKD", text)
-
-        # Character replacements for common encoding issues
-        replacements = {
-            "â€™": "'", "â€œ": '"', "â€": '"', "â€¦": "...", 'â€"': "-", "â€¢": "•",
-            "Â": " ", "\u200b": "", "\uf0b7": "", "\u2019": "'", "\u201c": '"',
-            "\u201d": '"', "\u2013": "-", "\u2022": "•",
+@dataclass
+class AnnotationResult:
+    """
+    Result from annotation process - THIS WAS MISSING AND CAUSING ERRORS
+    """
+    content_item: Any
+    content_type: str
+    annotations: Dict[str, List[Dict[str, Any]]]
+    annotation_time: str
+    confidence_score: float = 0.0
+    processing_time: float = 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization"""
+        return {
+            'content_type': self.content_type,
+            'annotations': self.annotations,
+            'annotation_time': self.annotation_time,
+            'confidence_score': self.confidence_score,
+            'processing_time': self.processing_time
         }
+    
+    def get_themes_by_framework(self, framework_name: str) -> List[Dict[str, Any]]:
+        """Get themes for a specific framework"""
+        return self.annotations.get(framework_name, [])
+    
+    def get_all_themes(self) -> List[str]:
+        """Get all theme names across all frameworks"""
+        themes = []
+        for framework_annotations in self.annotations.values():
+            for annotation in framework_annotations:
+                if 'theme' in annotation:
+                    themes.append(annotation['theme'])
+        return list(set(themes))
 
-        for encoded, replacement in replacements.items():
-            text = text.replace(encoded, replacement)
-
-        # Remove HTML tags
-        text = re.sub(r"<[^>]+>", "", text)
+@dataclass
+class Recommendation:
+    """Recommendation data model"""
+    text: str
+    document_source: str
+    section_title: str = ""
+    recommendation_number: str = ""
+    confidence: float = 0.0
+    extraction_method: str = "unknown"
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        """Validate and clean up recommendation data"""
+        self.text = str(self.text).strip()
+        self.document_source = str(self.document_source).strip()
         
-        # Keep only printable characters and newlines
-        text = "".join(
-            char if char.isprintable() or char == "\n" else " " for char in text
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return asdict(self)
+
+@dataclass
+class Response:
+    """Response data model"""
+    text: str
+    document_source: str
+    response_type: str = "unknown"  # accepted, rejected, partial, etc.
+    related_recommendation: str = ""
+    confidence: float = 0.0
+    extraction_method: str = "unknown"
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return asdict(self)
+
+@dataclass
+class ProcessingStats:
+    """Statistics for processing operations"""
+    total_documents: int = 0
+    processed_documents: int = 0
+    failed_documents: int = 0
+    total_recommendations: int = 0
+    annotated_recommendations: int = 0
+    matched_recommendations: int = 0
+    processing_time: float = 0.0
+    errors: List[str] = field(default_factory=list)
+    
+    def add_error(self, error: str):
+        """Add an error to the stats"""
+        self.errors.append(f"{datetime.now().isoformat()}: {error}")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return asdict(self)
+
+@dataclass
+class ExtractionConfig:
+    """Configuration for recommendation extraction"""
+    method: str = "hybrid"  # "ai", "pattern", "hybrid"
+    confidence_threshold: float = 0.6
+    max_recommendations: int = 100
+    include_context: bool = True
+    min_text_length: int = 20
+    
+    def validate(self) -> bool:
+        """Validate configuration"""
+        return (
+            self.confidence_threshold >= 0.0 and self.confidence_threshold <= 1.0 and
+            self.max_recommendations > 0 and
+            self.min_text_length > 0
         )
-        
-        # Normalize whitespace
-        text = re.sub(r" +", " ", text)
-        text = re.sub(r"\n+", "\n", text)
-
-        return text.strip()
-
-    except Exception as text_error:
-        logging.error(f"Error in clean_text: {text_error}")
-        return ""
-
-def clean_text_for_modeling(text: str) -> str:
-    """Clean text for BERT modeling and machine learning"""
-    if not text:
-        return ""
-
-    try:
-        text = clean_text(text)
-        text = text.lower()
-
-        # Remove dates, times, and reference numbers
-        text = re.sub(r"\b\d{4}[-/]\d{2}[-/]\d{2}\b", "", text)
-        text = re.sub(r"\b\d{1,2}:\d{2}\b", "", text)
-        text = re.sub(r"\bref\w*\s*[-:\s]?\s*\w+[-\d]+\b", "", text, flags=re.IGNORECASE)
-        
-        # Remove legal terms that don't add semantic value
-        legal_terms = r"\b(coroner|inquest|hearing|evidence|witness|statement|report|dated|signed)\b"
-        text = re.sub(legal_terms, "", text, flags=re.IGNORECASE)
-
-        # Keep only letters and spaces
-        text = re.sub(r"[^a-z\s]", " ", text)
-        text = re.sub(r"\s+", " ", text)
-        
-        # Remove short words (less than 3 characters)
-        text = " ".join(word for word in text.split() if len(word) > 2)
-
-        return text.strip() if len(text.split()) >= 3 else ""
-
-    except Exception as modeling_error:
-        logging.error(f"Error in clean_text_for_modeling: {modeling_error}")
-        return ""
-
-def extract_concern_text(content: str) -> str:
-    """
-    Enhanced: Extract complete concern text from PDF report content with robust section handling
-    
-    This version handles government documents and inquiry reports with improved pattern matching.
-    """
-    if pd.isna(content) or not isinstance(content, str):
-        return ""
-
-    try:
-        # Enhanced concern section identifiers for various document types
-        concern_patterns = [
-            # Standard coroner patterns
-            r"CORONER'S\s+CONCERNS?:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            r"MATTERS?\s+OF\s+CONCERN:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            r"The\s+MATTERS?\s+OF\s+CONCERN:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            
-            # Variations with "are" after the identifier
-            r"CORONER'S\s+CONCERNS?\s+are:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            r"MATTERS?\s+OF\s+CONCERN\s+are:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            r"CONCERNS?\s+IDENTIFIED:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            
-            # Handle OCR issues where spaces are missing
-            r"TheMATTERS?\s*OF\s*CONCERN:?\s*(.*?)(?=ACTION\s+SHOULD\s+BE\s+TAKEN|CONCLUSIONS|YOUR\s+RESPONSE|COPIES|SIGNED:|DATED\s+THIS|NEXT\s+STEPS|YOU\s+ARE\s+UNDER\s+A\s+DUTY|$)",
-            
-            # Government inquiry patterns (generic for any inquiry)
-            r"(?i)(?:key\s+)?concerns?:?\s*(.*?)(?=recommendations?|next\s+steps|conclusions?|$)",
-            r"(?i)matters?\s+of\s+concern:?\s*(.*?)(?=recommendations?|next\s+steps|conclusions?|$)",
-            r"(?i)issues?\s+identified:?\s*(.*?)(?=recommendations?|next\s+steps|conclusions?|$)",
-        ]
-        
-        # Enhanced text normalization to handle PDF extraction issues
-        content_norm = _normalize_pdf_text(content)
-        
-        # Try each pattern and keep the longest/best match
-        best_concerns_text = ""
-        best_confidence = 0.0
-        
-        for pattern in concern_patterns:
-            try:
-                matches = re.finditer(pattern, content_norm, re.IGNORECASE | re.DOTALL | re.MULTILINE)
-                
-                for match in matches:
-                    extracted_text = match.group(1).strip()
-                    
-                    if extracted_text:
-                        # Calculate confidence score for this extraction
-                        confidence = _calculate_extraction_confidence(extracted_text, pattern)
-                        
-                        # Keep the best extraction based on length and confidence
-                        if (len(extracted_text) > len(best_concerns_text) and confidence >= best_confidence) or confidence > best_confidence + 0.1:
-                            best_concerns_text = extracted_text
-                            best_confidence = confidence
-                            
-            except re.error as regex_error:
-                logging.warning(f"Regex error with pattern: {pattern[:50]}... Error: {regex_error}")
-                continue
-        
-        # Post-process the extracted text
-        if best_concerns_text:
-            return _post_process_concerns_text(best_concerns_text)
-        
-        return ""
-        
-    except Exception as extract_error:
-        logging.error(f"Error in extract_concern_text: {extract_error}")
-        return ""
-
-def _normalize_pdf_text(text: str) -> str:
-    """Normalize PDF text to handle common extraction issues"""
-    if not text:
-        return ""
-    
-    # Basic normalization - collapse whitespace but preserve structure
-    text = ' '.join(text.split())
-    
-    # Fix common OCR issues
-    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)  # Add spaces between words
-    text = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', text)  # Add spaces before numbers
-    text = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', text)  # Add spaces after numbers
-    
-    # Normalize punctuation spacing
-    text = re.sub(r'\s*:\s*', ': ', text)
-    text = re.sub(r'\s*\.\s*', '. ', text)
-    
-    return text
-
-def _calculate_extraction_confidence(text: str, pattern: str) -> float:
-    """Calculate confidence score for extracted text"""
-    confidence = 0.5  # Base confidence
-    
-    # Length bonus (longer extractions generally more complete)
-    if len(text) > 100:
-        confidence += 0.2
-    if len(text) > 300:
-        confidence += 0.1
-    
-    # Content quality indicators
-    if any(word in text.lower() for word in ['concern', 'risk', 'death', 'future', 'safety']):
-        confidence += 0.1
-    
-    # Structure indicators (numbered points, paragraphs)
-    if re.search(r'\d+\.', text):
-        confidence += 0.1
-    
-    return min(confidence, 1.0)
-
-def _post_process_concerns_text(text: str) -> str:
-    """Clean and post-process extracted concerns text"""
-    if not text:
-        return ""
-    
-    # Remove leading/trailing whitespace
-    text = text.strip()
-    
-    # Clean up excessive whitespace
-    text = re.sub(r'\s+', ' ', text)
-    
-    # Try to end at a complete sentence if text seems cut off
-    if not text.endswith(('.', '!', '?', ':')):
-        # Find the last complete sentence
-        last_period = text.rfind('.')
-        last_exclamation = text.rfind('!')
-        last_question = text.rfind('?')
-        
-        last_punctuation = max(last_period, last_exclamation, last_question)
-        
-        # If we found punctuation and it's in the latter part of the text, cut there
-        if last_punctuation != -1 and last_punctuation > len(text) * 0.7:
-            text = text[:last_punctuation + 1].strip()
-    
-    # Remove any leftover artifacts
-    text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
-    text = re.sub(r'^[:\-\s]+', '', text)  # Remove leading punctuation
-    
-    return text.strip()
 
 # ===============================================
 # SECURITY AND VALIDATION
 # ===============================================
 
 class SecurityValidator:
-    """Security validation for file operations and user input"""
+    """Security validation utilities with support for large files up to Streamlit limits"""
     
-    @staticmethod
-    def validate_file_upload(file_content: bytes, filename: str) -> bool:
-        """Validate uploaded files for security"""
-        MAX_SIZE = 500 * 1024 * 1024  # 500MB limit
+    def __init__(self, max_file_size_mb: int = 200):  # Default to Streamlit's 200MB limit
+        self.logger = logging.getLogger(__name__)
+        self.max_file_size = max_file_size_mb * 1024 * 1024  # Convert MB to bytes
+        self.allowed_extensions = {'.pdf', '.txt', '.docx', '.doc'}
+        self.chunk_size = 8192  # 8KB chunks for memory-efficient processing
         
-        if len(file_content) > MAX_SIZE:
-            raise ValueError(f"File too large: {len(file_content)/1024/1024:.1f}MB > {MAX_SIZE/1024/1024}MB")
+        # Log the current limit
+        self.logger.info(f"SecurityValidator initialized with {max_file_size_mb}MB file size limit")
         
-        allowed_extensions = {'.pdf', '.txt', '.docx', '.xlsx', '.csv', '.json'}
-        file_ext = Path(filename).suffix.lower()
-        if file_ext not in allowed_extensions:
-            raise ValueError(f"Invalid file type: {file_ext}")
+        # Warn if limit is higher than Streamlit default
+        if max_file_size_mb > 200:
+            self.logger.warning(
+                f"File size limit ({max_file_size_mb}MB) exceeds Streamlit's default 200MB. "
+                "Ensure server.maxUploadSize is configured in .streamlit/config.toml"
+            )
         
-        # Additional validation for PDF files
-        if file_ext == '.pdf':
-            if not file_content.startswith(b'%PDF'):
-                raise ValueError("Invalid PDF file format")
-        
-        return True
+    def validate_file_upload(self, file_content: bytes, filename: str) -> Tuple[bool, str]:
+        """Validate uploaded file for security - supports up to 500MB"""
+        try:
+            # Size check
+            file_size_mb = len(file_content) / (1024 * 1024)
+            if len(file_content) > self.max_file_size:
+                return False, f"File too large: {file_size_mb:.1f}MB > {self.max_file_size/(1024*1024)}MB"
+            
+            # Extension check
+            file_ext = Path(filename).suffix.lower()
+            if file_ext not in self.allowed_extensions:
+                return False, f"File type not allowed: {file_ext}"
+            
+            # Basic content validation for PDFs
+            if file_ext == '.pdf':
+                if not file_content.startswith(b'%PDF'):
+                    return False, "Invalid PDF file format"
+                
+                # Additional PDF validation for large files
+                if len(file_content) > 50 * 1024 * 1024:  # 50MB+
+                    if not self._validate_large_pdf(file_content):
+                        return False, "Large PDF file appears corrupted"
+            
+            self.logger.info(f"File validation passed: {filename} ({file_size_mb:.1f}MB)")
+            return True, f"File validation passed ({file_size_mb:.1f}MB)"
+            
+        except Exception as e:
+            self.logger.error(f"File validation error: {e}")
+            return False, f"Validation error: {str(e)}"
     
-    @staticmethod
-    def sanitize_filename(filename: str) -> str:
-        """Sanitize filename for safe storage"""
-        filename = os.path.basename(filename)
-        filename = re.sub(r'[^\w\-_\.]', '_', filename)
-        
-        # Ensure filename isn't too long
-        if len(filename) > 255:
-            name, ext = os.path.splitext(filename)
-            filename = name[:255-len(ext)] + ext
-        
-        return filename
+    def _validate_large_pdf(self, file_content: bytes) -> bool:
+        """Validate large PDF files using streaming approach"""
+        try:
+            # Check for PDF trailer at end
+            last_chunk = file_content[-1024:] if len(file_content) > 1024 else file_content
+            if b'%%EOF' not in last_chunk and b'endobj' not in last_chunk:
+                return False
+            
+            # Check for essential PDF structures in chunks
+            chunk_size = 64 * 1024  # 64KB chunks
+            essential_found = {'xref': False, 'obj': False}
+            
+            for i in range(0, min(len(file_content), 5 * chunk_size), chunk_size):
+                chunk = file_content[i:i + chunk_size]
+                if b'xref' in chunk:
+                    essential_found['xref'] = True
+                if b'obj' in chunk:
+                    essential_found['obj'] = True
+                
+                if all(essential_found.values()):
+                    break
+            
+            return any(essential_found.values())  # At least one essential structure found
+            
+        except Exception as e:
+            self.logger.error(f"Large PDF validation error: {e}")
+            return False
     
-    @staticmethod
-    def validate_text_input(text: str, max_length: int = 10000) -> str:
-        """Sanitize and validate text input"""
-        if not text:
+    def validate_file_stream(self, file_stream, filename: str, max_size_mb: int = 500) -> Tuple[bool, str]:
+        """Validate file stream without loading entire file into memory"""
+        try:
+            file_ext = Path(filename).suffix.lower()
+            if file_ext not in self.allowed_extensions:
+                return False, f"File type not allowed: {file_ext}"
+            
+            # Read first chunk to validate format
+            first_chunk = file_stream.read(8192)
+            file_stream.seek(0)  # Reset stream position
+            
+            if file_ext == '.pdf' and not first_chunk.startswith(b'%PDF'):
+                return False, "Invalid PDF file format"
+            
+            # Estimate file size by seeking to end
+            file_stream.seek(0, 2)  # Seek to end
+            file_size = file_stream.tell()
+            file_stream.seek(0)  # Reset to beginning
+            
+            file_size_mb = file_size / (1024 * 1024)
+            if file_size > max_size_mb * 1024 * 1024:
+                return False, f"File too large: {file_size_mb:.1f}MB > {max_size_mb}MB"
+            
+            return True, f"Stream validation passed ({file_size_mb:.1f}MB)"
+            
+        except Exception as e:
+            self.logger.error(f"Stream validation error: {e}")
+            return False, f"Stream validation error: {str(e)}"
+    
+    def sanitize_text(self, text: str) -> str:
+        """Sanitize text input"""
+        if not isinstance(text, str):
             return ""
         
-        # Convert to string and limit length
-        text = str(text)[:max_length]
-        
-        # Remove potentially harmful content
-        text = re.sub(r'<script.*?</script>', '', text, flags=re.IGNORECASE | re.DOTALL)
-        text = re.sub(r'javascript:', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'on\w+\s*=', '', text, flags=re.IGNORECASE)
-        
-        # Normalize whitespace
-        text = re.sub(r'\s+', ' ', text)
-        
-        return text.strip()
+        # Remove potentially dangerous characters
+        sanitized = re.sub(r'[<>"\']', '', text)
+        sanitized = re.sub(r'\s+', ' ', sanitized)
+        return sanitized.strip()
     
-    @staticmethod
-    def validate_search_query(query: str) -> Tuple[bool, str]:
-        """Validate search query for safety"""
-        if not query or not query.strip():
-            return False, "Search query cannot be empty"
+    def validate_user_input(self, input_data: Dict[str, Any]) -> Tuple[bool, List[str]]:
+        """Validate user input data - supports large content up to 500MB"""
+        errors = []
         
-        query = query.strip()
+        # Check for required fields
+        required_fields = ['filename', 'content']
+        for field in required_fields:
+            if field not in input_data or not input_data[field]:
+                errors.append(f"Missing required field: {field}")
         
-        if len(query) < 3:
-            return False, "Search query must be at least 3 characters"
+        # Validate content length - increased limits for large files
+        if 'content' in input_data:
+            content = str(input_data['content'])
+            if len(content) < 10:
+                errors.append("Content too short (minimum 10 characters)")
+            elif len(content) > 500 * 1024 * 1024:  # 500MB text limit
+                errors.append("Content too long (maximum 500MB)")
         
-        if len(query) > 1000:
-            return False, "Search query too long (max 1000 characters)"
-        
-        # Check for potential injection attempts
-        suspicious_patterns = [
-            r'union\s+select', r'drop\s+table', r'delete\s+from',
-            r'insert\s+into', r'update\s+.*set'
-        ]
-        
-        for pattern in suspicious_patterns:
-            if re.search(pattern, query, re.IGNORECASE):
-                return False, "Query contains suspicious content"
-        
-        return True, "Valid search query"
-    
-    @staticmethod
-    def get_file_hash(file_content: bytes) -> str:
-        """Generate hash for file content"""
-        return hashlib.sha256(file_content).hexdigest()
+        return len(errors) == 0, errors
 
 # ===============================================
-# METADATA EXTRACTION
+# LARGE FILE PROCESSING UTILITIES
 # ===============================================
 
-def extract_metadata(content: str) -> Dict[str, Any]:
-    """Extract metadata from document content"""
-    metadata = {
-        "extraction_date": datetime.now().isoformat(),
-        "content_length": len(content),
-        "word_count": len(content.split()) if content else 0
-    }
+class LargeFileProcessor:
+    """Handle processing of large files up to 500MB efficiently"""
     
-    if not content:
-        return metadata
+    def __init__(self, chunk_size: int = 64 * 1024):  # 64KB default chunk size
+        self.chunk_size = chunk_size
+        self.logger = logging.getLogger(__name__)
     
-    try:
-        # Name patterns for deceased person (coroner reports)
-        name_patterns = [
-            r"(?:In the matter of|Concerning the death of|The death of)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
-            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:died|\s+was)"
-        ]
+    def process_large_text_file(self, file_content: str, processor_func) -> List[Any]:
+        """Process large text files in chunks to avoid memory issues"""
+        if len(file_content) < 1024 * 1024:  # Less than 1MB, process normally
+            return processor_func(file_content)
         
-        for pattern in name_patterns:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                metadata["deceased_name"] = match.group(1).strip()
-                break
+        results = []
+        total_chunks = len(file_content) // self.chunk_size + 1
         
-        # Date patterns
-        date_patterns = [
-            r"Date\s+of\s+report:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})",
-            r"Dated\s+this\s+(\d{1,2}(?:st|nd|rd|th)?\s+\w+\s+\d{4})"
-        ]
-        
-        for pattern in date_patterns:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                metadata["date_of_report"] = match.group(1).strip()
-                break
-        
-        # Government document patterns
-        if re.search(r'(?i)government\s+response', content):
-            metadata["document_type"] = "government_response"
-        elif re.search(r'(?i)inquiry\s+report', content):
-            metadata["document_type"] = "inquiry_report"
-        elif re.search(r'(?i)cabinet\s+office', content):
-            metadata["document_type"] = "cabinet_office_document"
-        
-        return metadata
-        
-    except Exception as metadata_error:
-        logging.error(f"Error extracting metadata: {metadata_error}")
-        return metadata
-
-def extract_government_document_metadata(content: str) -> Dict[str, Any]:
-    """Extract metadata specific to government documents"""
-    metadata = extract_metadata(content)
-    
-    try:
-        # Government-specific patterns
-        gov_patterns = {
-            'department': r'(?i)(?:department\s+for|ministry\s+of|cabinet\s+office)\s+([^.\n]+)',
-            'command_paper': r'(?i)(?:cp|cm|command\s+paper)\s+(\d+)',
-            'isbn': r'(?i)isbn\s+([\d\-]+)',
-            'publication_date': r'(?i)(?:published|may|dated)\s+(\d{4})',
-            'minister': r'(?i)(?:minister\s+for|secretary\s+of\s+state\s+for)\s+([^.\n]+)'
-        }
-        
-        for key, pattern in gov_patterns.items():
-            match = re.search(pattern, content)
-            if match:
-                metadata[key] = match.group(1).strip()
-        
-        # Check for inquiry types (generic patterns for any UK inquiry)
-        inquiry_patterns = {
-            'inquiry_type': r'(?i)(\w+(?:\s+\w+)*)\s+inquiry',
-            'commission_type': r'(?i)(\w+(?:\s+\w+)*)\s+commission',
-            'investigation_type': r'(?i)(\w+(?:\s+\w+)*)\s+investigation',
-            'review_type': r'(?i)(\w+(?:\s+\w+)*)\s+review'
-        }
-        
-        for key, pattern in inquiry_patterns.items():
-            match = re.search(pattern, content)
-            if match:
-                inquiry_name = match.group(1).strip()
-                # Clean up common prefixes
-                inquiry_name = re.sub(r'(?i)^(?:the\s+|public\s+|independent\s+)', '', inquiry_name)
-                metadata[key] = inquiry_name
-                break
-        
-        # Check document classification
-        if re.search(r'(?i)government\s+response', content):
-            metadata['document_classification'] = 'government_response'
-        elif re.search(r'(?i)(?:inquiry\s+report|final\s+report)', content):
-            metadata['document_classification'] = 'inquiry_report'
-        elif re.search(r'(?i)(?:interim\s+report|progress\s+report)', content):
-            metadata['document_classification'] = 'interim_report'
-        elif re.search(r'(?i)terms\s+of\s+reference', content):
-            metadata['document_classification'] = 'terms_of_reference'
-        
-        return metadata
-        
-    except Exception as gov_metadata_error:
-        logging.error(f"Error extracting government metadata: {gov_metadata_error}")
-        return metadata
-
-# ===============================================
-# DATA PROCESSING AND VALIDATION
-# ===============================================
-
-def process_scraped_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Process scraped data with cleaning and validation"""
-    if df is None or len(df) == 0:
-        return df
-    
-    try:
-        # Clean text fields
-        if 'Content' in df.columns:
-            df['Content'] = df['Content'].apply(lambda x: clean_text(str(x)) if pd.notna(x) else "")
-        
-        if 'Title' in df.columns:
-            df['Title'] = df['Title'].apply(lambda x: clean_text(str(x)) if pd.notna(x) else "")
-        
-        # Extract concerns if not already present
-        if 'Extracted_Concerns' not in df.columns and 'Content' in df.columns:
-            df['Extracted_Concerns'] = df['Content'].apply(extract_concern_text)
-        
-        # Process dates
-        if 'date_of_report' in df.columns:
-            df['date_of_report'] = pd.to_datetime(df['date_of_report'], errors='coerce')
-        
-        # Remove completely empty rows
-        df = df.dropna(how='all')
-        
-        # Remove duplicates if ref column exists
-        if 'ref' in df.columns:
-            df = df.drop_duplicates(subset=['ref'], keep='first')
-        
-        return df
-        
-    except Exception as processing_error:
-        logging.error(f"Error processing scraped data: {processing_error}")
-        return df
-
-def is_response_document(row: pd.Series) -> bool:
-    """Check if a document is a response document"""
-    try:
-        for i in range(1, 10):  # Check PDF_1 to PDF_9
-            pdf_name = str(row.get(f"PDF_{i}_Name", "")).lower()
-            if "response" in pdf_name or "reply" in pdf_name:
-                return True
-        return False
-    except Exception as check_error:
-        logging.error(f"Error checking response document: {check_error}")
-        return False
-
-def validate_data(df: pd.DataFrame) -> Dict[str, Any]:
-    """Validate DataFrame and return quality metrics"""
-    validation_result = {
-        "is_valid": True,
-        "row_count": len(df),
-        "column_count": len(df.columns),
-        "issues": [],
-        "warnings": [],
-        "data_quality_score": 0.0
-    }
-    
-    if df.empty:
-        validation_result["is_valid"] = False
-        validation_result["issues"].append("DataFrame is empty")
-        return validation_result
-    
-    try:
-        # Check for required columns
-        required_columns = ['Title', 'Content']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            validation_result["warnings"].append(f"Missing recommended columns: {missing_columns}")
-        
-        # Check for empty content
-        quality_scores = []
-        if 'Content' in df.columns:
-            empty_content = df['Content'].isna().sum() + (df['Content'] == "").sum()
-            if empty_content > 0:
-                validation_result["warnings"].append(f"{empty_content} rows have empty content")
+        for i in range(0, len(file_content), self.chunk_size):
+            chunk = file_content[i:i + self.chunk_size]
             
-            # Content completeness score
-            content_completeness = (len(df) - empty_content) / len(df)
-            quality_scores.append(content_completeness)
-            if content_completeness < 0.8:
-                validation_result["warnings"].append(f"Content completeness: {content_completeness:.1%}")
+            # Ensure we don't cut words in half
+            if i + self.chunk_size < len(file_content):
+                # Find the last complete sentence or word boundary
+                last_sentence = chunk.rfind('.')
+                last_space = chunk.rfind(' ')
+                
+                if last_sentence > len(chunk) - 100:  # Sentence boundary within last 100 chars
+                    chunk = chunk[:last_sentence + 1]
+                elif last_space > len(chunk) - 50:   # Word boundary within last 50 chars
+                    chunk = chunk[:last_space]
+            
+            try:
+                chunk_results = processor_func(chunk)
+                if chunk_results:
+                    results.extend(chunk_results if isinstance(chunk_results, list) else [chunk_results])
+            except Exception as e:
+                self.logger.warning(f"Error processing chunk {i//self.chunk_size + 1}/{total_chunks}: {e}")
+                continue
         
-        # Date completeness
-        if "date_of_report" in df.columns:
-            date_completeness = df["date_of_report"].notna().mean()
-            quality_scores.append(date_completeness)
-            if date_completeness < 0.7:
-                validation_result["warnings"].append(f"Date completeness: {date_completeness:.1%}")
+        return results
+    
+    def extract_text_with_overlap(self, content: str, pattern: str, overlap_size: int = 1000) -> List[str]:
+        """Extract text patterns from large content with overlapping chunks"""
+        if len(content) < self.chunk_size:
+            matches = re.findall(pattern, content, re.IGNORECASE | re.MULTILINE)
+            return matches
         
-        # Calculate overall quality score
-        if quality_scores:
-            validation_result["data_quality_score"] = sum(quality_scores) / len(quality_scores)
+        results = []
+        seen_matches = set()
         
-        # Check data quality
-        duplicate_count = df.duplicated().sum()
-        if duplicate_count > 0:
-            validation_result["warnings"].append(f"{duplicate_count} duplicate rows found")
+        for i in range(0, len(content), self.chunk_size - overlap_size):
+            chunk_end = min(i + self.chunk_size, len(content))
+            chunk = content[i:chunk_end]
+            
+            try:
+                matches = re.findall(pattern, chunk, re.IGNORECASE | re.MULTILINE)
+                for match in matches:
+                    # Simple deduplication based on first 100 characters
+                    match_key = match[:100] if isinstance(match, str) else str(match)[:100]
+                    if match_key not in seen_matches:
+                        seen_matches.add(match_key)
+                        results.append(match)
+            except Exception as e:
+                self.logger.warning(f"Pattern matching error in chunk: {e}")
+                continue
         
-        # Check for duplicates based on Title and ref if available
-        if "Title" in df.columns and "ref" in df.columns:
-            duplicate_count = df.duplicated(subset=["Title", "ref"]).sum()
-            if duplicate_count > 0:
-                validation_result["warnings"].append(f"Found {duplicate_count} potential duplicates")
+        return results
+    
+    def memory_efficient_deduplication(self, items: List[Dict[str, Any]], 
+                                     key_field: str = 'text', 
+                                     similarity_threshold: float = 0.9) -> List[Dict[str, Any]]:
+        """Memory-efficient deduplication for large datasets"""
+        if len(items) < 1000:  # Small dataset, use normal deduplication
+            return deduplicate_recommendations(items, similarity_threshold)
         
-        # Check data types
-        if "date_of_report" in df.columns:
-            if not pd.api.types.is_datetime64_any_dtype(df["date_of_report"]):
-                validation_result["warnings"].append("Date column is not in datetime format")
+        # For large datasets, use hash-based deduplication first
+        hash_groups = {}
+        for item in items:
+            text = str(item.get(key_field, ''))
+            text_hash = hashlib.md5(text.encode()).hexdigest()[:16]  # First 16 chars of hash
+            
+            if text_hash not in hash_groups:
+                hash_groups[text_hash] = []
+            hash_groups[text_hash].append(item)
         
-        return validation_result
+        # Then apply similarity deduplication within each hash group
+        deduplicated = []
+        for group in hash_groups.values():
+            if len(group) == 1:
+                deduplicated.extend(group)
+            else:
+                # Apply detailed deduplication only to items with same hash prefix
+                group_deduplicated = deduplicate_recommendations(group, similarity_threshold)
+                deduplicated.extend(group_deduplicated)
         
-    except Exception as validation_error:
-        validation_result["issues"].append(f"Validation error: {validation_error}")
-        validation_result["is_valid"] = False
-        logging.error(f"Data validation error: {validation_error}")
-        return validation_result
+        return deduplicated
+
+# Global large file processor instance
+large_file_processor = LargeFileProcessor()
 
 # ===============================================
-# DOCUMENT STRUCTURE ANALYSIS
+# LOGGING AND MONITORING
 # ===============================================
 
-def detect_inquiry_document_structure(content: str) -> Dict[str, Any]:
-    """Detect the structure and type of inquiry document"""
-    structure_info = {
-        'has_recommendations': False,
-        'has_responses': False,
-        'has_table_of_contents': False,
-        'has_numbered_sections': False,
-        'document_structure': 'unknown',
-        'estimated_recommendations': 0,
-        'estimated_responses': 0
+def log_user_action(action: str, details: Dict[str, Any] = None, user_id: str = "anonymous"):
+    """Log user actions for monitoring"""
+    logger = logging.getLogger("user_actions")
+    
+    log_entry = {
+        'timestamp': datetime.now().isoformat(),
+        'user_id': user_id,
+        'action': action,
+        'details': details or {}
     }
     
-    try:
-        content_lower = content.lower()
-        
-        # Check for recommendations
-        rec_indicators = [
-            r'(?i)\brecommendations?\b',
-            r'(?i)\brecommend\s+that\b',
-            r'(?i)\bshould\s+(?:be|ensure|implement)\b',
-            r'(?i)\bmust\s+(?:be|ensure|implement)\b'
-        ]
-        
-        for pattern in rec_indicators:
-            if re.search(pattern, content):
-                structure_info['has_recommendations'] = True
-                break
-        
-        # Count potential recommendations
-        numbered_recs = len(re.findall(r'(?i)(?:^|\n)\s*(?:recommendation\s+)?\d+[\.\)]\s', content))
-        structure_info['estimated_recommendations'] = numbered_recs
-        
-        # Check for responses
-        resp_indicators = [
-            r'(?i)\bresponse\s+to\b',
-            r'(?i)\bgovernment\s+(?:accepts?|rejects?|agrees?)\b',
-            r'(?i)\b(?:accepted|rejected|partially\s+accepted)\b',
-            r'(?i)\bimplementation\s+(?:plan|strategy)\b'
-        ]
-        
-        for pattern in resp_indicators:
-            if re.search(pattern, content):
-                structure_info['has_responses'] = True
-                break
-        
-        # Count potential responses
-        numbered_resps = len(re.findall(r'(?i)(?:^|\n)\s*(?:response\s+to\s+)?(?:recommendation\s+)?\d+[:\.\)]\s', content))
-        structure_info['estimated_responses'] = numbered_resps
-        
-        # Check for table of contents
-        toc_indicators = [
-            r'(?i)(?:table\s+of\s+)?contents',
-            r'(?i)list\s+of\s+chapters',
-            r'(?i)\d+\.\d+\s+[A-Z]'  # Pattern like "1.5 Recommendations"
-        ]
-        
-        for pattern in toc_indicators:
-            if re.search(pattern, content):
-                structure_info['has_table_of_contents'] = True
-                break
-        
-        # Check for numbered sections
-        numbered_sections = len(re.findall(r'(?:^|\n)\s*\d+\.\d+\s+[A-Z]', content))
-        if numbered_sections >= 3:
-            structure_info['has_numbered_sections'] = True
-        
-        # Determine document structure
-        if structure_info['has_recommendations'] and structure_info['has_responses']:
-            structure_info['document_structure'] = 'combined_inquiry_and_response'
-        elif structure_info['has_recommendations']:
-            structure_info['document_structure'] = 'inquiry_report'
-        elif structure_info['has_responses']:
-            structure_info['document_structure'] = 'government_response'
-        elif structure_info['has_table_of_contents']:
-            structure_info['document_structure'] = 'structured_document'
-        
-        return structure_info
-        
-    except Exception as structure_error:
-        logging.error(f"Error detecting document structure: {structure_error}")
-        return structure_info
+    logger.info(f"USER_ACTION: {log_entry}")
 
-def extract_inquiry_themes(content: str) -> List[str]:
-    """Extract common themes from inquiry documents"""
-    themes = []
-    
-    try:
-        content_lower = content.lower()
-        
-        # Common inquiry themes (generic patterns for any inquiry)
-        theme_patterns = {
-            'safety': r'(?i)\b(?:safety|safe|unsafe|hazard|risk|danger)\b',
-            'communication': r'(?i)\b(?:communication|inform|notif|alert|warn)\b',
-            'training': r'(?i)\b(?:training|education|competenc|skill|qualif)\b',
-            'procedure': r'(?i)\b(?:procedure|process|protocol|guideline|standard)\b',
-            'oversight': r'(?i)\b(?:oversight|supervis|monitor|audit|review)\b',
-            'resource': r'(?i)\b(?:resource|funding|staff|budget|capacity)\b',
-            'governance': r'(?i)\b(?:governance|management|leadership|accountab)\b',
-            'technology': r'(?i)\b(?:technology|system|equipment|software|digital)\b',
-            'culture': r'(?i)\b(?:culture|attitude|behavior|mindset)\b',
-            'transparency': r'(?i)\b(?:transparen|open|disclosure|public)\b'
-        }
-        
-        for theme, pattern in theme_patterns.items():
-            if len(re.findall(pattern, content)) >= 3:  # At least 3 mentions
-                themes.append(theme)
-        
-        return themes
-        
-    except Exception as theme_error:
-        logging.error(f"Error extracting themes: {theme_error}")
-        return themes
+def setup_logging(log_level: str = "INFO"):
+    """Setup application logging"""
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper()),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler('app.log', mode='a')
+        ]
+    )
 
 # ===============================================
-# UTILITY FUNCTIONS
+# DATA PROCESSING UTILITIES
 # ===============================================
 
-def format_date_uk(date_input: Union[str, datetime]) -> str:
-    """Format date in UK format"""
-    if pd.isna(date_input):
+def clean_extracted_text(text: str) -> str:
+    """Clean and normalize extracted text"""
+    if not isinstance(text, str):
         return ""
     
+    # Remove extra whitespace
+    cleaned = re.sub(r'\s+', ' ', text)
+    
+    # Remove special characters but keep punctuation
+    cleaned = re.sub(r'[^\w\s\.,!?;:\-\(\)"\']', '', cleaned)
+    
+    # Normalize quotes
+    cleaned = re.sub(r'["""]', '"', cleaned)
+    cleaned = re.sub(r'[''']', "'", cleaned)
+    
+    return cleaned.strip()
+
+def extract_recommendation_number(text: str) -> Optional[str]:
+    """Extract recommendation number from text"""
+    patterns = [
+        r'Recommendation\s+(\d+[a-z]*)',
+        r'R(\d+[a-z]*)',
+        r'(\d+[a-z]*)\s*[:\.)]\s*',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    
+    return None
+
+def calculate_text_similarity(text1: str, text2: str) -> float:
+    """Calculate basic text similarity score"""
+    if not text1 or not text2:
+        return 0.0
+    
+    # Simple word overlap similarity
+    words1 = set(text1.lower().split())
+    words2 = set(text2.lower().split())
+    
+    if not words1 or not words2:
+        return 0.0
+    
+    intersection = words1.intersection(words2)
+    union = words1.union(words2)
+    
+    return len(intersection) / len(union) if union else 0.0
+
+def deduplicate_recommendations(recommendations: List[Dict[str, Any]], similarity_threshold: float = 0.8) -> List[Dict[str, Any]]:
+    """Remove duplicate recommendations based on text similarity"""
+    if not recommendations:
+        return []
+    
+    unique_recommendations = []
+    
+    for rec in recommendations:
+        is_duplicate = False
+        rec_text = rec.get('text', '')
+        
+        for unique_rec in unique_recommendations:
+            unique_text = unique_rec.get('text', '')
+            similarity = calculate_text_similarity(rec_text, unique_text)
+            
+            if similarity > similarity_threshold:
+                is_duplicate = True
+                # Keep the one with higher confidence
+                if rec.get('confidence', 0) > unique_rec.get('confidence', 0):
+                    unique_recommendations.remove(unique_rec)
+                    unique_recommendations.append(rec)
+                break
+        
+        if not is_duplicate:
+            unique_recommendations.append(rec)
+    
+    return unique_recommendations
+
+def group_by_document_type(data: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    """Group data by document type"""
     try:
-        if isinstance(date_input, str):
-            # Try to parse string date
-            date_obj = pd.to_datetime(date_input)
+        if 'document_type' not in data.columns:
+            return {'all': data}
+        
+        groups = {}
+        for doc_type in data['document_type'].unique():
+            groups[doc_type] = data[data['document_type'] == doc_type]
+        
+        return groups
+        
+    except Exception as e:
+        logging.error(f"Error grouping by document type: {e}")
+        return {'all': data}
+
+def is_response_document(row: pd.Series) -> bool:
+    """Determine if a document row represents a response document"""
+    try:
+        # Check filename for response indicators
+        filename = str(row.get('filename', '')).lower()
+        response_indicators = ['response', 'reply', 'government response', 'answer']
+        
+        for indicator in response_indicators:
+            if indicator in filename:
+                return True
+        
+        # Check title
+        title = str(row.get('title', '')).lower()
+        for indicator in response_indicators:
+            if indicator in title:
+                return True
+        
+        # Check content for response patterns
+        content = str(row.get('content', '')).lower()
+        if any(phrase in content for phrase in ['accepts this recommendation', 'government response', 'in response to']):
+            return True
+        
+        return False
+        
+    except Exception as e:
+        logging.error(f"Error determining document type: {e}")
+        return False
+
+def validate_dataframe_structure(df: pd.DataFrame, required_columns: List[str]) -> Tuple[bool, List[str]]:
+    """Validate DataFrame has required structure"""
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    
+    if missing_columns:
+        return False, missing_columns
+    
+    return True, []
+
+def safe_convert_to_dataframe(data: Any) -> pd.DataFrame:
+    """Safely convert various data types to DataFrame"""
+    try:
+        if isinstance(data, pd.DataFrame):
+            return data
+        elif isinstance(data, list):
+            if data and isinstance(data[0], dict):
+                return pd.DataFrame(data)
+            else:
+                return pd.DataFrame({'data': data})
+        elif isinstance(data, dict):
+            return pd.DataFrame([data])
         else:
-            date_obj = date_input
-        
-        return date_obj.strftime("%d/%m/%Y")
-    except Exception as date_error:
-        logging.error(f"Error formatting date: {date_error}")
-        return str(date_input)
+            return pd.DataFrame()
+    except Exception as e:
+        logging.error(f"Error converting to DataFrame: {e}")
+        return pd.DataFrame()
 
-def create_document_identifier(title: str, date: str = None) -> str:
-    """Create a unique identifier for a document"""
+def deduplicate_dataframe_content(data: pd.DataFrame) -> pd.DataFrame:
+    """Remove duplicate content from DataFrame"""
     try:
-        # Clean title for identifier
-        clean_title = re.sub(r'[^\w\s]', '', title)
-        clean_title = re.sub(r'\s+', '_', clean_title)
-        
-        # Add date if provided
-        if date:
-            clean_date = re.sub(r'[^\d]', '', str(date))
-            return f"{clean_title}_{clean_date}"
-        
-        return clean_title
-        
-    except Exception as id_error:
-        logging.error(f"Error creating document identifier: {id_error}")
-        return "unknown_document"
-
-def deduplicate_documents(data: pd.DataFrame) -> pd.DataFrame:
-    """Deduplicate documents while preserving unique entries"""
-    try:
-        if data is None or len(data) == 0:
+        if data.empty:
             return data
         
-        # Create document identifiers for rows that have the required columns
-        if 'Title' in data.columns:
-            data["doc_id"] = data.apply(lambda row: create_document_identifier(
-                str(row.get("Title", "")), 
-                str(row.get("ref", ""))
-            ), axis=1)
+        # Create a hash column for deduplication
+        if 'content' in data.columns:
+            data['content_hash'] = data['content'].apply(
+                lambda x: hashlib.md5(str(x).encode()).hexdigest() if pd.notna(x) else ''
+            )
             
-            # Remove duplicates based on identifier
-            data_deduped = data.drop_duplicates(subset=["doc_id"], keep="first")
-            
-            # Remove the temporary identifier column
-            data_deduped = data_deduped.drop(columns=["doc_id"])
+            # Remove duplicates based on content hash
+            data_deduped = data.drop_duplicates(subset=['content_hash'], keep='first')
+            data_deduped = data_deduped.drop(columns=['content_hash'])
             
             logging.info(f"Deduplicated {len(data)} -> {len(data_deduped)} documents")
             return data_deduped
@@ -805,326 +620,180 @@ def filter_by_categories(df: pd.DataFrame, categories: List[str]) -> pd.DataFram
         
         return df[df['Category'].isin(categories)]
         
-    except Exception as category_error:
-        logging.error(f"Error filtering by categories: {category_error}")
+    except Exception as filter_error:
+        logging.error(f"Error filtering by categories: {filter_error}")
         return df
 
-def perform_advanced_keyword_search(df: pd.DataFrame, keywords: List[str], search_columns: List[str] = None) -> pd.DataFrame:
-    """Perform advanced keyword search across specified columns"""
-    if not keywords or df.empty:
-        return df
+# ===============================================
+# SESSION STATE MANAGEMENT
+# ===============================================
+
+def initialize_session_state():
+    """Initialize Streamlit session state with default values"""
+    default_values = {
+        'uploaded_documents': [],
+        'extracted_recommendations': [],
+        'extracted_responses': [],
+        'annotation_results': {},
+        'matching_results': {},
+        'processing_stats': ProcessingStats(),
+        'extraction_config': ExtractionConfig(),
+        'current_framework': None,
+        'annotation_frameworks': {},
+        'search_results': [],
+        'vector_store_manager': None,
+        'bert_annotator': None,
+        'last_action': None,
+        'debug_mode': False
+    }
     
-    if search_columns is None:
-        search_columns = ['Title', 'Content', 'Extracted_Concerns']
+    for key, value in default_values.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+def clear_session_state():
+    """Clear all session state data"""
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    initialize_session_state()
+
+def get_session_stats() -> Dict[str, Any]:
+    """Get current session statistics"""
+    return {
+        'documents_uploaded': len(st.session_state.get('uploaded_documents', [])),
+        'recommendations_extracted': len(st.session_state.get('extracted_recommendations', [])),
+        'responses_extracted': len(st.session_state.get('extracted_responses', [])),
+        'annotations_completed': len(st.session_state.get('annotation_results', {})),
+        'frameworks_loaded': len(st.session_state.get('annotation_frameworks', {})),
+        'last_action': st.session_state.get('last_action', 'None')
+    }
+
+# ===============================================
+# ERROR HANDLING AND RECOVERY
+# ===============================================
+
+def handle_processing_error(error: Exception, context: str) -> Dict[str, Any]:
+    """Handle processing errors gracefully"""
+    error_info = {
+        'error_type': type(error).__name__,
+        'error_message': str(error),
+        'context': context,
+        'timestamp': datetime.now().isoformat()
+    }
     
-    # Available columns in dataframe
-    available_columns = [col for col in search_columns if col in df.columns]
+    logging.error(f"Processing error in {context}: {error}")
     
-    if not available_columns:
-        return df
+    # Update session state with error
+    if 'processing_stats' in st.session_state:
+        st.session_state.processing_stats.add_error(f"{context}: {str(error)}")
     
-    try:
-        # Create search mask
-        mask = pd.Series([False] * len(df))
-        
-        for keyword in keywords:
-            keyword_lower = keyword.lower().strip()
-            if not keyword_lower:
-                continue
-                
-            # Search in each column
-            for col in available_columns:
-                col_mask = df[col].astype(str).str.lower().str.contains(
-                    keyword_lower, case=False, na=False, regex=False
-                )
-                mask = mask | col_mask
-        
-        return df[mask]
-        
-    except Exception as search_error:
-        logging.error(f"Error in keyword search: {search_error}")
-        return df
+    return error_info
+
+def validate_processing_pipeline() -> Tuple[bool, List[str]]:
+    """Validate that the processing pipeline is ready"""
+    issues = []
+    
+    # Check session state
+    if 'uploaded_documents' not in st.session_state:
+        issues.append("Session state not properly initialized")
+    
+    # Check uploaded documents
+    docs = st.session_state.get('uploaded_documents', [])
+    if not docs:
+        issues.append("No documents uploaded")
+    
+    # Check document content
+    valid_docs = 0
+    for doc in docs:
+        if isinstance(doc, dict) and doc.get('content'):
+            valid_docs += 1
+    
+    if valid_docs == 0:
+        issues.append("No documents contain readable content")
+    
+    return len(issues) == 0, issues
+
+# ===============================================
+# PERFORMANCE MONITORING
+# ===============================================
+
+class PerformanceMonitor:
+    """Monitor application performance"""
+    
+    def __init__(self):
+        self.start_times = {}
+        self.metrics = {}
+    
+    def start_timer(self, operation: str):
+        """Start timing an operation"""
+        self.start_times[operation] = time.time()
+    
+    def end_timer(self, operation: str) -> float:
+        """End timing and return duration"""
+        if operation in self.start_times:
+            duration = time.time() - self.start_times[operation]
+            self.metrics[operation] = duration
+            del self.start_times[operation]
+            return duration
+        return 0.0
+    
+    def get_metrics(self) -> Dict[str, float]:
+        """Get all performance metrics"""
+        return self.metrics.copy()
+    
+    def reset_metrics(self):
+        """Reset all metrics"""
+        self.metrics.clear()
+        self.start_times.clear()
+
+# Global performance monitor instance
+performance_monitor = PerformanceMonitor()
 
 # ===============================================
 # EXPORT FUNCTIONS
 # ===============================================
 
-def export_to_excel(df: pd.DataFrame, filename: str = "export.xlsx") -> bytes:
-    """Export DataFrame to Excel with formatting"""
-    try:
-        output = io.BytesIO()
-        
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='Data', index=False)
-            
-            # Get the workbook and worksheet objects
-            workbook = writer.book
-            worksheet = writer.sheets['Data']
-            
-            # Define styles
-            header_font = Font(bold=True, color="FFFFFF")
-            header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-            
-            # Apply header formatting
-            for cell in worksheet[1]:
-                cell.font = header_font
-                cell.fill = header_fill
-                cell.alignment = Alignment(horizontal="center")
-            
-            # Auto-adjust column widths
-            for column in worksheet.columns:
-                max_length = 0
-                column_letter = get_column_letter(column[0].column)
-                
-                for cell in column:
-                    try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
-                    except:
-                        pass
-                
-                adjusted_width = min(max_length + 2, 50)
-                worksheet.column_dimensions[column_letter].width = adjusted_width
-        
-        return output.getvalue()
-        
-    except Exception as export_error:
-        logging.error(f"Error exporting to Excel: {export_error}")
-        return b""
-
-def analyze_document_collection(documents: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Analyze a collection of documents and provide insights"""
-    analysis = {
-        'total_documents': len(documents),
-        'document_types': {},
-        'themes': {},
-        'date_range': {},
-        'quality_metrics': {}
-    }
-    
-    try:
-        if not documents:
-            return analysis
-        
-        # Analyze document types
-        type_counts = {}
-        theme_counts = {}
-        dates = []
-        
-        for doc in documents:
-            # Document type analysis
-            doc_type = doc.get('document_type', 'unknown')
-            type_counts[doc_type] = type_counts.get(doc_type, 0) + 1
-            
-            # Theme analysis
-            doc_themes = doc.get('themes', [])
-            for theme in doc_themes:
-                theme_counts[theme] = theme_counts.get(theme, 0) + 1
-            
-            # Date analysis
-            doc_date = doc.get('date_of_report')
-            if doc_date:
-                try:
-                    dates.append(pd.to_datetime(doc_date))
-                except:
-                    pass
-        
-        analysis['document_types'] = type_counts
-        analysis['themes'] = theme_counts
-        
-        # Date range analysis
-        if dates:
-            analysis['date_range'] = {
-                'earliest': min(dates).strftime('%Y-%m-%d'),
-                'latest': max(dates).strftime('%Y-%m-%d'),
-                'span_years': (max(dates) - min(dates)).days / 365.25
-            }
-        
-        return analysis
-        
-    except Exception as analysis_error:
-        logging.error(f"Error analyzing document collection: {analysis_error}")
-        return analysis
-
-def generate_insights_report(analysis: Dict[str, Any]) -> str:
-    """Generate a text report from document analysis"""
-    try:
-        report_lines = [
-            "# Document Collection Analysis Report",
-            f"Generated on: {datetime.now().strftime('%d/%m/%Y %H:%M')}",
-            "",
-            "## Overview",
-            f"Total Documents: {analysis.get('total_documents', 0)}",
-            ""
-        ]
-        
-        # Document types section
-        doc_types = analysis.get('document_types', {})
-        if doc_types:
-            report_lines.extend([
-                "## Document Types",
-                ""
-            ])
-            for doc_type, count in sorted(doc_types.items(), key=lambda x: x[1], reverse=True):
-                percentage = (count / analysis['total_documents']) * 100
-                report_lines.append(f"- {doc_type.title()}: {count} ({percentage:.1f}%)")
-            report_lines.append("")
-        
-        # Themes section
-        themes = analysis.get('themes', {})
-        if themes:
-            report_lines.extend([
-                "## Common Themes",
-                ""
-            ])
-            for theme, count in sorted(themes.items(), key=lambda x: x[1], reverse=True)[:10]:
-                report_lines.append(f"- {theme.title()}: {count} documents")
-            report_lines.append("")
-        
-        # Date range section
-        date_range = analysis.get('date_range', {})
-        if date_range:
-            report_lines.extend([
-                "## Date Range",
-                f"- Earliest Document: {date_range.get('earliest', 'Unknown')}",
-                f"- Latest Document: {date_range.get('latest', 'Unknown')}",
-                f"- Time Span: {date_range.get('span_years', 0):.1f} years",
-                ""
-            ])
-        
-        return "\n".join(report_lines)
-        
-    except Exception as report_error:
-        logging.error(f"Error generating insights report: {report_error}")
-        return "Error generating report"
-
-# ===============================================
-# STREAMLIT HELPERS
-# ===============================================
-
-def create_download_link(data: bytes, filename: str, link_text: str) -> str:
-    """Create a download link for Streamlit"""
-    try:
-        b64_data = base64.b64encode(data).decode()
-        return f'<a href="data:application/octet-stream;base64,{b64_data}" download="{filename}">{link_text}</a>'
-    except Exception as link_error:
-        logging.error(f"Error creating download link: {link_error}")
-        return "Download unavailable"
-
-def display_progress_bar(current: int, total: int, text: str = "Processing"):
-    """Display a progress bar in Streamlit"""
-    try:
-        if total > 0:
-            progress = current / total
-            st.progress(progress, text=f"{text}: {current}/{total} ({progress:.1%})")
-        else:
-            st.info("No items to process")
-    except Exception as progress_error:
-        logging.error(f"Error displaying progress: {progress_error}")
-
-# ===============================================
-# ADVANCED SEARCH AND FILTERING
-# ===============================================
-
-def create_text_search_index(df: pd.DataFrame, text_columns: List[str] = None) -> Dict[str, Any]:
-    """Create a text search index for faster searching"""
-    if text_columns is None:
-        text_columns = ['Title', 'Content', 'Extracted_Concerns']
-    
-    try:
-        # Combine text from specified columns
-        combined_text = []
-        available_columns = [col for col in text_columns if col in df.columns]
-        
-        for idx, row in df.iterrows():
-            text_parts = []
-            for col in available_columns:
-                if pd.notna(row[col]):
-                    text_parts.append(str(row[col]))
-            combined_text.append(" ".join(text_parts))
-        
-        # Create TF-IDF vectorizer
-        vectorizer = TfidfVectorizer(
-            max_features=5000,
-            stop_words='english',
-            ngram_range=(1, 2),
-            min_df=1,
-            max_df=0.95
-        )
-        
-        # Fit and transform
-        tfidf_matrix = vectorizer.fit_transform(combined_text)
-        
-        return {
-            'vectorizer': vectorizer,
-            'matrix': tfidf_matrix,
-            'feature_names': vectorizer.get_feature_names_out()
-        }
-        
-    except Exception as index_error:
-        logging.error(f"Error creating search index: {index_error}")
-        return {}
-
-def search_with_index(search_index: Dict[str, Any], query: str, top_k: int = 10) -> List[int]:
-    """Search using the text index and return document indices"""
-    try:
-        if not search_index or not query:
-            return []
-        
-        vectorizer = search_index['vectorizer']
-        tfidf_matrix = search_index['matrix']
-        
-        # Transform query
-        query_vector = vectorizer.transform([query])
-        
-        # Calculate similarities
-        from sklearn.metrics.pairwise import cosine_similarity
-        similarities = cosine_similarity(query_vector, tfidf_matrix).flatten()
-        
-        # Get top results
-        top_indices = similarities.argsort()[-top_k:][::-1]
-        
-        # Filter out results with very low similarity
-        threshold = 0.01
-        relevant_indices = [idx for idx in top_indices if similarities[idx] > threshold]
-        
-        return relevant_indices
-        
-    except Exception as search_error:
-        logging.error(f"Error searching with index: {search_error}")
-        return []
-
-# ===============================================
-# MODULE EXPORTS
-# ===============================================
-
 __all__ = [
-    'clean_text',
-    'clean_text_for_modeling', 
-    'extract_concern_text',
+    # Data classes
+    'AnnotationResult',
+    'Recommendation', 
+    'Response',
+    'ProcessingStats',
+    'ExtractionConfig',
+    
+    # Security and validation
     'SecurityValidator',
-    'extract_metadata',
-    'extract_government_document_metadata',
-    'process_scraped_data',
+    'log_user_action',
+    'setup_logging',
+    
+    # Large file processing
+    'LargeFileProcessor',
+    'large_file_processor',
+    
+    # Data processing
+    'clean_extracted_text',
+    'extract_recommendation_number',
+    'calculate_text_similarity',
+    'deduplicate_recommendations',
+    'group_by_document_type',
     'is_response_document',
-    'validate_data',
-    'detect_inquiry_document_structure',
-    'extract_inquiry_themes',
-    'format_date_uk',
-    'create_document_identifier',
-    'deduplicate_documents',
+    'validate_dataframe_structure',
+    'safe_convert_to_dataframe',
+    'deduplicate_dataframe_content',
     'combine_document_text',
     'filter_by_document_types',
     'filter_by_categories',
-    'perform_advanced_keyword_search',
-    'export_to_excel',
-    'analyze_document_collection',
-    'generate_insights_report',
-    'create_download_link',
-    'display_progress_bar',
-    'create_text_search_index',
-    'search_with_index',
-    '_normalize_pdf_text',
-    '_calculate_extraction_confidence',
-    '_post_process_concerns_text'
+    
+    # Session state management
+    'initialize_session_state',
+    'clear_session_state',
+    'get_session_stats',
+    
+    # Error handling
+    'handle_processing_error',
+    'validate_processing_pipeline',
+    
+    # Performance monitoring
+    'PerformanceMonitor',
+    'performance_monitor'
 ]
