@@ -409,9 +409,9 @@ def clean_extracted_text(text: str) -> str:
     # Remove special characters but keep punctuation
     cleaned = re.sub(r'[^\w\s\.,!?;:\-\(\)"\']', '', cleaned)
     
-    # Normalize quotes
+    # Normalize quotes - FIXED VERSION
     cleaned = re.sub(r'["""]', '"', cleaned)
-    cleaned = re.sub(r'[''']', "'", cleaned)
+    cleaned = re.sub(r'[\u2018\u2019]', "'", cleaned)  # Use Unicode escapes for smart quotes
     
     return cleaned.strip()
 
