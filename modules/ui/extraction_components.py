@@ -1,418 +1,582 @@
-# ===============================================
-# COMPLETE modules/ui/extraction_components.py
-# Enhanced extraction with RAG integration
-# ===============================================
+# modules/ui/extraction_components.py
+# COMPLETE ENHANCED FILE - Enhanced patterns for Government Response documents
 
 import streamlit as st
 import pandas as pd
 import logging
 import re
-import json
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
-import os
+from typing import List, Dict, Any, Optional
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# RAG Integration - Import with fallbacks
+# Fix the Document import issue that's causing errors
 try:
-    from .rag_components import render_rag_extraction_interface
+    from langchain.schema import Document
+except ImportError:
+    try:
+        from langchain_core.documents import Document
+    except ImportError:
+        # Create a simple Document class fallback
+        class Document:
+            def __init__(self, page_content: str, metadata: Dict = None):
+                self.page_content = page_content
+                self.metadata = metadata or {}
+
+# Import RAG components with error handling
+try:
+    from modules.ui.rag_components import render_rag_extraction_interface
     RAG_COMPONENTS_AVAILABLE = True
-    logger.info("✅ RAG components imported successfully")
+    logging.info("✅ RAG components imported successfully")
 except ImportError as e:
     RAG_COMPONENTS_AVAILABLE = False
-    logger.warning(f"⚠️ RAG components not available: {e}")
-    
+    logging.error(f"❌ RAG components import failed: {e}")
+
 try:
-    from modules.rag_extractor import is_rag_available, get_rag_status
+    from modules.rag_extractor import IntelligentRAGExtractor
     RAG_EXTRACTOR_AVAILABLE = True
-    logger.info("✅ RAG extractor imported successfully")
+    logging.info("✅ RAG extractor imported successfully")
 except ImportError as e:
     RAG_EXTRACTOR_AVAILABLE = False
-    logger.warning(f"⚠️ RAG extractor not available: {e}")
+    logging.error(f"❌ RAG extractor import failed: {e}")
 
-# AI Integration - Import with fallbacks
-try:
-    import openai
-    AI_AVAILABLE = bool(os.getenv('OPENAI_API_KEY'))
-except ImportError:
-    AI_AVAILABLE = False
+def get_enhanced_extraction_patterns():
+    """
+    Comprehensive patterns based on Government Response documents
+    These patterns will capture every variation of recommendations and responses
+    """
+    
+    # RECOMMENDATION PATTERNS - From inquiry/original documents
+    recommendation_patterns = [
+        # Direct numbered recommendations (most common in your docs)
+        r'(?i)Recommendation\s+(\d+[a-z]*(?:\s*[)\]])*(?:\s*[iv]+)*)\s*[:\.)]\s*([^.!?]*(?:[.!?]|(?=Recommendation)|$))',
+        
+        # Sub-recommendations with letters/roman numerals  
+        r'(?i)Recommendation\s+\d+[a-z]*\s*\)\s*([iv]+)\s*\)\s*([^.!?]*(?:[.!?]|(?=Recommendation)|$))',
+        
+        # We recommend/suggest patterns
+        r'(?i)(?:We|I|The\s+(?:committee|panel|inquiry|report))\s+(?:recommend|suggest|propose)\s+(?:that\s+)?([^.!?]{20,500}[.!?])',
+        
+        # Should/must/ought patterns for requirements
+        r'(?i)(?:should|must|ought\s+to|need\s+to)\s+be\s+([^.!?]{20,400}[.!?])',
+        
+        # Action required patterns
+        r'(?i)(?:action\s+(?:required|needed|should\s+be\s+taken)|steps?\s+(?:should|must)\s+be\s+taken)\s*:?\s*([^.!?]{20,400}[.!?])',
+        
+        # Formal recommendation language
+        r'(?i)(?:it\s+is\s+recommended|the\s+following\s+recommendation|this\s+recommendation)\s*:?\s*([^.!?]{20,400}[.!?])',
+        
+        # Framework/system establishment
+        r'(?i)(?:framework|system|process|mechanism)\s+(?:should|must)\s+be\s+(?:established|created|implemented|developed)\s+(?:for\s+|to\s+)?([^.!?]{20,400}[.!?])',
+        
+        # Training/education recommendations
+        r'(?i)(?:training|education|guidance)\s+(?:should|must)\s+be\s+(?:provided|given|delivered)\s+(?:to\s+)?([^.!?]{20,400}[.!?])',
+        
+        # Review/monitoring recommendations
+        r'(?i)(?:review|monitor|assess|evaluate)\s+(?:should|must)\s+be\s+(?:conducted|carried\s+out|undertaken)\s*([^.!?]{20,400}[.!?])',
+        
+        # Progress recommendations
+        r'(?i)(?:progress\s+(?:in\s+)?implementation|next\s+steps)\s+(?:should|must)\s+be\s+([^.!?]{20,400}[.!?])',
+        
+        # That clauses with recommendations
+        r'(?i)(?:recommend|suggest|propose)\s+that\s+([^.!?]{20,500}[.!?])',
+    ]
+    
+    # RESPONSE PATTERNS - From government response documents
+    response_patterns = [
+        # Core acceptance patterns (your most important ones)
+        r'(?i)(?:This\s+recommendation|Recommendation\s+\d+[a-z]*(?:\s*[)\]])*(?:\s*[iv]+)*)\s+is\s+(?:accepted\s+in\s+full|accepted\s+in\s+principle|not\s+accepted|partially\s+accepted|rejected)\s*(?:by\s+(?:the\s+)?(?:UK\s+Government|Scottish\s+Government|Welsh\s+Government|Northern\s+Ireland\s+Executive|Government))?\.?\s*([^.!?]*(?:[.!?]|(?=Recommendation)|$))',
+        
+        # Acceptance with implementation details
+        r'(?i)(?:accepted\s+in\s+(?:full|principle)|not\s+accepted|rejected|partially\s+accepted)\s*\.?\s*([^.!?]{20,500}[.!?])',
+        
+        # Government will/commits patterns
+        r'(?i)(?:The\s+(?:UK\s+)?Government|We|The\s+(?:Department|Ministry))\s+(?:will|shall|commits?\s+to|agrees?\s+to|accepts?)\s+([^.!?]{20,500}[.!?])',
+        
+        # Implementation and progress patterns
+        r'(?i)(?:Implementation|Progress|Work)\s+(?:will\s+begin|is\s+underway|has\s+begun|is\s+ongoing)\s*([^.!?]{20,500}[.!?])',
+        
+        # Establishment patterns
+        r'(?i)(?:will\s+establish|is\s+establishing|has\s+established|establish)\s+(?:a\s+)?([^.!?]{20,500}[.!?])',
+        
+        # Review and monitoring responses
+        r'(?i)(?:review|assessment|evaluation)\s+(?:will\s+be|is\s+being|has\s+been)\s+(?:conducted|undertaken|carried\s+out)\s*([^.!?]{20,500}[.!?])',
+        
+        # Funding and resource commitments
+        r'(?i)(?:funding|resources?|investment)\s+(?:will\s+be|has\s+been|is\s+being)\s+(?:provided|allocated|committed)\s*([^.!?]{20,500}[.!?])',
+        
+        # Timeline and deadline responses
+        r'(?i)(?:within\s+\d+\s+(?:months?|years?)|by\s+\d+|during\s+the\s+(?:first|next))\s*([^.!?]{20,500}[.!?])',
+        
+        # Action taken patterns
+        r'(?i)(?:action\s+(?:has\s+been\s+taken|is\s+being\s+taken|will\s+be\s+taken)|measures?\s+(?:have\s+been|are\s+being|will\s+be)\s+(?:implemented|introduced|established))\s*([^.!?]{20,500}[.!?])',
+        
+        # Stakeholder involvement
+        r'(?i)(?:working\s+with|in\s+collaboration\s+with|together\s+with)\s+(?:[^.!?]{5,100})\s+(?:to\s+)?([^.!?]{20,500}[.!?])',
+        
+        # Response with rationale
+        r'(?i)(?:The\s+rationale|This\s+is\s+because|The\s+reason)\s+(?:for\s+this\s+(?:decision|approach|response))?\s*([^.!?]{20,500}[.!?])',
+        
+        # Cross-nation responses (specific to your documents)
+        r'(?i)(?:UK\s+Government|Scottish\s+Government|Welsh\s+Government|Northern\s+Ireland\s+Executive)\s+(?:accepts?|agrees?|will)\s+([^.!?]{20,500}[.!?])',
+        
+        # Quality and safety management responses
+        r'(?i)(?:quality\s+and\s+safety|patient\s+safety|safety\s+management)\s+(?:system|framework|approach)\s*([^.!?]{20,500}[.!?])',
+        
+        # Training and education responses
+        r'(?i)(?:training|education|guidance)\s+(?:will\s+be|is\s+being|has\s+been)\s+(?:provided|delivered|enhanced|improved)\s*([^.!?]{20,500}[.!?])',
+        
+        # Accepting in principle (from your specific document)
+        r'(?i)Accepting\s+in\s+principle\s*([^.!?]*(?:[.!?]|(?=Recommendation)|$))',
+        
+        # Response continuation patterns
+        r'(?i)(?:These\s+recommendations|Parts\s+of\s+these\s+recommendations)\s+are\s+(?:accepted|being\s+taken\s+forward)\s*([^.!?]{20,500}[.!?])',
+    ]
+    
+    return {
+        'recommendation_patterns': recommendation_patterns,
+        'response_patterns': response_patterns
+    }
 
-# ===============================================
-# MAIN EXTRACTION TAB RENDERER
-# ===============================================
+def get_document_content_for_extraction(doc: Dict) -> str:
+    """
+    Extract content from document for processing
+    This function was missing and causing all the import errors!
+    """
+    if not isinstance(doc, dict):
+        return ""
+    
+    # Try different content fields in order of preference
+    content_fields = [
+        'content',           # Primary content field
+        'text',             # Alternative text field
+        'extracted_text',   # OCR or extracted text
+        'page_content',     # PDF page content
+        'raw_text',         # Raw text content
+        'body',             # Document body
+        'full_text',        # Full text content
+        'document_text'     # Document text field
+    ]
+    
+    content = ""
+    
+    # Try each field until we find content
+    for field in content_fields:
+        if field in doc and doc[field]:
+            potential_content = str(doc[field]).strip()
+            if len(potential_content) > len(content):
+                content = potential_content
+    
+    # If no direct content, try to extract from sections
+    if not content and 'sections' in doc and doc['sections']:
+        sections_text = []
+        for section in doc['sections']:
+            if isinstance(section, dict) and 'content' in section:
+                section_content = str(section['content']).strip()
+                if section_content:
+                    sections_text.append(section_content)
+            elif isinstance(section, str) and section.strip():
+                sections_text.append(section.strip())
+        
+        if sections_text:
+            content = '\n\n'.join(sections_text)
+    
+    # Final fallback - try to extract from any string field
+    if not content:
+        for key, value in doc.items():
+            if isinstance(value, str) and len(value) > 100:
+                content = value
+                break
+    
+    return content.strip() if content else ""
 
-def render_extraction_tab():
-    """Main extraction tab with all methods including RAG"""
-    st.header("🔍 Extract Recommendations & Responses")
-    
-    # Check for uploaded documents
-    docs = st.session_state.get('uploaded_documents', [])
-    if not docs:
-        st.info("📁 Please upload documents first in the Upload tab.")
-        return
-    
-    # Display document summary
-    render_document_summary(docs)
-    
-    # Extraction method selection
-    render_extraction_method_selection()
-    
-    # Display any previous results
-    if st.session_state.get('extraction_results'):
-        render_previous_results()
+def get_document_content(doc: Dict) -> str:
+    """
+    Alias for get_document_content_for_extraction to maintain compatibility
+    """
+    return get_document_content_for_extraction(doc)
 
-def render_document_summary(docs: List[Dict]):
-    """Display summary of uploaded documents"""
-    st.markdown("### 📚 Available Documents")
+def validate_document_structure(doc: Dict) -> Dict:
+    """Validate and fix document structure"""
     
-    col1, col2, col3 = st.columns(3)
+    # Ensure required fields exist
+    if 'filename' not in doc:
+        doc['filename'] = f"document_{id(doc)}"
     
-    with col1:
-        st.metric("Total Documents", len(docs))
+    if 'document_type' not in doc:
+        doc['document_type'] = 'unknown'
     
-    with col2:
-        total_pages = sum(doc.get('page_count', 0) for doc in docs)
-        st.metric("Total Pages", total_pages)
-    
-    with col3:
-        total_size = sum(doc.get('size', 0) for doc in docs)
-        st.metric("Total Size", f"{total_size/1024/1024:.1f} MB")
-    
-    # Document list
-    with st.expander("📋 Document Details"):
-        for i, doc in enumerate(docs, 1):
-            filename = doc.get('filename', f'Document {i}')
-            pages = doc.get('page_count', 'Unknown')
-            size = doc.get('size', 0) / 1024 / 1024 if doc.get('size') else 0
-            
-            st.write(f"**{i}.** {filename} - {pages} pages ({size:.1f} MB)")
-
-def render_extraction_method_selection():
-    """Render extraction method selection with all available options"""
-    st.markdown("### 🔧 Extraction Methods")
-    
-    # Build extraction methods list
-    extraction_methods = ["🧠 Smart Complete Extraction (Recommended)"]
-    
-    # Add RAG option if available
-    rag_status = check_rag_availability()
-    if rag_status['available']:
-        extraction_methods.insert(0, "🔬 RAG Intelligent Extraction (Most Advanced) ✅")
+    # Ensure content is available
+    content = get_document_content_for_extraction(doc)
+    if content:
+        doc['content'] = content
+        doc['content_length'] = len(content)
+        doc['has_content'] = True
     else:
-        extraction_methods.insert(0, "🔬 RAG Intelligent Extraction (Most Advanced) ❌")
+        doc['has_content'] = False
+        doc['content'] = ""
+        doc['content_length'] = 0
     
-    # Add other methods
-    extraction_methods.extend([
-        "🤖 AI-Powered Extraction" + (" ✅" if AI_AVAILABLE else " ❌"),
-        "⚡ Standard Pattern Extraction ✅"
-    ])
-    
-    # Method selection
-    extraction_type = st.radio(
-        "Choose extraction method:",
-        extraction_methods,
-        help="RAG provides 95%+ accuracy with complete context understanding"
-    )
-    
-    # Show method info
-    render_method_info(extraction_type)
-    
-    # Handle selected method
-    handle_extraction_method(extraction_type)
+    return doc
 
-def check_rag_availability() -> Dict[str, Any]:
-    """Check comprehensive RAG availability"""
-    status = {
-        'available': False,
-        'components': RAG_COMPONENTS_AVAILABLE,
-        'extractor': RAG_EXTRACTOR_AVAILABLE,
-        'dependencies': False,
-        'message': ''
+def enhanced_pattern_extract(content: str, patterns: List[str], max_results: int = 50, min_length: int = 25) -> List[Dict]:
+    """Enhanced pattern extraction for government documents"""
+    extractions = []
+    seen_content = set()
+    
+    for pattern in patterns:
+        try:
+            matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+            
+            for match in matches:
+                # Extract the full match or the last capturing group
+                if match.groups():
+                    # If there are capturing groups, use the last one (the content)
+                    text = match.group(-1).strip()
+                else:
+                    # If no capturing groups, use the full match
+                    text = match.group().strip()
+                
+                # Filter by length
+                if len(text) < min_length:
+                    continue
+                
+                # Clean up text
+                text = re.sub(r'\s+', ' ', text)
+                text = text.strip()
+                
+                # Check for duplicates
+                text_normalized = text.lower().strip()
+                if text_normalized in seen_content:
+                    continue
+                seen_content.add(text_normalized)
+                
+                # Skip if it's just a recommendation number or header
+                if re.match(r'^(?:Recommendation\s+\d+[a-z]*(?:\s*[)\]])*(?:\s*[iv]+)*)\s*$', text, re.IGNORECASE):
+                    continue
+                
+                extractions.append({
+                    'content': text,
+                    'confidence': 0.85,
+                    'extraction_method': 'enhanced_pattern',
+                    'start_pos': match.start(),
+                    'end_pos': match.end(),
+                    'pattern_used': pattern[:50] + "..." if len(pattern) > 50 else pattern
+                })
+                
+                if len(extractions) >= max_results:
+                    break
+            
+            if len(extractions) >= max_results:
+                break
+                
+        except re.error as e:
+            logging.warning(f"Regex pattern error: {e}")
+            continue
+    
+    return extractions
+
+def basic_pattern_extract(content: str, patterns: List[str], max_results: int = 25, min_length: int = 20) -> List[Dict]:
+    """Basic pattern extraction fallback"""
+    extractions = []
+    seen_content = set()
+    
+    for pattern in patterns:
+        try:
+            matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE)
+            
+            for match in matches:
+                text = match.group().strip()
+                
+                # Filter by length
+                if len(text) < min_length:
+                    continue
+                
+                # Check for duplicates
+                text_normalized = text.lower().strip()
+                if text_normalized in seen_content:
+                    continue
+                seen_content.add(text_normalized)
+                
+                extractions.append({
+                    'content': text,
+                    'confidence': 0.7,
+                    'extraction_method': 'pattern_basic',
+                    'start_pos': match.start(),
+                    'end_pos': match.end()
+                })
+                
+                if len(extractions) >= max_results:
+                    break
+            
+            if len(extractions) >= max_results:
+                break
+                
+        except re.error as e:
+            logging.warning(f"Regex pattern error: {e}")
+            continue
+    
+    return extractions
+
+def store_extraction_results(recommendations: List[Dict], responses: List[Dict], method: str):
+    """Store extraction results in session state"""
+    
+    # Initialize if not exists
+    if 'extraction_results' not in st.session_state:
+        st.session_state.extraction_results = {}
+    
+    # Store results
+    st.session_state.extraction_results = {
+        'recommendations': recommendations,
+        'responses': responses,
+        'method': method,
+        'timestamp': datetime.now(),
+        'total_extracted': len(recommendations) + len(responses)
     }
     
-    if not RAG_COMPONENTS_AVAILABLE:
-        status['message'] = "Missing RAG components module"
-        return status
-    
-    if not RAG_EXTRACTOR_AVAILABLE:
-        status['message'] = "Missing RAG extractor module"
-        return status
-    
-    try:
-        if is_rag_available():
-            status['dependencies'] = True
-            status['available'] = True
-            status['message'] = "RAG fully available"
-        else:
-            status['message'] = "Missing dependencies: sentence-transformers, scikit-learn"
-    except Exception as e:
-        status['message'] = f"RAG check failed: {e}"
-    
-    return status
+    # Update session state flags
+    st.session_state.extracted_recommendations = recommendations
+    st.session_state.extracted_responses = responses
 
-def render_method_info(extraction_type: str):
-    """Display information about selected extraction method"""
+def display_extraction_results():
+    """Display extraction results with enhanced formatting"""
     
-    if extraction_type.startswith("🔬 RAG"):
-        if extraction_type.endswith("✅"):
-            st.success("""
-            **🎉 Most Advanced Extraction Available:**
-            - 🎯 **95%+ Accuracy** - Highest precision available
-            - 🧠 **Complete Context** - Gets full recommendations, not fragments  
-            - ✅ **Self-Validating** - Cross-checks results for quality
-            - 📊 **Quality Metrics** - Detailed confidence scores
-            - 💰 **$0.00 Cost** - Uses local AI models only
-            """)
-        else:
-            st.error("❌ RAG Intelligent Extraction not available")
-            
-    elif extraction_type.startswith("🧠 Smart"):
-        st.info("""
-        **Smart Complete Extraction:**
-        - 🎯 **85%+ Accuracy** - Improved pattern matching
-        - 📝 **Complete Sentences** - Gets full content
-        - 🔍 **Context Aware** - Understands document structure  
-        - ⚡ **Fast Processing** - No external dependencies
-        """)
-        
-    elif extraction_type.startswith("🤖 AI"):
-        if AI_AVAILABLE:
-            st.info("""
-            **AI-Powered Extraction:**
-            - 🤖 **GPT Intelligence** - Uses OpenAI models
-            - 🎯 **90%+ Accuracy** - High-quality results
-            - 🧠 **Semantic Understanding** - Understands meaning
-            - 💰 **Low Cost** - ~$0.01-0.05 per document
-            """)
-        else:
-            st.warning("❌ AI extraction requires OpenAI API key")
-            
-    elif extraction_type.startswith("⚡ Standard"):
-        st.info("""
-        **Standard Pattern Extraction:**
-        - ⚡ **Fast Processing** - Instant results
-        - 🔧 **No Dependencies** - Works everywhere
-        - 📋 **Basic Accuracy** - ~60-70% accuracy
-        - 🆓 **Always Free** - No costs or setup
-        """)
-
-def handle_extraction_method(extraction_type: str):
-    """Route to appropriate extraction method handler"""
-    
-    if extraction_type.startswith("🔬 RAG"):
-        handle_rag_extraction(extraction_type)
-        
-    elif extraction_type.startswith("🧠 Smart"):
-        handle_smart_extraction()
-        
-    elif extraction_type.startswith("🤖 AI"):
-        handle_ai_extraction()
-        
-    elif extraction_type.startswith("⚡ Standard"):
-        handle_pattern_extraction()
-
-# ===============================================
-# RAG EXTRACTION HANDLER
-# ===============================================
-
-def handle_rag_extraction(extraction_type: str):
-    """Handle RAG extraction method"""
-    
-    if extraction_type.endswith("✅"):
-        # RAG is available - render the interface
-        render_rag_extraction_interface()
-        
-    else:
-        # RAG not available - show setup guide
-        render_rag_setup_guide()
-
-def render_rag_setup_guide():
-    """Render RAG setup guide when not available"""
-    st.markdown("### 🔧 RAG Setup Required")
-    
-    rag_status = check_rag_availability()
-    
-    # Show specific issues
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("**📋 Current Status:**")
-        st.write(f"• Components: {'✅' if rag_status['components'] else '❌'}")
-        st.write(f"• Extractor: {'✅' if rag_status['extractor'] else '❌'}")
-        st.write(f"• Dependencies: {'✅' if rag_status['dependencies'] else '❌'}")
-        
-    with col2:
-        st.markdown("**🚀 Setup Steps:**")
-        
-        if not rag_status['dependencies']:
-            st.code("pip install sentence-transformers scikit-learn")
-        
-        if not rag_status['components']:
-            st.write("• Create modules/ui/rag_components.py")
-            
-        if not rag_status['extractor']:
-            st.write("• Create modules/rag_extractor.py")
-    
-    # Benefits explanation
-    with st.expander("🎯 Why RAG is Worth Setting Up"):
-        st.markdown("""
-        **Revolutionary Accuracy Improvement:**
-        
-        | Method | Accuracy | Example Result |
-        |--------|----------|----------------|
-        | **Traditional** | 60-70% | "The Department should" *(fragment)* |
-        | **RAG Intelligent** | **95%+** | "The Department should establish a comprehensive monitoring system to track the implementation of safety protocols across all healthcare facilities..." *(complete)* |
-        
-        **Key Advantages:**
-        - 🎯 **Finds Complete Content** - No more fragments
-        - 🧠 **Understands Context** - Knows what's actually relevant
-        - ✅ **Self-Validates** - Cross-checks results for accuracy
-        - 📊 **Quality Scores** - Know exactly how reliable each result is
-        - 💰 **Zero Ongoing Cost** - Uses local models only
-        """)
-    
-    # Quick setup button
-    if st.button("📋 Show Complete Setup Guide"):
-        show_complete_rag_setup()
-
-def show_complete_rag_setup():
-    """Show detailed RAG setup instructions"""
-    st.markdown("""
-    ### 🔬 Complete RAG Setup Guide
-    
-    **Step 1: Install Dependencies**
-    ```bash
-    pip install sentence-transformers transformers torch scikit-learn
-    ```
-    
-    **Step 2: Create RAG Files**
-    
-    Create these files in your project:
-    - `modules/rag_extractor.py` - RAG extraction engine
-    - `modules/ui/rag_components.py` - RAG interface components
-    
-    **Step 3: Restart Application**
-    ```bash
-    streamlit run app.py
-    ```
-    
-    **System Requirements:**
-    - ~1.5GB disk space for AI models
-    - 4GB+ RAM recommended  
-    - Internet for initial model download
-    
-    **After Setup:**
-    - RAG will show ✅ in the extraction methods
-    - Experience 95%+ extraction accuracy
-    - Get complete recommendations with full context
-    - Detailed quality metrics and confidence scores
-    """)
-
-# ===============================================
-# SMART EXTRACTION HANDLER
-# ===============================================
-
-def handle_smart_extraction():
-    """Handle smart complete extraction"""
-    st.markdown("### 🧠 Smart Complete Extraction")
-    
-    docs = st.session_state.get('uploaded_documents', [])
-    
-    # Document selection
-    doc_options = [f"{doc.get('filename', 'Unknown')}" for doc in docs]
-    selected_docs = st.multiselect(
-        "Select documents to process:",
-        options=doc_options,
-        default=doc_options,
-        help="Smart extraction works well with multiple documents"
-    )
-    
-    if not selected_docs:
-        st.warning("Please select at least one document.")
+    if 'extraction_results' not in st.session_state:
+        st.info("No extraction results available.")
         return
     
-    # Configuration
-    with st.expander("⚙️ Smart Extraction Settings"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            min_length = st.slider("Minimum text length:", 50, 200, 100)
-            max_results = st.slider("Maximum results per type:", 10, 100, 50)
-        
-        with col2:
-            context_window = st.slider("Context window size:", 100, 500, 200)
-            confidence_threshold = st.slider("Confidence threshold:", 0.3, 0.9, 0.6)
+    results = st.session_state.extraction_results
+    recommendations = results.get('recommendations', [])
+    responses = results.get('responses', [])
     
-    # Processing button
-    if st.button("🚀 Start Smart Extraction", type="primary"):
-        process_smart_extraction(
-            selected_docs, docs, min_length, max_results, 
-            context_window, confidence_threshold
-        )
+    st.success(f"✅ Extraction completed using {results.get('method', 'unknown')} method")
+    
+    # Display summary
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Recommendations", len(recommendations))
+    with col2:
+        st.metric("Responses", len(responses))
+    with col3:
+        st.metric("Total Extracted", len(recommendations) + len(responses))
+    
+    # Display results with confidence scores
+    if recommendations:
+        st.subheader("📋 Recommendations Found")
+        for i, rec in enumerate(recommendations[:10], 1):
+            confidence = rec.get('confidence', 0)
+            method = rec.get('extraction_method', 'unknown')
+            with st.expander(f"Recommendation {i} (Confidence: {confidence:.2f}, Method: {method})"):
+                st.write(rec.get('content', ''))
+                
+        if len(recommendations) > 10:
+            st.info(f"... and {len(recommendations) - 10} more recommendations")
+    
+    if responses:
+        st.subheader("💬 Responses Found")
+        for i, resp in enumerate(responses[:10], 1):
+            confidence = resp.get('confidence', 0)
+            method = resp.get('extraction_method', 'unknown')
+            with st.expander(f"Response {i} (Confidence: {confidence:.2f}, Method: {method})"):
+                st.write(resp.get('content', ''))
+                
+        if len(responses) > 10:
+            st.info(f"... and {len(responses) - 10} more responses")
 
-def process_smart_extraction(
-    selected_docs: List[str], 
-    all_docs: List[Dict], 
-    min_length: int,
-    max_results: int,
-    context_window: int, 
-    confidence_threshold: float
-):
-    """Process documents with smart extraction"""
+def render_extraction_tab():
+    """Main extraction tab interface"""
+    st.header("📄 Extract Content")
     
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    # Check if documents are uploaded
+    docs = st.session_state.get('uploaded_documents', [])
+    if not docs:
+        st.warning("⚠️ Please upload documents first in the Upload tab.")
+        return
+    
+    st.info(f"📊 {len(docs)} documents available for extraction")
+    
+    # Extraction method selection
+    method = st.selectbox(
+        "Choose Extraction Method:",
+        ["Enhanced Complete", "Smart Complete", "Pattern Basic", "RAG Intelligent"],
+        help="Different methods for extracting recommendations and responses"
+    )
+    
+    # Method-specific interfaces
+    if method == "Enhanced Complete":
+        render_enhanced_extraction_interface()
+    elif method == "RAG Intelligent" and RAG_COMPONENTS_AVAILABLE:
+        render_rag_extraction_interface()
+    elif method == "Smart Complete":
+        render_smart_extraction_interface()
+    elif method == "Pattern Basic":
+        render_basic_pattern_interface()
+    else:
+        st.error("Selected extraction method is not available")
+        render_enhanced_extraction_interface()  # Fallback to enhanced
+
+def render_enhanced_extraction_interface():
+    """Enhanced extraction interface with government document patterns"""
+    st.subheader("🚀 Enhanced Complete Extraction")
+    st.info("Optimized for UK Government Response documents with comprehensive pattern matching")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        min_length = st.slider("Minimum Length", 20, 200, 25)
+        max_results = st.slider("Max Results per Type", 10, 200, 50)
+    
+    with col2:
+        context_window = st.slider("Context Window", 50, 500, 200)
+        confidence_threshold = st.slider("Confidence Threshold", 0.5, 1.0, 0.7)
+    
+    # Document selection
+    docs = st.session_state.get('uploaded_documents', [])
+    doc_names = [doc.get('filename', f'Document {i+1}') for i, doc in enumerate(docs)]
+    
+    selected_docs = st.multiselect(
+        "Select documents to process:",
+        doc_names,
+        default=doc_names,
+        help="Choose which documents to extract from"
+    )
+    
+    if st.button("🚀 Start Enhanced Extraction", type="primary"):
+        if not selected_docs:
+            st.error("Please select at least one document")
+        else:
+            process_enhanced_extraction(selected_docs, min_length, max_results, context_window, confidence_threshold)
+
+def render_smart_extraction_interface():
+    """Smart extraction interface"""
+    st.subheader("🧠 Smart Complete Extraction")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        min_length = st.slider("Minimum Length", 20, 200, 50)
+        max_results = st.slider("Max Results per Type", 10, 100, 25)
+    
+    with col2:
+        context_window = st.slider("Context Window", 50, 500, 200)
+    
+    if st.button("🚀 Start Smart Extraction", type="primary"):
+        process_smart_extraction(min_length, max_results, context_window)
+
+def render_basic_pattern_interface():
+    """Basic pattern extraction interface"""
+    st.subheader("⚡ Basic Pattern Extraction")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        min_length = st.slider("Minimum Length", 10, 100, 20)
+        max_results = st.slider("Max Results", 5, 50, 25)
+    
+    if st.button("⚡ Start Basic Extraction", type="primary"):
+        process_basic_extraction(min_length, max_results)
+
+def process_enhanced_extraction(selected_docs: List[str], min_length: int, max_results: int, 
+                               context_window: int, confidence_threshold: float):
+    """Process enhanced extraction with government document patterns"""
+    docs = st.session_state.get('uploaded_documents', [])
+    patterns = get_enhanced_extraction_patterns()
     
     all_recommendations = []
     all_responses = []
     
-    # Enhanced patterns for better extraction
-    recommendation_patterns = [
-        r'(?:We\s+|I\s+)?(?:recommend|suggest|propose)\s+(?:that\s+)?[^.!?]*[.!?]',
-        r'(?:The|A|An)\s+(?:Department|Ministry|Government|Committee|Board|Panel|Authority)\s+(?:should|must|ought\s+to|is\s+required\s+to)[^.!?]*[.!?]',
-        r'(?:It\s+is|This\s+is)\s+(?:recommended|suggested|proposed|essential|crucial)\s+(?:that\s+)?[^.!?]*[.!?]',
-        r'(?:Action|Steps?|Measures?|Procedures?)\s+(?:should|must|need\s+to)\s+be\s+(?:taken|implemented|established)[^.!?]*[.!?]',
-        r'(?:Recommendation|Proposal)[\s:]+[^.!?]*[.!?]'
-    ]
+    progress_bar = st.progress(0)
+    status_text = st.empty()
     
-    response_patterns = [
-        r'(?:We|The\s+Government|The\s+Department)\s+(?:accept|agree|acknowledge|will\s+implement|have\s+implemented|are\s+implementing)[^.!?]*[.!?]',
-        r'(?:In\s+response|Response|Reply)\s+(?:to\s+)?[^.!?]*[.!?]',
-        r'(?:This|That)\s+recommendation\s+(?:is|has\s+been|will\s+be|was)[^.!?]*[.!?]',
-        r'(?:Action|Implementation|Progress|Status)[\s:]+[^.!?]*[.!?]',
-        r'(?:Accepted|Agreed|Implemented|Rejected|Partially\s+accepted)[^.!?]*[.!?]'
-    ]
-    
-    selected_doc_objects = [doc for doc in all_docs if doc.get('filename') in selected_docs]
+    # Filter selected documents
+    selected_doc_objects = [doc for doc in docs if doc.get('filename') in selected_docs]
     
     for i, doc in enumerate(selected_doc_objects):
         filename = doc.get('filename', f'Document {i+1}')
-        status_text.text(f"🧠 Processing {filename}...")
+        status_text.text(f"🚀 Processing {filename}...")
         progress_bar.progress((i + 1) / len(selected_doc_objects))
         
-        content = get_document_content(doc)
+        content = get_document_content_for_extraction(doc)
+        if not content:
+            st.warning(f"No content found in {filename}")
+            continue
+        
+        st.info(f"Processing {filename}: {len(content)} characters")
+        
+        # Extract recommendations using enhanced patterns
+        doc_recommendations = enhanced_pattern_extract(
+            content, patterns['recommendation_patterns'], max_results, min_length
+        )
+        
+        # Extract responses using enhanced patterns
+        doc_responses = enhanced_pattern_extract(
+            content, patterns['response_patterns'], max_results, min_length
+        )
+        
+        # Add metadata and filter by confidence
+        for item in doc_recommendations:
+            if item['confidence'] >= confidence_threshold:
+                item['document_context'] = {'filename': filename}
+                item['extraction_type'] = 'recommendation'
+                all_recommendations.append(item)
+        
+        for item in doc_responses:
+            if item['confidence'] >= confidence_threshold:
+                item['document_context'] = {'filename': filename}
+                item['extraction_type'] = 'response'
+                all_responses.append(item)
+    
+    # Store results
+    store_extraction_results(all_recommendations, all_responses, 'enhanced_complete')
+    
+    status_text.text("✅ Enhanced extraction completed!")
+    progress_bar.progress(1.0)
+    
+    # Display results
+    display_extraction_results()
+
+def process_smart_extraction(min_length: int, max_results: int, context_window: int):
+    """Process smart extraction"""
+    docs = st.session_state.get('uploaded_documents', [])
+    
+    # Enhanced patterns for government documents
+    recommendation_patterns = [
+        r'(?:Recommendation|We recommend|I recommend|The committee recommends?)\s*:?\s*([^.!?]*[.!?])',
+        r'(?:It is recommended|We suggest|We propose)\s+(?:that\s+)?([^.!?]*[.!?])',
+        r'(?:The following recommendation|This recommendation)\s*:?\s*([^.!?]*[.!?])',
+        r'(?:Recommendation\s+\d+|R\d+)\s*:?\s*([^.!?]*[.!?])',
+        r'(?:Action\s+required|Action\s+needed)\s*:?\s*([^.!?]*[.!?])',
+    ]
+    
+    response_patterns = [
+        r'(?:We accept|We agree|The government accepts?|The department accepts?)\s*(?:that\s+)?([^.!?]*[.!?])',
+        r'(?:In response|Response|Our response)\s*:?\s*([^.!?]*[.!?])',
+        r'(?:This recommendation|The recommendation)\s+(?:is|has been|will be|was)\s+([^.!?]*[.!?])',
+        r'(?:Accepted|Agreed|Implemented|Partially accepted|Rejected)\s*:?\s*([^.!?]*[.!?])',
+        r'(?:Action taken|Implementation|Progress made)\s*:?\s*([^.!?]*[.!?])',
+    ]
+    
+    all_recommendations = []
+    all_responses = []
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, doc in enumerate(docs):
+        filename = doc.get('filename', f'Document {i+1}')
+        status_text.text(f"🧠 Processing {filename}...")
+        progress_bar.progress((i + 1) / len(docs))
+        
+        content = get_document_content_for_extraction(doc)
         if not content:
             continue
         
         # Extract recommendations
         doc_recommendations = extract_with_patterns(
             content, recommendation_patterns, 'recommendation', 
-            min_length, max_results // 2, context_window
+            min_length, max_results // 2, context_window, filename
         )
         
         # Extract responses  
         doc_responses = extract_with_patterns(
             content, response_patterns, 'response',
-            min_length, max_results // 2, context_window
+            min_length, max_results // 2, context_window, filename
         )
-        
-        # Add metadata
-        for item in doc_recommendations + doc_responses:
-            item['document_context'] = {'filename': filename}
-            item['extraction_method'] = 'smart_complete'
         
         all_recommendations.extend(doc_recommendations)
         all_responses.extend(doc_responses)
@@ -426,266 +590,13 @@ def process_smart_extraction(
     # Display results
     display_extraction_results()
 
-def extract_with_patterns(
-    content: str, 
-    patterns: List[str], 
-    extraction_type: str,
-    min_length: int,
-    max_results: int,
-    context_window: int
-) -> List[Dict]:
-    """Extract content using improved pattern matching"""
-    
-    extractions = []
-    seen_content = set()
-    
-    for pattern in patterns:
-        matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-        
-        for match in matches:
-            text = match.group().strip()
-            
-            # Filter by length
-            if len(text) < min_length:
-                continue
-            
-            # Check for duplicates
-            text_normalized = normalize_text(text)
-            if text_normalized in seen_content:
-                continue
-            seen_content.add(text_normalized)
-            
-            # Get context
-            start_pos = max(0, match.start() - context_window)
-            end_pos = min(len(content), match.end() + context_window)
-            context = content[start_pos:end_pos]
-            
-            # Calculate confidence
-            confidence = calculate_pattern_confidence(text, pattern, context)
-            
-            extraction = {
-                'content': text,
-                'confidence': confidence,
-                'extraction_type': extraction_type,
-                'pattern_used': pattern[:50] + "..." if len(pattern) > 50 else pattern,
-                'context': context,
-                'position': match.start()
-            }
-            
-            extractions.append(extraction)
-            
-            if len(extractions) >= max_results:
-                break
-        
-        if len(extractions) >= max_results:
-            break
-    
-    # Sort by confidence
-    extractions.sort(key=lambda x: x['confidence'], reverse=True)
-    return extractions
-
-# ===============================================
-# AI EXTRACTION HANDLER
-# ===============================================
-
-def handle_ai_extraction():
-    """Handle AI-powered extraction using OpenAI"""
-    st.markdown("### 🤖 AI-Powered Extraction")
-    
-    if not AI_AVAILABLE:
-        st.error("❌ AI extraction requires OpenAI API key")
-        st.info("Add your OpenAI API key to the .env file: `OPENAI_API_KEY=your_key_here`")
-        st.markdown("""
-        **Benefits of AI Extraction:**
-        - 🎯 90%+ accuracy with GPT intelligence
-        - 🧠 Deep semantic understanding
-        - 📝 Natural language processing
-        - 🔍 Context-aware extraction
-        """)
-        return
-    
+def process_basic_extraction(min_length: int, max_results: int):
+    """Process basic pattern extraction"""
     docs = st.session_state.get('uploaded_documents', [])
     
-    # Document selection
-    doc_options = [f"{doc.get('filename', 'Unknown')}" for doc in docs]
-    selected_docs = st.multiselect(
-        "Select documents for AI processing:",
-        options=doc_options,
-        default=doc_options[:3],  # Limit default selection for cost control
-        help="AI extraction is most effective on 1-3 documents at a time"
-    )
-    
-    if not selected_docs:
-        st.warning("Please select at least one document.")
-        return
-    
-    # Cost estimation
-    estimated_cost = estimate_ai_cost(selected_docs, docs)
-    st.info(f"💰 Estimated cost: ${estimated_cost:.3f}")
-    
-    # AI configuration
-    with st.expander("🔧 AI Settings"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            model = st.selectbox(
-                "AI Model:",
-                ["gpt-3.5-turbo", "gpt-4"],
-                help="GPT-4 is more accurate but costs more"
-            )
-            max_items = st.slider("Max items per type:", 5, 30, 15)
-        
-        with col2:
-            temperature = st.slider("Creativity (temperature):", 0.0, 1.0, 0.1)
-            chunk_size = st.slider("Processing chunk size:", 1000, 4000, 2000)
-    
-    # Processing button
-    if st.button("🤖 Start AI Extraction", type="primary"):
-        process_ai_extraction(selected_docs, docs, model, temperature, max_items, chunk_size)
-
-def process_ai_extraction(
-    selected_docs: List[str],
-    all_docs: List[Dict],
-    model: str,
-    temperature: float,
-    max_items: int,
-    chunk_size: int
-):
-    """Process documents using AI extraction"""
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    all_recommendations = []
-    all_responses = []
-    
-    selected_doc_objects = [doc for doc in all_docs if doc.get('filename') in selected_docs]
-    
-    for i, doc in enumerate(selected_doc_objects):
-        filename = doc.get('filename', f'Document {i+1}')
-        status_text.text(f"🤖 AI processing {filename}...")
-        progress_bar.progress((i + 1) / len(selected_doc_objects))
-        
-        content = get_document_content(doc)
-        if not content:
-            continue
-        
-        try:
-            # Process with AI
-            ai_results = process_document_with_ai(content, model, temperature, max_items, chunk_size)
-            
-            # Add metadata
-            for item in ai_results['recommendations']:
-                item['document_context'] = {'filename': filename}
-                item['extraction_method'] = 'ai_powered'
-                
-            for item in ai_results['responses']:
-                item['document_context'] = {'filename': filename} 
-                item['extraction_method'] = 'ai_powered'
-            
-            all_recommendations.extend(ai_results['recommendations'])
-            all_responses.extend(ai_results['responses'])
-            
-        except Exception as e:
-            st.error(f"AI processing failed for {filename}: {e}")
-    
-    # Store results
-    store_extraction_results(all_recommendations, all_responses, 'ai_powered')
-    
-    status_text.text("✅ AI extraction completed!")
-    progress_bar.progress(1.0)
-    
-    display_extraction_results()
-
-def process_document_with_ai(content: str, model: str, temperature: float, max_items: int, chunk_size: int) -> Dict:
-    """Process a single document with AI"""
-    
-    # This is a placeholder - implement actual OpenAI integration
-    # For now, return mock results
-    return {
-        'recommendations': [
-            {
-                'content': "Mock AI recommendation - implement OpenAI integration",
-                'confidence': 0.85,
-                'extraction_type': 'recommendation'
-            }
-        ],
-        'responses': [
-            {
-                'content': "Mock AI response - implement OpenAI integration", 
-                'confidence': 0.80,
-                'extraction_type': 'response'
-            }
-        ]
-    }
-
-def estimate_ai_cost(selected_docs: List[str], all_docs: List[Dict]) -> float:
-    """Estimate cost for AI processing"""
-    total_chars = 0
-    for doc in all_docs:
-        if doc.get('filename') in selected_docs:
-            content = get_document_content(doc)
-            total_chars += len(content)
-    
-    # Rough estimation: ~$0.002 per 1K tokens, ~4 chars per token
-    estimated_tokens = total_chars / 4
-    estimated_cost = (estimated_tokens / 1000) * 0.002
-    
-    return max(estimated_cost, 0.001)  # Minimum cost
-
-# ===============================================
-# PATTERN EXTRACTION HANDLER
-# ===============================================
-
-def handle_pattern_extraction():
-    """Handle standard pattern extraction"""
-    st.markdown("### ⚡ Standard Pattern Extraction")
-    
-    docs = st.session_state.get('uploaded_documents', [])
-    
-    # Document selection
-    doc_options = [f"{doc.get('filename', 'Unknown')}" for doc in docs]
-    selected_docs = st.multiselect(
-        "Select documents to process:",
-        options=doc_options,
-        default=doc_options,
-        help="Pattern extraction works quickly on any number of documents"
-    )
-    
-    if not selected_docs:
-        st.warning("Please select at least one document.")
-        return
-    
-    # Simple configuration
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        max_results = st.slider("Maximum results per document:", 5, 50, 20)
-    
-    with col2:
-        min_length = st.slider("Minimum text length:", 30, 150, 60)
-    
-    # Processing button
-    if st.button("⚡ Start Pattern Extraction", type="primary"):
-        process_pattern_extraction(selected_docs, docs, max_results, min_length)
-
-def process_pattern_extraction(
-    selected_docs: List[str],
-    all_docs: List[Dict], 
-    max_results: int,
-    min_length: int
-):
-    """Process documents with basic pattern extraction"""
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    all_recommendations = []
-    all_responses = []
-    
-    # Basic patterns
+    # Simple patterns
     rec_patterns = [
-        r'(?:recommend|suggests?|should)[^.!?]*[.!?]',
+        r'(?:recommend|suggestion)[^.!?]*[.!?]',
         r'(?:We|I)\s+(?:recommend|suggest)[^.!?]*[.!?]'
     ]
     
@@ -694,14 +605,18 @@ def process_pattern_extraction(
         r'(?:response|reply)[^.!?]*[.!?]'
     ]
     
-    selected_doc_objects = [doc for doc in all_docs if doc.get('filename') in selected_docs]
+    all_recommendations = []
+    all_responses = []
     
-    for i, doc in enumerate(selected_doc_objects):
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, doc in enumerate(docs):
         filename = doc.get('filename', f'Document {i+1}')
         status_text.text(f"⚡ Processing {filename}...")
-        progress_bar.progress((i + 1) / len(selected_doc_objects))
+        progress_bar.progress((i + 1) / len(docs))
         
-        content = get_document_content(doc)
+        content = get_document_content_for_extraction(doc)
         if not content:
             continue
         
@@ -729,532 +644,336 @@ def process_pattern_extraction(
     status_text.text("✅ Pattern extraction completed!")
     progress_bar.progress(1.0)
     
+    # Display results
     display_extraction_results()
 
-def basic_pattern_extract(content: str, patterns: List[str], max_results: int, min_length: int) -> List[Dict]:
-    """Basic pattern extraction"""
+def extract_with_patterns(content: str, patterns: List[str], extraction_type: str,
+                         min_length: int, max_results: int, context_window: int, filename: str) -> List[Dict]:
+    """Extract content using improved pattern matching"""
+    
     extractions = []
+    seen_content = set()
     
     for pattern in patterns:
-        matches = re.finditer(pattern, content, re.IGNORECASE)
+        matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE | re.DOTALL)
         
         for match in matches:
             text = match.group().strip()
             
-            if len(text) >= min_length:
-                extractions.append({
-                    'content': text,
-                    'confidence': 0.6,  # Fixed confidence for basic extraction
-                    'pattern_used': pattern
-                })
-                
-                if len(extractions) >= max_results:
-                    break
+            # Filter by length
+            if len(text) < min_length:
+                continue
+            
+            # Check for duplicates
+            text_normalized = text.lower().strip()
+            if text_normalized in seen_content:
+                continue
+            seen_content.add(text_normalized)
+            
+            # Get context
+            start_pos = max(0, match.start() - context_window)
+            end_pos = min(len(content), match.end() + context_window)
+            context = content[start_pos:end_pos]
+            
+            extractions.append({
+                'content': text,
+                'confidence': 0.8,
+                'extraction_method': 'smart_complete',
+                'extraction_type': extraction_type,
+                'context': context,
+                'document_context': {'filename': filename},
+                'position': match.start()
+            })
+            
+            if len(extractions) >= max_results:
+                break
         
         if len(extractions) >= max_results:
             break
     
     return extractions
 
-# ===============================================
-# UTILITY FUNCTIONS
-# ===============================================
-
-def get_document_content(doc: Dict) -> str:
-    """Extract text content from document"""
-    content = doc.get('content', '')
-    if not content:
-        content = doc.get('text', '')
-    if not content:
-        content = doc.get('extracted_text', '')
-    
-    return content.strip() if content else ""
-
 def normalize_text(text: str) -> str:
-    """Normalize text for duplicate detection"""
-    # Remove extra whitespace and convert to lowercase
-    normalized = re.sub(r'\s+', ' ', text.lower().strip())
-    # Remove common prefixes/suffixes that might vary
-    normalized = re.sub(r'^(the|a|an)\s+', '', normalized)
-    return normalized
+    """Normalize text for comparison"""
+    return re.sub(r'\s+', ' ', text.lower().strip())
 
-def calculate_pattern_confidence(text: str, pattern: str, context: str) -> float:
-    """Calculate confidence score for pattern-based extraction"""
-    confidence = 0.5  # Base confidence
+def extract_numbered_recommendations(content: str) -> List[Dict]:
+    """Extract specifically numbered recommendations from government documents"""
+    extractions = []
     
-    # Length factor
-    if len(text) > 100:
-        confidence += 0.1
-    if len(text) > 200:
-        confidence += 0.1
+    # Pattern for numbered recommendations like "Recommendation 1:", "Recommendation 6a) iii)", etc.
+    pattern = r'(?i)(Recommendation\s+\d+[a-z]*(?:\s*[)\]])*(?:\s*[iv]+)*)\s*[:\.)]\s*([^.!?]*(?:[.!?]|(?=Recommendation)|$))'
     
-    # Pattern specificity
-    if 'should' in text.lower() or 'must' in text.lower():
-        confidence += 0.1
+    matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE | re.DOTALL)
     
-    # Context quality
-    if len(context) > 300:
-        confidence += 0.05
+    for match in matches:
+        rec_number = match.group(1).strip()
+        rec_content = match.group(2).strip()
+        
+        if len(rec_content) > 20:  # Filter out empty or very short content
+            extractions.append({
+                'content': f"{rec_number}: {rec_content}",
+                'recommendation_number': rec_number,
+                'confidence': 0.95,
+                'extraction_method': 'numbered_recommendation',
+                'extraction_type': 'recommendation'
+            })
     
-    # Sentence completeness
-    if text.strip().endswith(('.', '!', '?')):
-        confidence += 0.1
-    
-    return min(confidence, 1.0)
+    return extractions
 
-def store_extraction_results(recommendations: List[Dict], responses: List[Dict], method: str):
-    """Store extraction results in session state"""
-    all_items = recommendations + responses
-    avg_confidence = sum(item.get('confidence', 0) for item in all_items) / max(len(all_items), 1)
-    high_confidence = sum(1 for item in all_items if item.get('confidence', 0) > 0.8)
+def extract_acceptance_responses(content: str) -> List[Dict]:
+    """Extract specific acceptance/rejection responses from government documents"""
+    extractions = []
     
-    st.session_state.extraction_results = {
-        'recommendations': recommendations,
-        'responses': responses,
-        'extraction_method': method,
-        'timestamp': datetime.now().isoformat(),
-        'summary': {
-            'total_recommendations': len(recommendations),
-            'total_responses': len(responses),
-            'avg_confidence': round(avg_confidence, 3),
-            'high_confidence_items': high_confidence
-        }
+    # Pattern for acceptance statements
+    acceptance_pattern = r'(?i)(?:This\s+recommendation|Recommendation\s+\d+[a-z]*(?:\s*[)\]])*(?:\s*[iv]+)*)\s+is\s+(accepted\s+in\s+(?:full|principle)|not\s+accepted|partially\s+accepted|rejected)\s*(?:by\s+(?:the\s+)?(?:UK\s+Government|Scottish\s+Government|Welsh\s+Government|Northern\s+Ireland\s+Executive|Government))?\.?\s*([^.!?]*(?:[.!?]|(?=Recommendation)|$))'
+    
+    matches = re.finditer(acceptance_pattern, content, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+    
+    for match in matches:
+        acceptance_type = match.group(1).strip()
+        additional_content = match.group(2).strip() if len(match.groups()) > 1 else ""
+        
+        full_content = match.group(0).strip()
+        if additional_content:
+            full_content += " " + additional_content
+        
+        extractions.append({
+            'content': full_content,
+            'acceptance_type': acceptance_type,
+            'confidence': 0.95,
+            'extraction_method': 'acceptance_response',
+            'extraction_type': 'response'
+        })
+    
+    return extractions
+
+def process_document_with_all_methods(doc: Dict, filename: str) -> Dict:
+    """Process a single document with all extraction methods for maximum coverage"""
+    content = get_document_content_for_extraction(doc)
+    if not content:
+        return {'recommendations': [], 'responses': []}
+    
+    all_recommendations = []
+    all_responses = []
+    
+    # Method 1: Enhanced patterns
+    patterns = get_enhanced_extraction_patterns()
+    enhanced_recs = enhanced_pattern_extract(content, patterns['recommendation_patterns'], 25, 25)
+    enhanced_resps = enhanced_pattern_extract(content, patterns['response_patterns'], 25, 25)
+    
+    # Method 2: Numbered recommendations
+    numbered_recs = extract_numbered_recommendations(content)
+    
+    # Method 3: Acceptance responses
+    acceptance_resps = extract_acceptance_responses(content)
+    
+    # Combine and deduplicate
+    for rec in enhanced_recs + numbered_recs:
+        rec['document_context'] = {'filename': filename}
+        rec['extraction_type'] = 'recommendation'
+        all_recommendations.append(rec)
+    
+    for resp in enhanced_resps + acceptance_resps:
+        resp['document_context'] = {'filename': filename}
+        resp['extraction_type'] = 'response'
+        all_responses.append(resp)
+    
+    # Deduplicate based on content similarity
+    all_recommendations = deduplicate_extractions(all_recommendations)
+    all_responses = deduplicate_extractions(all_responses)
+    
+    return {
+        'recommendations': all_recommendations,
+        'responses': all_responses
     }
-    
-    # Also store in legacy format for backward compatibility
-    st.session_state.extracted_recommendations = recommendations
 
-def render_previous_results():
-    """Display previous extraction results if available"""
-    results = st.session_state.get('extraction_results', {})
-    if not results:
+def deduplicate_extractions(extractions: List[Dict]) -> List[Dict]:
+    """Remove duplicate extractions based on content similarity"""
+    if not extractions:
+        return []
+    
+    unique_extractions = []
+    seen_content = set()
+    
+    for extraction in extractions:
+        content = extraction.get('content', '')
+        normalized = normalize_text(content)
+        
+        # Check for exact duplicates
+        if normalized in seen_content:
+            continue
+        
+        # Check for substantial overlap (>80% similarity)
+        is_duplicate = False
+        for seen in seen_content:
+            if len(seen) > 0 and len(normalized) > 0:
+                # Simple similarity check
+                shorter = min(len(seen), len(normalized))
+                longer = max(len(seen), len(normalized))
+                if shorter / longer > 0.8:
+                    # Check if one is contained in the other
+                    if normalized in seen or seen in normalized:
+                        is_duplicate = True
+                        break
+        
+        if not is_duplicate:
+            seen_content.add(normalized)
+            unique_extractions.append(extraction)
+    
+    # Sort by confidence and length (prefer higher confidence and longer content)
+    unique_extractions.sort(key=lambda x: (x.get('confidence', 0), len(x.get('content', ''))), reverse=True)
+    
+    return unique_extractions
+
+def export_extraction_results(format_type: str = "csv") -> None:
+    """Export extraction results to file"""
+    if 'extraction_results' not in st.session_state:
+        st.error("No extraction results to export")
         return
     
-    with st.expander("📊 Previous Extraction Results", expanded=False):
-        summary = results.get('summary', {})
-        method = results.get('extraction_method', 'unknown')
-        timestamp = results.get('timestamp', '')
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Recommendations", summary.get('total_recommendations', 0))
-        
-        with col2:
-            st.metric("Responses", summary.get('total_responses', 0))
-        
-        with col3:
-            st.metric("Avg Confidence", f"{summary.get('avg_confidence', 0):.3f}")
-        
-        with col4:
-            st.metric("High Confidence", summary.get('high_confidence_items', 0))
-        
-        st.write(f"**Method:** {method.replace('_', ' ').title()}")
-        st.write(f"**Extracted:** {timestamp}")
-        
-        if st.button("🔄 Clear Previous Results"):
-            st.session_state.extraction_results = {}
-            st.rerun()
-
-def display_extraction_results():
-    """Display extraction results with enhanced formatting"""
-    results = st.session_state.get('extraction_results', {})
-    if not results:
-        st.warning("No extraction results to display.")
-        return
-    
-    st.markdown("### 🎯 Extraction Results")
-    
+    results = st.session_state.extraction_results
     recommendations = results.get('recommendations', [])
     responses = results.get('responses', [])
-    method = results.get('extraction_method', 'unknown')
     
-    # Summary metrics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("📝 Recommendations", len(recommendations))
-    
-    with col2:
-        st.metric("💬 Responses", len(responses))
-    
-    with col3:
-        all_items = recommendations + responses
-        avg_conf = sum(item.get('confidence', 0) for item in all_items) / max(len(all_items), 1)
-        st.metric("🎯 Avg Confidence", f"{avg_conf:.3f}")
-    
-    with col4:
-        high_conf = sum(1 for item in all_items if item.get('confidence', 0) > 0.8)
-        st.metric("⭐ High Quality", high_conf)
-    
-    # Method info
-    method_names = {
-        'rag_intelligent': '🔬 RAG Intelligent',
-        'smart_complete': '🧠 Smart Complete', 
-        'ai_powered': '🤖 AI-Powered',
-        'pattern_basic': '⚡ Pattern Basic'
-    }
-    
-    st.info(f"**Extraction Method:** {method_names.get(method, method.replace('_', ' ').title())}")
-    
-    # Display tabs for recommendations and responses
-    tab1, tab2 = st.tabs(["📝 Recommendations", "💬 Responses"])
-    
-    with tab1:
-        if recommendations:
-            display_items_table(recommendations, "Recommendations")
+    if format_type == "csv":
+        # Create DataFrames
+        rec_df = pd.DataFrame(recommendations) if recommendations else pd.DataFrame()
+        resp_df = pd.DataFrame(responses) if responses else pd.DataFrame()
+        
+        # Add type column
+        if not rec_df.empty:
+            rec_df['type'] = 'recommendation'
+        if not resp_df.empty:
+            resp_df['type'] = 'response'
+        
+        # Combine
+        combined_df = pd.concat([rec_df, resp_df], ignore_index=True) if not rec_df.empty or not resp_df.empty else pd.DataFrame()
+        
+        if not combined_df.empty:
+            csv_data = combined_df.to_csv(index=False)
+            st.download_button(
+                label="Download as CSV",
+                data=csv_data,
+                file_name=f"extraction_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
         else:
-            st.info("No recommendations found.")
+            st.error("No data to export")
     
-    with tab2:
-        if responses:
-            display_items_table(responses, "Responses")
-        else:
-            st.info("No responses found.")
-    
-    # Export options
-    render_export_options(recommendations, responses, results)
+    elif format_type == "json":
+        import json
+        export_data = {
+            'extraction_metadata': {
+                'method': results.get('method', 'unknown'),
+                'timestamp': results.get('timestamp', datetime.now()).isoformat(),
+                'total_extracted': results.get('total_extracted', 0)
+            },
+            'recommendations': recommendations,
+            'responses': responses
+        }
+        
+        json_data = json.dumps(export_data, indent=2, default=str)
+        st.download_button(
+            label="Download as JSON",
+            data=json_data,
+            file_name=f"extraction_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json"
+        )
 
-def display_items_table(items: List[Dict], item_type: str):
-    """Display items in an enhanced table format"""
+def render_extraction_results_tab():
+    """Render the extraction results tab with export options"""
+    st.header("📊 Extraction Results")
     
-    if not items:
-        st.info(f"No {item_type.lower()} found.")
+    if 'extraction_results' not in st.session_state:
+        st.info("No extraction results available. Please run an extraction first.")
         return
     
-    # Prepare data for display
-    display_data = []
-    for i, item in enumerate(items, 1):
-        content = item.get('content', '')
-        confidence = item.get('confidence', 0)
-        doc_name = item.get('document_context', {}).get('filename', 'Unknown')
-        method = item.get('extraction_method', 'unknown')
-        
-        # Truncate content for table display
-        display_content = content[:150] + "..." if len(content) > 150 else content
-        
-        display_data.append({
-            '#': i,
-            'Content': display_content,
-            'Confidence': f"{confidence:.3f}",
-            'Document': doc_name,
-            'Method': method.replace('_', ' ').title()
-        })
+    # Display results
+    display_extraction_results()
     
-    # Display table
-    df = pd.DataFrame(display_data)
-    st.dataframe(df, use_container_width=True, hide_index=True)
-    
-    # Detailed view option
-    if st.button(f"📋 View Detailed {item_type}"):
-        show_detailed_items(items, item_type)
-
-def show_detailed_items(items: List[Dict], item_type: str):
-    """Show detailed view of items"""
-    st.markdown(f"### 📋 Detailed {item_type}")
-    
-    for i, item in enumerate(items, 1):
-        content = item.get('content', '')
-        confidence = item.get('confidence', 0)
-        doc_name = item.get('document_context', {}).get('filename', 'Unknown')
-        method = item.get('extraction_method', 'unknown')
-        
-        # Confidence color coding
-        if confidence > 0.8:
-            confidence_color = "🟢"
-        elif confidence > 0.6:
-            confidence_color = "🟡"
-        else:
-            confidence_color = "🔴"
-        
-        with st.expander(f"{confidence_color} {i}. Confidence: {confidence:.3f} | {doc_name}"):
-            st.markdown(f"**Content:**")
-            st.write(content)
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.write(f"**Confidence:** {confidence:.3f}")
-            with col2:
-                st.write(f"**Document:** {doc_name}")
-            with col3:
-                st.write(f"**Method:** {method.replace('_', ' ').title()}")
-            
-            # Additional metadata if available
-            if 'pattern_used' in item:
-                st.write(f"**Pattern:** {item['pattern_used']}")
-            
-            if 'context' in item:
-                with st.expander("📄 Context"):
-                    st.text(item['context'])
-
-def render_export_options(recommendations: List[Dict], responses: List[Dict], results: Dict):
-    """Render export options for extraction results"""
-    
-    st.markdown("### 📥 Export Results")
-    
-    col1, col2, col3 = st.columns(3)
+    # Export options
+    st.subheader("📤 Export Results")
+    col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("📊 Download CSV", use_container_width=True):
-            export_to_csv(recommendations, responses, results)
+        if st.button("Export as CSV"):
+            export_extraction_results("csv")
     
     with col2:
-        if st.button("📋 Download JSON", use_container_width=True):
-            export_to_json(recommendations, responses, results)
+        if st.button("Export as JSON"):
+            export_extraction_results("json")
     
-    with col3:
-        if st.button("📄 Download Report", use_container_width=True):
-            export_to_report(recommendations, responses, results)
-
-def export_to_csv(recommendations: List[Dict], responses: List[Dict], results: Dict):
-    """Export results to CSV format"""
-    all_items = []
+    # Advanced filtering
+    st.subheader("🔍 Filter Results")
     
-    # Combine all items
-    for item in recommendations:
-        all_items.append({
-            'Type': 'Recommendation',
-            'Content': item.get('content', ''),
-            'Confidence': item.get('confidence', 0),
-            'Document': item.get('document_context', {}).get('filename', ''),
-            'Method': item.get('extraction_method', ''),
-            'Pattern': item.get('pattern_used', '')
-        })
+    results = st.session_state.extraction_results
+    recommendations = results.get('recommendations', [])
+    responses = results.get('responses', [])
     
-    for item in responses:
-        all_items.append({
-            'Type': 'Response', 
-            'Content': item.get('content', ''),
-            'Confidence': item.get('confidence', 0),
-            'Document': item.get('document_context', {}).get('filename', ''),
-            'Method': item.get('extraction_method', ''),
-            'Pattern': item.get('pattern_used', '')
-        })
-    
-    if all_items:
-        df = pd.DataFrame(all_items)
-        csv = df.to_csv(index=False).encode('utf-8')
+    if recommendations or responses:
+        min_confidence = st.slider("Minimum Confidence", 0.0, 1.0, 0.0, 0.1)
         
-        st.download_button(
-            label="📥 Download CSV File",
-            data=csv,
-            file_name=f"extraction_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
-        )
-    else:
-        st.warning("No data to export.")
-
-def export_to_json(recommendations: List[Dict], responses: List[Dict], results: Dict):
-    """Export results to JSON format"""
-    export_data = {
-        'extraction_metadata': {
-            'method': results.get('extraction_method', ''),
-            'timestamp': results.get('timestamp', ''),
-            'summary': results.get('summary', {})
-        },
-        'recommendations': recommendations,
-        'responses': responses
-    }
-    
-    json_str = json.dumps(export_data, indent=2, default=str)
-    
-    st.download_button(
-        label="📥 Download JSON File",
-        data=json_str.encode('utf-8'),
-        file_name=f"extraction_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-        mime="application/json"
-    )
-
-def export_to_report(recommendations: List[Dict], responses: List[Dict], results: Dict):
-    """Export results as a formatted report"""
-    method = results.get('extraction_method', 'unknown')
-    timestamp = results.get('timestamp', '')
-    summary = results.get('summary', {})
-    
-    report = f"""EXTRACTION RESULTS REPORT
-========================
-
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Method: {method.replace('_', ' ').title()}
-Original Extraction: {timestamp}
-
-SUMMARY
--------
-Total Recommendations: {summary.get('total_recommendations', 0)}
-Total Responses: {summary.get('total_responses', 0)}
-Average Confidence: {summary.get('avg_confidence', 0):.3f}
-High Confidence Items: {summary.get('high_confidence_items', 0)}
-
-RECOMMENDATIONS
----------------
-"""
-    
-    for i, rec in enumerate(recommendations[:20], 1):  # Limit to first 20
-        confidence = rec.get('confidence', 0)
-        content = rec.get('content', '')
-        doc = rec.get('document_context', {}).get('filename', 'Unknown')
+        # Filter by confidence
+        filtered_recs = [r for r in recommendations if r.get('confidence', 0) >= min_confidence]
+        filtered_resps = [r for r in responses if r.get('confidence', 0) >= min_confidence]
         
-        report += f"\n{i}. [Confidence: {confidence:.3f}] [{doc}]\n"
-        report += f"   {content}\n"
-    
-    if len(recommendations) > 20:
-        report += f"\n... and {len(recommendations) - 20} more recommendations\n"
-    
-    report += f"\nRESPONSES\n---------\n"
-    
-    for i, resp in enumerate(responses[:20], 1):  # Limit to first 20
-        confidence = resp.get('confidence', 0)
-        content = resp.get('content', '')
-        doc = resp.get('document_context', {}).get('filename', 'Unknown')
+        st.write(f"Filtered results: {len(filtered_recs)} recommendations, {len(filtered_resps)} responses")
         
-        report += f"\n{i}. [Confidence: {confidence:.3f}] [{doc}]\n"
-        report += f"   {content}\n"
-    
-    if len(responses) > 20:
-        report += f"\n... and {len(responses) - 20} more responses\n"
-    
-    st.download_button(
-        label="📥 Download Report",
-        data=report.encode('utf-8'),
-        file_name=f"extraction_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-        mime="text/plain"
-    )
+        # Update session state with filtered results
+        if st.button("Apply Filter"):
+            st.session_state.extraction_results['recommendations'] = filtered_recs
+            st.session_state.extraction_results['responses'] = filtered_resps
+            st.rerun()
 
-# ===============================================
-# CAPABILITY CHECKS
-# ===============================================
+def test_enhanced_patterns():
+    """Test function for the enhanced patterns"""
+    sample_text = """
+    Recommendation 6a) iii) (accepted in principle by NI Executive)
+    
+    This recommendation is accepted in principle by the UK Government, 
+    the Scottish Government, the Welsh Government, and the Northern Ireland Executive.
+    
+    Implementation will begin immediately through existing NHS structures.
+    
+    Recommendation 7b) Progress in implementation of the Transfusion 2024 recommendations be 
+    reviewed, and next steps be determined and promulgated.
+    
+    This recommendation is accepted in full by the Scottish Government.
+    
+    The Government will establish a review process within 12 months.
+    
+    We recommend that all healthcare providers should implement comprehensive safety protocols.
+    
+    Action should be taken to ensure patient safety across all departments.
+    """
+    
+    patterns = get_enhanced_extraction_patterns()
+    
+    recommendations = enhanced_pattern_extract(sample_text, patterns['recommendation_patterns'], 10, 20)
+    responses = enhanced_pattern_extract(sample_text, patterns['response_patterns'], 10, 20)
+    
+    print(f"Found {len(recommendations)} recommendations and {len(responses)} responses")
+    
+    for i, rec in enumerate(recommendations, 1):
+        print(f"Recommendation {i}: {rec['content'][:100]}...")
+    
+    for i, resp in enumerate(responses, 1):
+        print(f"Response {i}: {resp['content'][:100]}...")
 
-def check_ai_capabilities():
-    """Check what AI capabilities are available"""
-    capabilities = {
-        'rag_available': False,
-        'openai_available': False,
-        'dependencies_status': {}
-    }
-    
-    # Check RAG
-    if RAG_COMPONENTS_AVAILABLE and RAG_EXTRACTOR_AVAILABLE:
-        try:
-            if is_rag_available():
-                capabilities['rag_available'] = True
-        except:
-            pass
-    
-    # Check OpenAI
-    capabilities['openai_available'] = AI_AVAILABLE
-    
-    # Check dependencies
-    deps_to_check = {
-        'sentence_transformers': 'Sentence Transformers',
-        'sklearn': 'Scikit-learn',
-        'transformers': 'Transformers',
-        'torch': 'PyTorch',
-        'openai': 'OpenAI'
-    }
-    
-    for dep, name in deps_to_check.items():
-        try:
-            __import__(dep)
-            capabilities['dependencies_status'][name] = True
-        except ImportError:
-            capabilities['dependencies_status'][name] = False
-    
-    return capabilities
-
-def estimate_openai_cost(docs: List[str], all_docs: List[Dict]) -> float:
-    """Estimate OpenAI processing cost"""
-    total_chars = 0
-    for doc in all_docs:
-        if doc.get('filename') in docs:
-            content = get_document_content(doc)
-            total_chars += len(content)
-    
-    # Estimate tokens (rough: 4 chars per token)
-    estimated_tokens = total_chars / 4
-    
-    # GPT-3.5-turbo pricing: ~$0.002 per 1K tokens
-    estimated_cost = (estimated_tokens / 1000) * 0.002
-    
-    return max(estimated_cost, 0.001)
-
-# ===============================================
-# MAIN EXTRACTOR CLASSES (for compatibility)
-# ===============================================
-
-class SmartExtractor:
-    """Smart extraction class for backward compatibility"""
-    
-    def __init__(self):
-        self.patterns = {
-            'recommendations': [
-                r'(?:recommend|suggest|should|must)[^.!?]*[.!?]',
-                r'(?:We|I)\s+(?:recommend|suggest)[^.!?]*[.!?]'
-            ],
-            'responses': [
-                r'(?:accept|agree|implement)[^.!?]*[.!?]',
-                r'(?:response|reply)[^.!?]*[.!?]'
-            ]
-        }
-    
-    def extract_recommendations(self, content: str) -> List[Dict]:
-        """Extract recommendations using smart patterns"""
-        return extract_with_patterns(
-            content, self.patterns['recommendations'], 
-            'recommendation', 50, 25, 200
-        )
-    
-    def extract_responses(self, content: str) -> List[Dict]:
-        """Extract responses using smart patterns"""
-        return extract_with_patterns(
-            content, self.patterns['responses'],
-            'response', 50, 25, 200
-        )
-
-class EnhancedAIExtractor:
-    """Enhanced AI extraction class for backward compatibility"""
-    
-    def __init__(self, api_key: str = None):
-        self.api_key = api_key or os.getenv('OPENAI_API_KEY')
-        self.available = bool(self.api_key)
-    
-    def extract_recommendations(self, content: str) -> List[Dict]:
-        """Extract recommendations using AI"""
-        if not self.available:
-            return []
-        
-        # Placeholder for AI extraction
-        return [
-            {
-                'content': 'AI extraction placeholder - implement OpenAI integration',
-                'confidence': 0.85,
-                'extraction_type': 'recommendation'
-            }
-        ]
-    
-    def extract_responses(self, content: str) -> List[Dict]:
-        """Extract responses using AI"""
-        if not self.available:
-            return []
-        
-        # Placeholder for AI extraction
-        return [
-            {
-                'content': 'AI extraction placeholder - implement OpenAI integration',
-                'confidence': 0.80, 
-                'extraction_type': 'response'
-            }
-        ]
-
-# ===============================================
-# EXPORTS
-# ===============================================
-
+# Export all required functions
 __all__ = [
+    'get_document_content_for_extraction',
+    'get_document_content', 
     'render_extraction_tab',
-    'SmartExtractor',
-    'EnhancedAIExtractor', 
-    'check_ai_capabilities',
-    'estimate_openai_cost',
-    'RAG_COMPONENTS_AVAILABLE',
-    'RAG_EXTRACTOR_AVAILABLE'
+    'render_extraction_results_tab',
+    'validate_document_structure',
+    'store_extraction_results',
+    'display_extraction_results',
+    'get_enhanced_extraction_patterns',
+    'enhanced_pattern_extract',
+    'process_enhanced_extraction',
+    'export_extraction_results',
+    'test_enhanced_patterns',
+    'Document'
 ]
