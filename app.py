@@ -1,5 +1,6 @@
 # ===============================================
-# FILE: app.py (COMPLETE AND ROBUST MAIN APPLICATION)
+# COMPLETE APP.PY - RECOMMENDATION-RESPONSE TRACKER
+# Production-ready main application file
 # ===============================================
 
 import streamlit as st
@@ -10,7 +11,6 @@ import traceback
 from pathlib import Path
 from datetime import datetime
 import platform
-import importlib
 
 # ===============================================
 # PAGE CONFIGURATION (MUST BE FIRST)
@@ -55,256 +55,236 @@ def setup_logging():
         level=getattr(logging, log_level, logging.INFO),
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(logs_dir / 'app.log'),
+            logging.FileHandler(logs_dir / f"app_{datetime.now().strftime('%Y%m%d')}.log"),
             logging.StreamHandler()
         ]
     )
     
-    # Reduce noise from external libraries
-    external_loggers = ['openai', 'httpx', 'urllib3', 'requests', 'matplotlib', 'PIL']
-    for logger_name in external_loggers:
-        logging.getLogger(logger_name).setLevel(logging.WARNING)
-    
-    logging.info("🚀 Application logging initialized")
-    logging.info(f"📁 Working directory: {Path.cwd()}")
-    logging.info(f"🐍 Python version: {sys.version}")
+    logging.info("🚀 Application starting up")
+    logging.info(f"Python version: {platform.python_version()}")
+    logging.info(f"Streamlit version: {st.__version__}")
 
-# Initialize logging immediately
+# Setup logging immediately
 setup_logging()
 
 # ===============================================
-# DEPENDENCY AND ENVIRONMENT CHECKING
-# ===============================================
-
-def check_critical_dependencies():
-    """Check critical dependencies required for basic functionality"""
-    critical_packages = {
-        'streamlit': 'Web application framework',
-        'pathlib': 'File path operations',
-        'logging': 'Application logging',
-        'datetime': 'Date and time operations',
-        'os': 'Operating system interface',
-        'sys': 'System-specific parameters'
-    }
-    
-    missing_critical = []
-    
-    for package, description in critical_packages.items():
-        try:
-            importlib.import_module(package)
-        except ImportError:
-            missing_critical.append(f"{package} - {description}")
-    
-    if missing_critical:
-        st.error("❌ Critical dependencies missing - application cannot start:")
-        for dep in missing_critical:
-            st.caption(f"• {dep}")
-        st.stop()
-    
-    logging.info("✅ Critical dependencies check passed")
-    return True
-
-def check_optional_dependencies():
-    """Check optional dependencies and show status"""
-    optional_packages = {
-        'pandas': 'Data manipulation and analysis',
-        'openai': 'AI-powered text extraction', 
-        'pdfplumber': 'PDF text extraction',
-        'fitz': 'PyMuPDF PDF processing',
-        'transformers': 'BERT-based annotation',
-        'chromadb': 'Vector database for search',
-        'plotly': 'Interactive visualizations'
-    }
-    
-    available_packages = []
-    missing_packages = []
-    
-    for package, description in optional_packages.items():
-        try:
-            importlib.import_module(package)
-            available_packages.append(f"{package} - {description}")
-        except ImportError:
-            missing_packages.append(f"{package} - {description}")
-    
-    # Store in session state for display
-    st.session_state.available_packages = available_packages
-    st.session_state.missing_packages = missing_packages
-    
-    logging.info(f"✅ {len(available_packages)} optional packages available")
-    logging.info(f"⚠️ {len(missing_packages)} optional packages missing")
-    
-    return len(available_packages), len(missing_packages)
-
-def check_file_structure():
-    """Check critical file structure"""
-    critical_files = [
-        "modules/__init__.py",
-        "modules/document_processor.py",
-        "modules/enhanced_section_extractor.py",
-        "modules/ui/__init__.py",
-        "modules/ui/upload_components.py"
-    ]
-    
-    optional_files = [
-        "modules/ui/extraction_components.py",
-        "modules/ui/annotation_components.py", 
-        "modules/ui/matching_components.py",
-        "modules/ui/search_components.py",
-        "modules/ui/dashboard_components.py",
-        "modules/core_utils.py",
-        "requirements.txt",
-        ".env"
-    ]
-    
-    missing_critical = []
-    missing_optional = []
-    
-    for file_path in critical_files:
-        if not Path(file_path).exists():
-            missing_critical.append(file_path)
-    
-    for file_path in optional_files:
-        if not Path(file_path).exists():
-            missing_optional.append(file_path)
-    
-    # Store results
-    st.session_state.missing_critical_files = missing_critical
-    st.session_state.missing_optional_files = missing_optional
-    
-    if missing_critical:
-        logging.error(f"❌ Missing critical files: {missing_critical}")
-        return False
-    
-    logging.info("✅ File structure check passed")
-    return True
-
-# ===============================================
-# SESSION STATE MANAGEMENT
+# SESSION STATE INITIALIZATION
 # ===============================================
 
 def initialize_session_state():
-    """Initialize comprehensive session state"""
-    default_values = {
-        # Core data
-        'uploaded_documents': [],
-        'extracted_recommendations': [],
-        'annotated_recommendations': [],
-        'matched_responses': [],
+    """Initialize all session state variables"""
+    if "initialized" not in st.session_state:
+        st.session_state.initialized = True
         
-        # Application state
-        'app_initialized': True,
-        'first_visit': True,
-        'last_activity': datetime.now().isoformat(),
-        'session_start_time': datetime.now().isoformat(),
+        # Document management
+        st.session_state.uploaded_documents = []
         
-        # Error tracking
-        'upload_errors': [],
-        'processing_errors': [],
-        'system_errors': [],
+        # Extraction results
+        st.session_state.extracted_recommendations = []
+        st.session_state.extracted_concerns = []  # Keep for backward compatibility
+        st.session_state.extraction_results = {}
         
-        # Processing status
-        'processing_status': {},
-        'current_operation': None,
-        'operation_progress': 0,
+        # Analysis results
+        st.session_state.annotation_results = {}
+        st.session_state.matching_results = {}
+        st.session_state.search_history = []
+        st.session_state.search_results = {}
         
-        # User preferences
-        'user_preferences': {
-            'extraction_mode': 'sections_only',
-            'annotation_framework': 'isirch',
-            'matching_threshold': 0.7,
-            'auto_save': True,
-            'debug_mode': False,
-            'theme': 'light'
-        },
+        # Processing states
+        st.session_state.processing_status = "idle"
+        st.session_state.last_processing_time = None
+        st.session_state.error_messages = []
         
-        # Component availability
-        'components_status': {},
-        'features_available': {},
+        # UI states
+        st.session_state.selected_frameworks = []
+        st.session_state.current_tab = "upload"
+        st.session_state.export_ready = False
         
-        # History tracking
-        'extraction_history': [],
-        'annotation_history': [],
-        'matching_history': [],
-        'search_history': [],
+        # AI availability status
+        st.session_state.ai_available = bool(os.getenv('OPENAI_API_KEY'))
+        st.session_state.use_mock_ai = not st.session_state.ai_available
         
-        # API and configuration
-        'api_key_validated': False,
-        'openai_available': False,
-        'model_loaded': {},
-        
-        # UI state
-        'active_tab': 'Upload',
-        'sidebar_expanded': True,
-        'show_debug': False,
-        'show_advanced': False
-    }
-    
-    # Initialize any missing keys
-    for key, value in default_values.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-    
-    # Update activity timestamp
-    st.session_state.last_activity = datetime.now().isoformat()
-    
-    logging.info("✅ Session state initialized with all required keys")
+        logging.info("✅ Session state initialized")
 
 # ===============================================
-# UI COMPONENT IMPORTS WITH ROBUST FALLBACKS
+# DEPENDENCY CHECKS
+# ===============================================
+
+def check_critical_dependencies():
+    """Check if critical dependencies are available"""
+    critical_deps = {
+        'streamlit': st,
+        'pandas': None,
+        'pathlib': Path,
+        'logging': logging,
+        'os': os,
+        'sys': sys
+    }
+    
+    missing_deps = []
+    
+    # Check pandas separately
+    try:
+        import pandas as pd
+        critical_deps['pandas'] = pd
+    except ImportError:
+        missing_deps.append('pandas')
+    
+    if missing_deps:
+        st.error(f"❌ Critical dependencies missing: {', '.join(missing_deps)}")
+        st.info("Install with: `pip install pandas`")
+        st.stop()
+    
+    logging.info("✅ Critical dependencies check passed")
+
+def check_optional_dependencies():
+    """Check optional dependencies and show status"""
+    optional_deps = {
+        'sentence-transformers': '🤖 Free AI Features',
+        'transformers': '🔬 BERT Analysis',
+        'scikit-learn': '📊 Clustering & Analytics',
+        'torch': '🧠 Neural Networks',
+        'openai': '🚀 GPT Integration'
+    }
+    
+    available_deps = []
+    missing_deps = []
+    
+    for dep, description in optional_deps.items():
+        try:
+            __import__(dep.replace('-', '_'))
+            available_deps.append(f"{description} ✅")
+        except ImportError:
+            missing_deps.append(f"{description} ❌")
+    
+    # Show status in sidebar
+    with st.sidebar:
+        st.markdown("### 🔧 AI Capabilities")
+        for dep in available_deps:
+            st.success(dep)
+        for dep in missing_deps:
+            st.warning(dep)
+        
+        if missing_deps:
+            st.info("Install for enhanced features:")
+            st.code("pip install sentence-transformers scikit-learn transformers torch")
+
+# ===============================================
+# FILE STRUCTURE VALIDATION
+# ===============================================
+
+def check_file_structure():
+    """Validate that required files and directories exist"""
+    required_structure = {
+        'modules/': 'Module directory',
+        'modules/ui/': 'UI components directory',
+        'modules/ui/__init__.py': 'UI package init',
+    }
+    
+    missing_items = []
+    
+    for item, description in required_structure.items():
+        path = Path(item)
+        if not path.exists():
+            missing_items.append(f"{item} ({description})")
+    
+    if missing_items:
+        st.error("❌ Required files/directories missing:")
+        for item in missing_items:
+            st.write(f"- {item}")
+        return False
+    
+    logging.info("✅ File structure validation passed")
+    return True
+
+# ===============================================
+# UI COMPONENT IMPORTS WITH FALLBACKS
 # ===============================================
 
 def import_ui_components():
-    """Import UI components with comprehensive fallback handling"""
+    """Import UI components with comprehensive fallbacks"""
     components = {}
     
-    # Upload Component (CRITICAL - this one must work)
+    # Upload Component
     try:
         from modules.ui.upload_components import render_upload_tab
         components['upload'] = render_upload_tab
-        st.session_state.components_status['upload'] = 'available'
-        logging.info("✅ Upload components loaded successfully")
+        logging.info("✅ Upload components loaded")
     except Exception as e:
-        logging.error(f"❌ CRITICAL: Failed to import upload components: {e}")
-        def critical_upload_fallback():
-            st.header("📁 Document Upload & Management")
-            st.error("❌ Upload component failed to load - this is critical for basic functionality")
-            st.code(f"Import error: {str(e)}")
-            st.info("Please check that `modules/ui/upload_components.py` exists and all dependencies are installed.")
-            if st.button("🔄 Retry Import"):
-                st.rerun()
-        components['upload'] = critical_upload_fallback
-        st.session_state.components_status['upload'] = 'failed'
-    
-    # Extraction Component
-    try:
-        from modules.ui.extraction_components import render_extraction_tab
-        components['extraction'] = render_extraction_tab
-        st.session_state.components_status['extraction'] = 'available'
-        logging.info("✅ Extraction components loaded")
-    except Exception as e:
-        logging.warning(f"⚠️ Extraction components not available: {e}")
-        def extraction_fallback():
-            st.header("🔍 Recommendation & Response Extraction")
-            st.info("🚧 Extraction component not yet available")
+        logging.warning(f"⚠️ Upload components not available: {e}")
+        def upload_fallback():
+            st.header("📁 Document Upload")
+            st.info("🚧 Upload component not yet available")
             st.markdown("""
             **What this tab will do:**
-            - Extract recommendations from uploaded documents using AI or pattern matching
-            - Identify government responses to recommendations
-            - Parse structured content from PDFs
+            - Upload PDF documents containing government inquiry reports
+            - Upload government response documents
+            - Extract and validate document content
+            - Prepare documents for AI analysis
             
             **Current status:** Component under development
             """)
+            
+            # Basic file uploader as fallback
+            uploaded_files = st.file_uploader(
+                "Upload PDF documents",
+                type=['pdf'],
+                accept_multiple_files=True,
+                help="Upload government inquiry reports or response documents"
+            )
+            
+            if uploaded_files:
+                st.success(f"✅ {len(uploaded_files)} files uploaded")
+                # Store basic file info
+                st.session_state.uploaded_documents = [
+                    {
+                        'filename': file.name,
+                        'size': len(file.read()),
+                        'type': 'pdf',
+                        'uploaded_at': datetime.now().isoformat()
+                    }
+                    for file in uploaded_files
+                ]
+                
+        components['upload'] = upload_fallback
+    
+    # Enhanced Extraction Component
+    try:
+        from modules.ui.extraction_components import render_extraction_tab
+        components['extraction'] = render_extraction_tab
+        logging.info("✅ Enhanced extraction components loaded")
+    except Exception as e:
+        logging.warning(f"⚠️ Enhanced extraction components not available: {e}")
+        def extraction_fallback():
+            st.header("🔍 Recommendation & Response Extraction")
+            st.error("❌ Enhanced extraction component not available")
+            st.markdown("""
+            **Required file missing:** `modules/ui/extraction_components.py`
+            
+            **To fix this:**
+            1. Create the file `modules/ui/extraction_components.py`
+            2. Copy the complete enhanced extraction code
+            3. Restart the application
+            
+            **What enhanced extraction provides:**
+            - 🧠 Smart Complete Extraction - captures full recommendations
+            - 🤖 AI-Powered extraction using OpenAI GPT
+            - 🔬 BERT semantic analysis
+            - 📊 Advanced downloads and analytics
+            - 🆓 Free AI options (no API required)
+            """)
+            
+            # Basic fallback extraction
             if st.button("📁 Go to Upload Tab"):
                 st.session_state.active_tab = 'Upload'
                 st.rerun()
+                
         components['extraction'] = extraction_fallback
-        st.session_state.components_status['extraction'] = 'fallback'
     
     # Annotation Component
     try:
         from modules.ui.annotation_components import render_annotation_tab
         components['annotation'] = render_annotation_tab
-        st.session_state.components_status['annotation'] = 'available'
         logging.info("✅ Annotation components loaded")
     except Exception as e:
         logging.warning(f"⚠️ Annotation components not available: {e}")
@@ -315,40 +295,40 @@ def import_ui_components():
             **What this tab will do:**
             - Annotate recommendations with conceptual themes using BERT
             - Apply multiple annotation frameworks (I-SIRch, House of Commons, etc.)
-            - Generate semantic tags for better analysis
+            - Generate semantic embeddings for document sections
+            - Provide confidence scoring for annotations
             
             **Current status:** Component under development
             """)
+            
         components['annotation'] = annotation_fallback
-        st.session_state.components_status['annotation'] = 'fallback'
     
     # Matching Component
     try:
         from modules.ui.matching_components import render_matching_tab
         components['matching'] = render_matching_tab
-        st.session_state.components_status['matching'] = 'available'
         logging.info("✅ Matching components loaded")
     except Exception as e:
         logging.warning(f"⚠️ Matching components not available: {e}")
         def matching_fallback():
-            st.header("🔗 Find Responses to Recommendations")
+            st.header("🔗 Response Matching")
             st.info("🚧 Matching component not yet available")
             st.markdown("""
             **What this tab will do:**
             - Match recommendations to their corresponding government responses
-            - Use semantic similarity and concept overlap
+            - Use semantic similarity and concept overlap for matching
             - Provide confidence scores for matches
+            - Export matched recommendation-response pairs
             
             **Current status:** Component under development
             """)
+            
         components['matching'] = matching_fallback
-        st.session_state.components_status['matching'] = 'fallback'
     
     # Search Component
     try:
-        from modules.ui.search_components import render_smart_search_tab
-        components['search'] = render_smart_search_tab
-        st.session_state.components_status['search'] = 'available'
+        from modules.ui.search_components import render_search_tab
+        components['search'] = render_search_tab
         logging.info("✅ Search components loaded")
     except Exception as e:
         logging.warning(f"⚠️ Search components not available: {e}")
@@ -357,416 +337,227 @@ def import_ui_components():
             st.info("🚧 Search component not yet available")
             st.markdown("""
             **What this tab will do:**
-            - Semantic search across all documents
-            - RAG-powered question answering
-            - Advanced filtering and discovery
+            - Semantic search across all uploaded documents
+            - RAG-powered query answering
+            - Vector similarity search for recommendations
+            - Search history and saved queries
             
             **Current status:** Component under development
             """)
+            
         components['search'] = search_fallback
-        st.session_state.components_status['search'] = 'fallback'
     
-    # Dashboard Component
+    # Dashboard Component  
     try:
         from modules.ui.dashboard_components import render_dashboard_tab
         components['dashboard'] = render_dashboard_tab
-        st.session_state.components_status['dashboard'] = 'available'
         logging.info("✅ Dashboard components loaded")
     except Exception as e:
         logging.warning(f"⚠️ Dashboard components not available: {e}")
         def dashboard_fallback():
             st.header("📊 Analytics Dashboard")
             st.info("🚧 Dashboard component not yet available")
+            st.markdown("""
+            **What this tab will do:**
+            - Visual analytics of recommendations and responses
+            - Trend analysis across government departments
+            - Implementation tracking and compliance metrics
+            - Export analytics reports
             
-            # Show basic stats from session state
-            uploaded_docs = st.session_state.get('uploaded_documents', [])
-            if uploaded_docs:
-                st.subheader("📈 Basic Statistics")
-                
-                col1, col2, col3 = st.columns(3)
+            **Current status:** Component under development
+            """)
+            
+            # Basic metrics as fallback
+            if st.session_state.get('uploaded_documents'):
+                st.metric("Documents Uploaded", len(st.session_state.uploaded_documents))
+            
+            if st.session_state.get('extraction_results'):
+                results = st.session_state.extraction_results
+                col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("📄 Documents", len(uploaded_docs))
+                    st.metric("Recommendations", len(results.get('recommendations', [])))
                 with col2:
-                    total_sections = sum(len(doc.get('sections', [])) for doc in uploaded_docs)
-                    st.metric("📋 Sections", total_sections)
-                with col3:
-                    total_size = sum(doc.get('file_size', 0) for doc in uploaded_docs)
-                    size_mb = total_size / (1024 * 1024)
-                    st.metric("💾 Total Size", f"{size_mb:.1f} MB")
-            else:
-                st.info("📄 No documents uploaded yet. Go to Upload tab to get started.")
-                
+                    st.metric("Responses", len(results.get('responses', [])))
+                    
         components['dashboard'] = dashboard_fallback
-        st.session_state.components_status['dashboard'] = 'fallback'
     
     return components
 
 # ===============================================
-# STYLING AND UI ENHANCEMENTS
+# HEADER AND NAVIGATION
+# ===============================================
+
+def render_header():
+    """Render application header"""
+    st.title("📋 Recommendation-Response Tracker")
+    st.markdown("""
+    **AI-Powered Document Analysis System** for UK Government Inquiries and Reviews
+    
+    Extract recommendations, analyze responses, and track implementation across inquiry reports.
+    """)
+    
+    # System status
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.session_state.get('uploaded_documents'):
+            st.success(f"📁 {len(st.session_state.uploaded_documents)} documents loaded")
+        else:
+            st.info("📁 No documents uploaded")
+    
+    with col2:
+        if st.session_state.get('extraction_results'):
+            results = st.session_state.extraction_results
+            total_items = len(results.get('recommendations', [])) + len(results.get('responses', []))
+            st.success(f"🔍 {total_items} items extracted")
+        else:
+            st.info("🔍 No extractions yet")
+    
+    with col3:
+        ai_status = "🤖 AI Available" if st.session_state.get('ai_available') else "🆓 Free AI Only"
+        st.info(ai_status)
+
+def show_welcome_message():
+    """Show welcome message for new users"""
+    if not st.session_state.get('uploaded_documents') and not st.session_state.get('welcome_dismissed'):
+        with st.expander("👋 Welcome to Recommendation-Response Tracker", expanded=True):
+            st.markdown("""
+            **Get started in 3 easy steps:**
+            
+            1. **📁 Upload** - Upload PDF documents (inquiry reports, government responses)
+            2. **🔍 Extract** - Use AI to extract recommendations and responses  
+            3. **📊 Analyze** - Annotate, match, and explore your data
+            
+            **Key Features:**
+            - 🧠 **Smart AI Extraction** - Captures complete recommendations, not fragments
+            - 🆓 **Free AI Options** - No API keys required for excellent results
+            - 🔬 **BERT Analysis** - Semantic understanding and concept annotation
+            - 📊 **Advanced Analytics** - Comprehensive analysis and reporting
+            
+            **Ready to start?** Go to the **📁 Upload** tab to begin!
+            """)
+            
+            if st.button("✅ Got it, let's start!"):
+                st.session_state.welcome_dismissed = True
+                st.rerun()
+
+# ===============================================
+# CUSTOM CSS STYLING
 # ===============================================
 
 def load_custom_css():
-    """Load comprehensive custom CSS styling"""
+    """Load custom CSS for better styling"""
     st.markdown("""
     <style>
-    /* Main application styling */
-    .main {
-        padding-top: 1rem;
+    /* Main container */
+    .main .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
     }
     
-    /* Enhanced tab styling */
+    /* Tabs styling */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
-        background-color: #f0f2f6;
-        border-radius: 0.5rem;
-        padding: 0.5rem;
-        margin-bottom: 1rem;
     }
     
     .stTabs [data-baseweb="tab"] {
-        height: 55px;
-        padding: 0 24px;
-        background-color: white;
-        border-radius: 0.375rem;
-        border: 2px solid transparent;
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: transparent;
+        border-radius: 5px;
+        color: #1f1f1f;
         font-weight: 500;
-        transition: all 0.2s ease;
-    }
-    
-    .stTabs [data-baseweb="tab"]:hover {
-        background-color: #f8f9fa;
-        border-color: #dee2e6;
     }
     
     .stTabs [aria-selected="true"] {
-        background-color: #1f77b4 !important;
-        color: white !important;
-        border-color: #1f77b4 !important;
+        background-color: #ff6b6b;
+        color: white;
     }
     
-    /* Enhanced metrics and cards */
-    .metric-card {
-        background-color: #ffffff;
-        padding: 1.5rem;
+    /* Metrics styling */
+    [data-testid="metric-container"] {
+        background-color: #f0f2f6;
+        border: 1px solid #d1d5db;
+        padding: 1rem;
         border-radius: 0.5rem;
-        border: 1px solid #e9ecef;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        margin: 0.5rem 0;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
     }
     
-    /* Status indicators */
-    .status-indicator {
-        display: inline-block;
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        margin-right: 8px;
-    }
-    
-    .status-online { background-color: #28a745; }
-    .status-offline { background-color: #dc3545; }
-    .status-warning { background-color: #ffc107; }
-    .status-fallback { background-color: #6c757d; }
-    
-    /* Enhanced message styling */
-    .success-message {
-        background-color: #d4edda;
-        color: #155724;
-        padding: 1rem;
-        border-radius: 0.375rem;
-        border-left: 4px solid #28a745;
-        margin: 1rem 0;
-    }
-    
-    .warning-message {
-        background-color: #fff3cd;
-        color: #856404;
-        padding: 1rem;
-        border-radius: 0.375rem;
-        border-left: 4px solid #ffc107;
-        margin: 1rem 0;
-    }
-    
-    .error-message {
-        background-color: #f8d7da;
-        color: #721c24;
-        padding: 1rem;
-        border-radius: 0.375rem;
-        border-left: 4px solid #dc3545;
-        margin: 1rem 0;
-    }
-    
-    .info-message {
-        background-color: #d1ecf1;
-        color: #0c5460;
-        padding: 1rem;
-        border-radius: 0.375rem;
-        border-left: 4px solid #17a2b8;
-        margin: 1rem 0;
-    }
-    
-    /* Sidebar enhancements */
-    .sidebar .sidebar-content {
-        background-color: #f8f9fa;
+    /* Success/error message styling */
+    .stSuccess, .stError, .stWarning, .stInfo {
+        border-radius: 0.5rem;
+        border-left: 4px solid;
         padding: 1rem;
     }
     
-    /* Button enhancements */
+    /* Button styling */
     .stButton > button {
-        border-radius: 0.375rem;
-        border: 1px solid #dee2e6;
-        transition: all 0.2s ease;
+        border-radius: 0.5rem;
+        border: none;
+        padding: 0.5rem 1rem;
+        font-weight: 500;
+        transition: all 0.3s;
     }
     
     .stButton > button:hover {
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        transform: translateY(-1px);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    }
+    
+    /* File uploader styling */
+    .stFileUploader > div > div {
+        border-radius: 0.5rem;
+        border: 2px dashed #d1d5db;
     }
     
     /* Progress bar styling */
-    .stProgress .st-bo {
-        background-color: #e9ecef;
+    .stProgress > div > div > div {
+        background-color: #ff6b6b;
+        border-radius: 1rem;
     }
     
-    .stProgress .st-bp {
-        background-color: #1f77b4;
+    /* Sidebar styling */
+    .css-1d391kg {
+        background-color: #f8f9fa;
     }
     
-    /* Header styling */
-    .main-header {
-        text-align: center;
-        padding: 2rem 0;
-        background: linear-gradient(135deg, #1f77b4, #17a2b8);
-        color: white;
-        border-radius: 0.5rem;
-        margin-bottom: 2rem;
-    }
-    
-    .main-header h1 {
-        margin: 0;
-        font-size: 2.5rem;
-        font-weight: 600;
-    }
-    
-    .main-header p {
-        margin: 0.5rem 0 0 0;
-        font-size: 1.2rem;
-        opacity: 0.9;
-    }
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
 
-def render_header():
-    """Render enhanced application header"""
-    st.markdown("""
-    <div class="main-header">
-        <h1>📋 Recommendation-Response Tracker</h1>
-        <p>AI-powered analysis of UK Government inquiry reports and responses</p>
-    </div>
-    """, unsafe_allow_html=True)
-
 # ===============================================
-# SIDEBAR AND STATUS DISPLAY
+# ERROR HANDLING
 # ===============================================
 
-def render_sidebar_info():
-    """Render comprehensive sidebar information"""
-    st.sidebar.markdown("## 🏠 Application Status")
+def handle_critical_error(error, context="Application"):
+    """Handle critical errors with user-friendly messages"""
+    error_id = datetime.now().strftime('%Y%m%d_%H%M%S')
     
-    # Document metrics
-    uploaded_docs = st.session_state.get('uploaded_documents', [])
-    extracted_recs = st.session_state.get('extracted_recommendations', [])
+    logging.critical(f"💥 Critical error in {context}: {error}", exc_info=True)
     
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        st.metric("📄 Documents", len(uploaded_docs))
-    with col2:
-        st.metric("📋 Recommendations", len(extracted_recs))
+    st.error(f"🚨 Critical Error in {context}")
     
-    # Component status
-    st.sidebar.markdown("### 🔧 Component Status")
-    
-    components_status = st.session_state.get('components_status', {})
-    
-    for component, status in components_status.items():
-        if status == 'available':
-            status_class = "status-online"
-            status_text = "Online"
-        elif status == 'fallback':
-            status_class = "status-warning" 
-            status_text = "Fallback"
-        else:
-            status_class = "status-offline"
-            status_text = "Offline"
-        
-        st.sidebar.markdown(f"""
-        <div>
-            <span class="status-indicator {status_class}"></span>
-            {component.title()}: {status_text}
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Package availability
-    if st.sidebar.checkbox("📦 Show Package Status"):
-        available = st.session_state.get('available_packages', [])
-        missing = st.session_state.get('missing_packages', [])
-        
-        if available:
-            st.sidebar.success(f"✅ {len(available)} packages available")
-        if missing:
-            st.sidebar.warning(f"⚠️ {len(missing)} packages missing")
-    
-    # Quick actions
-    st.sidebar.markdown("### ⚡ Quick Actions")
-    
-    if st.sidebar.button("🔄 Refresh Data"):
-        st.rerun()
-    
-    if st.sidebar.button("🧹 Clear Cache"):
-        st.cache_data.clear()
-        st.cache_resource.clear()
-        st.sidebar.success("Cache cleared!")
-    
-    if st.sidebar.button("🗑️ Clear Session"):
-        for key in list(st.session_state.keys()):
-            if key not in ['components_status', 'available_packages', 'missing_packages']:
-                del st.session_state[key]
-        st.sidebar.success("Session cleared!")
-        st.rerun()
-
-# ===============================================
-# WELCOME AND ONBOARDING
-# ===============================================
-
-def show_welcome_message():
-    """Show comprehensive welcome message"""
-    if st.session_state.get('first_visit', True):
-        st.balloons()
-        
-        st.markdown("""
-        <div class="success-message">
-            <h3>🎉 Welcome to the Recommendation-Response Tracker!</h3>
-            <p>This powerful tool helps you analyze UK Government inquiry reports and their responses:</p>
-            <ol>
-                <li><strong>📁 Upload</strong> PDF documents (inquiry reports and government responses)</li>
-                <li><strong>🔍 Extract</strong> recommendations and responses using AI or pattern matching</li>
-                <li><strong>🏷️ Annotate</strong> with conceptual themes using BERT models</li>
-                <li><strong>🔗 Match</strong> recommendations to their corresponding responses</li>
-                <li><strong>🔎 Search</strong> through all content with semantic search</li>
-                <li><strong>📊 Analyze</strong> results with interactive dashboards</li>
-            </ol>
-            <p><strong>👈 Start by uploading documents in the Upload tab!</strong></p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.session_state.first_visit = False
-
-# ===============================================
-# SYSTEM DIAGNOSTICS AND DEBUGGING
-# ===============================================
-
-def show_system_diagnostics():
-    """Show comprehensive system diagnostics"""
-    if st.sidebar.checkbox("🔍 System Diagnostics"):
-        st.sidebar.markdown("### 📊 System Info")
-        
-        # Basic system information
-        info = {
-            "Python": f"{sys.version.split()[0]}",
-            "Streamlit": st.__version__,
-            "Platform": platform.system(),
-            "Session Keys": len(st.session_state.keys())
-        }
-        
-        for key, value in info.items():
-            st.sidebar.text(f"{key}: {value}")
-        
-        # File structure status
-        if st.sidebar.button("📁 Check Files"):
-            missing_critical = st.session_state.get('missing_critical_files', [])
-            missing_optional = st.session_state.get('missing_optional_files', [])
-            
-            if not missing_critical:
-                st.sidebar.success("✅ All critical files present")
-            else:
-                st.sidebar.error(f"❌ Missing {len(missing_critical)} critical files")
-            
-            if missing_optional:
-                st.sidebar.warning(f"⚠️ Missing {len(missing_optional)} optional files")
-        
-        # Download logs
-        if st.sidebar.button("📥 Download Logs"):
-            log_file = Path("logs/app.log")
-            if log_file.exists():
-                with open(log_file, "r") as f:
-                    logs = f.read()
-                st.sidebar.download_button(
-                    "💾 Download",
-                    logs,
-                    f"app_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                    "text/plain"
-                )
-            else:
-                st.sidebar.warning("No log file found")
-
-# ===============================================
-# ERROR HANDLING AND RECOVERY
-# ===============================================
-
-def show_recovery_options(error):
-    """Show comprehensive recovery options when errors occur"""
-    st.markdown("""
-    <div class="error-message">
-        <h3>🚨 Application Error Detected</h3>
-        <p>An error occurred, but recovery options are available below.</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    st.error(f"**Error Details:** {str(error)}")
-    
-    with st.expander("🔧 Recovery Options", expanded=True):
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            if st.button("🔄 Restart App", use_container_width=True):
-                # Clear everything and restart
-                for key in list(st.session_state.keys()):
-                    del st.session_state[key]
-                st.rerun()
-        
-        with col2:
-            if st.button("🧹 Clear Data", use_container_width=True):
-                # Clear data but keep settings
-                data_keys = ['uploaded_documents', 'extracted_recommendations', 
-                            'annotated_recommendations', 'matched_responses']
-                for key in data_keys:
-                    if key in st.session_state:
-                        del st.session_state[key]
-                st.success("Data cleared!")
-        
-        with col3:
-            if st.button("💾 Clear Cache", use_container_width=True):
-                st.cache_data.clear()
-                st.cache_resource.clear()
-                st.success("Cache cleared!")
-        
-        with col4:
-            if st.button("📋 Show Details", use_container_width=True):
-                st.code(traceback.format_exc())
+    with st.expander("🔧 Error Details", expanded=False):
+        st.code(f"Error ID: {error_id}")
+        st.code(f"Error: {str(error)}")
+        st.code(f"Context: {context}")
+        st.code(f"Time: {datetime.now().isoformat()}")
     
     st.markdown("""
-    ### 💡 Troubleshooting Guide
+    ### 💡 Troubleshooting Steps
     
-    **Common solutions:**
     1. **Refresh the page** - Resolves most temporary issues
-    2. **Clear browser cache** - Fixes persistent loading problems
-    3. **Check file permissions** - Ensure app can read/write files
+    2. **Clear browser cache** - Fixes persistent loading problems  
+    3. **Check file structure** - Ensure all required files are present
     4. **Verify dependencies** - Run `pip install -r requirements.txt`
-    5. **Restart Streamlit** - Stop and restart the application
+    5. **Restart application** - Stop and restart Streamlit
     
     **If problems persist:**
     - Check the log files for detailed error information
-    - Verify all required files are present in the modules directory
+    - Verify all required modules are in the modules directory
     - Ensure Python environment is properly configured
     """)
 
@@ -775,7 +566,7 @@ def show_recovery_options(error):
 # ===============================================
 
 def main():
-    """Main application entry point with comprehensive error handling"""
+    """Main application entry point"""
     try:
         # Load custom styling
         load_custom_css()
@@ -812,254 +603,57 @@ def main():
             try:
                 ui_components['upload']()
             except Exception as e:
-                st.error(f"Error in Upload tab: {str(e)}")
-                logging.error(f"Upload tab error: {e}", exc_info=True)
+                handle_critical_error(e, "Upload Tab")
         
         with tabs[1]:
             try:
                 ui_components['extraction']()
             except Exception as e:
-                st.error(f"Error in Extraction tab: {str(e)}")
-                logging.error(f"Extraction tab error: {e}", exc_info=True)
+                handle_critical_error(e, "Extraction Tab")
         
         with tabs[2]:
             try:
                 ui_components['annotation']()
             except Exception as e:
-                st.error(f"Error in Annotation tab: {str(e)}")
-                logging.error(f"Annotation tab error: {e}", exc_info=True)
+                handle_critical_error(e, "Annotation Tab")
         
         with tabs[3]:
             try:
                 ui_components['matching']()
             except Exception as e:
-                st.error(f"Error in Matching tab: {str(e)}")
-                logging.error(f"Matching tab error: {e}", exc_info=True)
+                handle_critical_error(e, "Matching Tab")
         
         with tabs[4]:
             try:
                 ui_components['search']()
             except Exception as e:
-                st.error(f"Error in Search tab: {str(e)}")
-                logging.error(f"Search tab error: {e}", exc_info=True)
+                handle_critical_error(e, "Search Tab")
         
         with tabs[5]:
             try:
                 ui_components['dashboard']()
             except Exception as e:
-                st.error(f"Error in Dashboard tab: {str(e)}")
-                logging.error(f"Dashboard tab error: {e}", exc_info=True)
+                handle_critical_error(e, "Dashboard Tab")
         
-        # Render sidebar
+        # Footer information
         with st.sidebar:
-            render_sidebar_info()
-            show_system_diagnostics()
-        
-        # Update session activity
-        st.session_state.last_activity = datetime.now().isoformat()
+            st.markdown("---")
+            st.markdown("### ℹ️ System Information")
+            st.info(f"""
+            **Version:** 2.0.0  
+            **Python:** {platform.python_version()}  
+            **Streamlit:** {st.__version__}  
+            **Status:** {st.session_state.get('processing_status', 'idle').title()}
+            """)
+            
+            # Show recent activity
+            if st.session_state.get('last_processing_time'):
+                st.success(f"Last activity: {st.session_state.last_processing_time}")
         
         logging.info("✅ Application main loop completed successfully")
         
     except Exception as e:
-        logging.error(f"❌ Critical application error: {e}", exc_info=True)
-        st.session_state.system_errors.append({
-            'timestamp': datetime.now().isoformat(),
-            'error': str(e),
-            'traceback': traceback.format_exc()
-        })
-        show_recovery_options(e)
-
-# ===============================================
-# ADVANCED FEATURES AND UTILITIES
-# ===============================================
-
-def setup_advanced_features():
-    """Setup advanced features and integrations"""
-    
-    # Environment variables and API keys
-    if 'OPENAI_API_KEY' in os.environ:
-        st.session_state.openai_available = True
-        logging.info("✅ OpenAI API key detected")
-    
-    # Development mode
-    if os.getenv('DEV_MODE', 'false').lower() == 'true':
-        st.session_state.user_preferences['debug_mode'] = True
-        logging.info("🔧 Development mode enabled")
-    
-    # Performance monitoring
-    if not hasattr(st.session_state, 'performance_metrics'):
-        st.session_state.performance_metrics = {
-            'app_start_time': datetime.now(),
-            'total_uploads': 0,
-            'total_extractions': 0,
-            'average_processing_time': 0
-        }
-
-def export_session_data():
-    """Export session data for backup/restore"""
-    export_data = {
-        'timestamp': datetime.now().isoformat(),
-        'uploaded_documents': st.session_state.get('uploaded_documents', []),
-        'extracted_recommendations': st.session_state.get('extracted_recommendations', []),
-        'annotated_recommendations': st.session_state.get('annotated_recommendations', []),
-        'matched_responses': st.session_state.get('matched_responses', []),
-        'user_preferences': st.session_state.get('user_preferences', {}),
-        'processing_history': {
-            'extraction_history': st.session_state.get('extraction_history', []),
-            'annotation_history': st.session_state.get('annotation_history', []),
-            'matching_history': st.session_state.get('matching_history', [])
-        }
-    }
-    return export_data
-
-def health_check():
-    """Perform comprehensive application health check"""
-    health_status = {
-        'timestamp': datetime.now().isoformat(),
-        'overall_status': 'healthy',
-        'components': {},
-        'dependencies': {},
-        'performance': {},
-        'errors': []
-    }
-    
-    # Check components
-    components_status = st.session_state.get('components_status', {})
-    for component, status in components_status.items():
-        health_status['components'][component] = {
-            'status': status,
-            'last_check': datetime.now().isoformat()
-        }
-    
-    # Check dependencies
-    try:
-        import pandas
-        health_status['dependencies']['pandas'] = 'available'
-    except ImportError:
-        health_status['dependencies']['pandas'] = 'missing'
-    
-    try:
-        import openai
-        health_status['dependencies']['openai'] = 'available'
-    except ImportError:
-        health_status['dependencies']['openai'] = 'missing'
-    
-    # Check performance
-    if hasattr(st.session_state, 'performance_metrics'):
-        metrics = st.session_state.performance_metrics
-        uptime = datetime.now() - metrics.get('app_start_time', datetime.now())
-        health_status['performance'] = {
-            'uptime_seconds': uptime.total_seconds(),
-            'total_uploads': metrics.get('total_uploads', 0),
-            'total_extractions': metrics.get('total_extractions', 0)
-        }
-    
-    # Check for errors
-    system_errors = st.session_state.get('system_errors', [])
-    if system_errors:
-        health_status['errors'] = system_errors[-5:]  # Last 5 errors
-        health_status['overall_status'] = 'degraded'
-    
-    return health_status
-
-# ===============================================
-# API ENDPOINTS AND INTEGRATIONS
-# ===============================================
-
-def setup_api_integrations():
-    """Setup external API integrations"""
-    
-    # OpenAI Integration
-    if st.session_state.get('openai_available', False):
-        try:
-            import openai
-            api_key = os.getenv('OPENAI_API_KEY')
-            if api_key:
-                # Set up OpenAI client
-                st.session_state.openai_client = openai.OpenAI(api_key=api_key)
-                st.session_state.api_key_validated = True
-                logging.info("✅ OpenAI client initialized")
-        except Exception as e:
-            logging.warning(f"⚠️ OpenAI setup failed: {e}")
-            st.session_state.api_key_validated = False
-
-def validate_environment():
-    """Validate environment configuration"""
-    validation_results = {
-        'python_version': sys.version_info >= (3, 8),
-        'required_directories': True,
-        'write_permissions': True,
-        'memory_available': True
-    }
-    
-    # Check required directories
-    required_dirs = ['modules', 'modules/ui', 'logs', 'data']
-    for dir_path in required_dirs:
-        path = Path(dir_path)
-        if not path.exists():
-            try:
-                path.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                validation_results['required_directories'] = False
-    
-    # Check write permissions
-    try:
-        test_file = Path('logs/test_write.tmp')
-        test_file.write_text('test')
-        test_file.unlink()
-    except Exception:
-        validation_results['write_permissions'] = False
-    
-    return validation_results
-
-# ===============================================
-# CLEANUP AND MAINTENANCE
-# ===============================================
-
-def cleanup_old_files():
-    """Cleanup old log files and temporary data"""
-    try:
-        logs_dir = Path('logs')
-        if logs_dir.exists():
-            # Remove log files older than 7 days
-            cutoff_time = datetime.now().timestamp() - (7 * 24 * 60 * 60)
-            for log_file in logs_dir.glob('*.log'):
-                if log_file.stat().st_mtime < cutoff_time:
-                    log_file.unlink()
-                    logging.info(f"🧹 Cleaned up old log file: {log_file}")
-        
-        # Clean up temporary files
-        temp_dir = Path('temp')
-        if temp_dir.exists():
-            for temp_file in temp_dir.glob('*'):
-                if temp_file.stat().st_mtime < cutoff_time:
-                    temp_file.unlink()
-                    logging.info(f"🧹 Cleaned up temp file: {temp_file}")
-    
-    except Exception as e:
-        logging.warning(f"⚠️ Cleanup failed: {e}")
-
-def optimize_session_state():
-    """Optimize session state by removing old data"""
-    try:
-        # Limit history sizes
-        max_history_size = 100
-        
-        history_keys = ['extraction_history', 'annotation_history', 'matching_history', 'search_history']
-        for key in history_keys:
-            if key in st.session_state and len(st.session_state[key]) > max_history_size:
-                st.session_state[key] = st.session_state[key][-max_history_size:]
-        
-        # Limit error logs
-        error_keys = ['upload_errors', 'processing_errors', 'system_errors']
-        for key in error_keys:
-            if key in st.session_state and len(st.session_state[key]) > 50:
-                st.session_state[key] = st.session_state[key][-50:]
-        
-        logging.info("✅ Session state optimized")
-    
-    except Exception as e:
-        logging.warning(f"⚠️ Session optimization failed: {e}")
+        handle_critical_error(e, "Main Application")
 
 # ===============================================
 # APPLICATION ENTRY POINT
@@ -1067,25 +661,7 @@ def optimize_session_state():
 
 if __name__ == "__main__":
     try:
-        # Setup advanced features
-        setup_advanced_features()
-        
-        # Setup API integrations
-        setup_api_integrations()
-        
-        # Validate environment
-        env_validation = validate_environment()
-        if not all(env_validation.values()):
-            st.warning("⚠️ Some environment checks failed. Application may not work correctly.")
-            for check, result in env_validation.items():
-                if not result:
-                    st.error(f"❌ {check.replace('_', ' ').title()} check failed")
-        
-        # Run maintenance tasks
-        cleanup_old_files()
-        optimize_session_state()
-        
-        # Start main application
+        # Run main application
         main()
         
     except Exception as e:
