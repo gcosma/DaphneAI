@@ -380,7 +380,7 @@ class SmartExtractor:
         return min(1.0, quality)
 
 # ===============================================
-# FIXED DATA ACCESS FUNCTIONS (from previous fix)
+# FIXED DATA ACCESS FUNCTIONS
 # ===============================================
 
 def get_document_content_for_extraction(doc: Dict[str, Any]) -> str:
@@ -665,7 +665,7 @@ def process_smart_extraction(
     render_extraction_results()
 
 # ===============================================
-# STANDARD EXTRACTION INTERFACE (simplified)
+# STANDARD EXTRACTION INTERFACE
 # ===============================================
 
 def render_standard_extraction_interface():
@@ -792,345 +792,369 @@ def render_extraction_results():
                         file_name=f"extraction_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
                         mime="text/plain"
                     )
-        
-        # Preview results
-        st.subheader("🔍 Content Preview")
-        
-        preview_tabs = st.tabs(["📝 Recommendations", "📋 Responses", "📊 Quality Analysis"])
-        
-        with preview_tabs[0]:
-            if recommendations:
-                render_items_preview(recommendations, "Recommendation")
-            else:
-                st.info("No recommendations extracted")
-        
-        with preview_tabs[1]:
-            if responses:
-                render_items_preview(responses, "Response")
-            else:
-                st.info("No responses extracted")
-        
-        with preview_tabs[2]:
-            render_quality_analysis(recommendations + responses)
+    
+    # Preview results
+    if recommendations or responses:
+        render_results_preview(recommendations, responses)
 
-def render_items_preview(items: List[Dict], item_type: str):
-    """Render preview of extracted items"""
+def render_results_preview(recommendations: List[Dict], responses: List[Dict]):
+    """Render preview of extraction results"""
+    st.subheader("🔍 Content Preview")
     
-    # Sort by quality score if available
-    if items and items[0].get('quality_score') is not None:
-        sorted_items = sorted(items, key=lambda x: x.get('quality_score', 0), reverse=True)
-        st.write(f"**{len(items)} {item_type}s Found (sorted by quality, showing top 10)**")
-    else:
-        sorted_items = items
-        st.write(f"**{len(items)} {item_type}s Found (showing first 10)**")
+    preview_tabs = st.tabs(["📝 Recommendations", "📋 Responses", "📊 Quality Analysis"])
     
-    for i, item in enumerate(sorted_items[:10]):
-        # Quality indicator
-        if item.get('quality_score') is not None:
-            quality = item.get('quality_score', 0)
-            quality_color = "🟢" if quality > 0.8 else "🟡" if quality > 0.6 else "🔴"
-            quality_text = f" (Q: {quality:.3f})"
+    with preview_tabs[0]:
+        if recommendations:
+            st.write(f"**Found {len(recommendations)} recommendations:**")
+            
+            # Quality distribution
+            quality_counts = {'High (>0.8)': 0, 'Medium (0.5-0.8)': 0, 'Low (<0.5)': 0}
+            for rec in recommendations:
+                quality = rec.get('quality_score', 0)
+                if quality > 0.8:
+                    quality_counts['High (>0.8)'] += 1
+                elif quality > 0.5:
+                    quality_counts['Medium (0.5-0.8)'] += 1
+                else:
+                    quality_counts['Low (<0.5)'] += 1
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("High Quality", quality_counts['High (>0.8)'])
+            with col2:
+                st.metric("Medium Quality", quality_counts['Medium (0.5-0.8)'])
+            with col3:
+                st.metric("Low Quality", quality_counts['Low (<0.5)'])
+            
+            # Show top recommendations
+            sorted_recs = sorted(recommendations, key=lambda x: x.get('quality_score', 0), reverse=True)
+            
+            for i, rec in enumerate(sorted_recs[:5]):
+                with st.expander(f"Recommendation {rec.get('number', i+1)} (Quality: {rec.get('quality_score', 0):.3f})"):
+                    st.write(f"**Text:** {rec.get('text', 'No text available')}")
+                    st.write(f"**Words:** {rec.get('word_count', 0)} | **Confidence:** {rec.get('confidence', 0):.3f}")
+                    st.write(f"**Source:** {rec.get('document_context', {}).get('filename', 'Unknown')}")
         else:
-            quality_color = "📄"
-            quality_text = ""
-        
-        # Preview text
-        preview_text = item.get('text', '')[:80] + "..." if len(item.get('text', '')) > 80 else item.get('text', '')
-        
-        with st.expander(f"{quality_color} {item_type} {item.get('number', i+1)}: {preview_text}{quality_text}", expanded=False):
-            col1, col2 = st.columns([3, 1])
+            st.info("No recommendations found")
+    
+    with preview_tabs[1]:
+        if responses:
+            st.write(f"**Found {len(responses)} responses:**")
+            
+            # Response type distribution
+            response_types = {}
+            for resp in responses:
+                resp_type = resp.get('response_type', 'unknown')
+                response_types[resp_type] = response_types.get(resp_type, 0) + 1
+            
+            if response_types:
+                st.write("**Response Types:**")
+                for resp_type, count in response_types.items():
+                    st.write(f"- {resp_type.replace('_', ' ').title()}: {count}")
+            
+            # Show top responses
+            sorted_resps = sorted(responses, key=lambda x: x.get('quality_score', 0), reverse=True)
+            
+            for i, resp in enumerate(sorted_resps[:5]):
+                with st.expander(f"Response {resp.get('number', i+1)} ({resp.get('response_type', 'unknown').replace('_', ' ').title()})"):
+                    st.write(f"**Text:** {resp.get('text', 'No text available')}")
+                    st.write(f"**Words:** {resp.get('word_count', 0)} | **Confidence:** {resp.get('confidence', 0):.3f}")
+                    st.write(f"**Source:** {resp.get('document_context', {}).get('filename', 'Unknown')}")
+        else:
+            st.info("No responses found")
+    
+    with preview_tabs[2]:
+        all_items = recommendations + responses
+        if all_items:
+            # Statistics
+            word_counts = [item.get('word_count', 0) for item in all_items]
+            quality_scores = [item.get('quality_score', 0) for item in all_items]
+            
+            col1, col2 = st.columns(2)
             
             with col1:
-                st.write("**Complete Text:**")
-                st.write(item.get('text', 'No content'))
+                st.write("**Content Length Analysis:**")
+                short_items = sum(1 for wc in word_counts if wc < 20)
+                medium_items = sum(1 for wc in word_counts if 20 <= wc < 50)
+                long_items = sum(1 for wc in word_counts if wc >= 50)
                 
-                if item.get('response_type'):
-                    response_emoji = {
-                        'accepted': '✅ Accepted',
-                        'rejected': '❌ Rejected', 
-                        'partially_accepted': '⚡ Partially Accepted',
-                        'government_response': '📋 Government Response'
-                    }.get(item.get('response_type'), '❓ Unknown')
-                    st.write(f"**Response Type:** {response_emoji}")
+                st.write(f"- Short (<20 words): {short_items}")
+                st.write(f"- Medium (20-50 words): {medium_items}")
+                st.write(f"- Long (>50 words): {long_items}")
+                
+                if word_counts:
+                    st.write(f"- Average length: {sum(word_counts)/len(word_counts):.1f} words")
+                    st.write(f"- Longest item: {max(word_counts)} words")
             
             with col2:
-                st.write("**Metrics:**")
-                if item.get('quality_score') is not None:
-                    st.write(f"📊 Quality: {item.get('quality_score', 0):.3f}")
-                if item.get('confidence') is not None:
-                    st.write(f"🎯 Confidence: {item.get('confidence', 0):.3f}")
-                if item.get('word_count') is not None:
-                    st.write(f"📝 Words: {item.get('word_count', 0)}")
-                if item.get('extraction_method'):
-                    st.write(f"🔧 Method: {item.get('extraction_method', 'unknown')}")
-                
-                if item.get('document_context'):
-                    st.write(f"📄 Source: {item['document_context'].get('filename', 'Unknown')}")
-
-def render_quality_analysis(items: List[Dict]):
-    """Render quality analysis of extracted items"""
-    
-    if not items:
-        st.info("No items to analyze")
-        return
-    
-    # Check if quality scores are available
-    has_quality_scores = any(item.get('quality_score') is not None for item in items)
-    has_word_counts = any(item.get('word_count') is not None for item in items)
-    
-    if has_quality_scores or has_word_counts:
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if has_quality_scores:
-                st.write("**Quality Distribution:**")
-                qualities = [item.get('quality_score', 0) for item in items if item.get('quality_score') is not None]
-                if qualities:
-                    high_quality = len([q for q in qualities if q >= 0.8])
-                    medium_quality = len([q for q in qualities if 0.6 <= q < 0.8])
-                    low_quality = len([q for q in qualities if q < 0.6])
-                    
-                    st.write(f"🟢 High Quality (≥0.8): {high_quality}")
-                    st.write(f"🟡 Medium Quality (0.6-0.8): {medium_quality}")
-                    st.write(f"🔴 Low Quality (<0.6): {low_quality}")
+                st.write("**Quality Analysis:**")
+                if quality_scores:
+                    st.write(f"- Average quality: {sum(quality_scores)/len(quality_scores):.3f}")
+                    st.write(f"- Highest quality: {max(quality_scores):.3f}")
+                    st.write(f"- Items >0.8 quality: {sum(1 for q in quality_scores if q > 0.8)}")
             
-            if has_word_counts:
-                st.write("**Content Length Distribution:**")
-                word_counts = [item.get('word_count', 0) for item in items if item.get('word_count') is not None]
-                if word_counts:
-                    short_items = len([w for w in word_counts if w < 20])
-                    medium_items = len([w for w in word_counts if 20 <= w < 50])
-                    long_items = len([w for w in word_counts if w >= 50])
-                    
-                    st.write(f"📝 Short (<20 words): {short_items}")
-                    st.write(f"📄 Medium (20-50 words): {medium_items}")
-                    st.write(f"📚 Long (≥50 words): {long_items}")
-        
-        with col2:
-            st.write("**Summary Statistics:**")
-            if has_quality_scores:
-                qualities = [item.get('quality_score', 0) for item in items if item.get('quality_score') is not None]
-                if qualities:
-                    st.write(f"Average Quality: {sum(qualities)/len(qualities):.3f}")
-            
-            if has_word_counts:
-                word_counts = [item.get('word_count', 0) for item in items if item.get('word_count') is not None]
-                if word_counts:
-                    st.write(f"Average Word Count: {sum(word_counts)/len(word_counts):.1f}")
-                    st.write(f"Total Words: {sum(word_counts):,}")
-            
-            # Show best items
-            if has_quality_scores:
+            # Best quality items
+            if all_items:
                 st.write("**Highest Quality Items:**")
-                best_items = sorted([item for item in items if item.get('quality_score') is not None], 
-                                  key=lambda x: x.get('quality_score', 0), reverse=True)[:3]
-                for i, item in enumerate(best_items, 1):
-                    preview = item.get('text', '')[:40] + "..." if len(item.get('text', '')) > 40 else item.get('text', '')
-                    st.write(f"{i}. {preview} (Q: {item.get('quality_score', 0):.3f})")
-    else:
-        st.write("**Basic Statistics:**")
-        st.write(f"Total Items: {len(items)}")
-        st.write(f"Items with Text: {len([item for item in items if item.get('text')])}")
+                best_items = sorted(all_items, key=lambda x: x.get('quality_score', 0), reverse=True)[:3]
+                
+                for item in best_items:
+                    item_type = item.get('content_type', 'item').title()
+                    quality = item.get('quality_score', 0)
+                    preview = item.get('text', '')[:100] + "..." if len(item.get('text', '')) > 100 else item.get('text', '')
+                    st.write(f"- **{item_type}** (Quality: {quality:.3f}): {preview}")
 
 # ===============================================
 # DOWNLOAD FUNCTIONS
 # ===============================================
 
 def create_comprehensive_csv(recommendations: List[Dict], responses: List[Dict]) -> str:
-    """Create comprehensive CSV with all extracted content"""
-    all_items = []
-    
-    # Process recommendations
-    for i, rec in enumerate(recommendations):
-        all_items.append({
-            'Item_ID': f"REC_{i+1:03d}",
-            'Type': 'Recommendation',
-            'Number': rec.get('number', f'Auto_{i+1}'),
-            'Full_Text': rec.get('text', ''),
-            'Word_Count': rec.get('word_count', len(rec.get('text', '').split())),
-            'Character_Count': rec.get('char_count', len(rec.get('text', ''))),
-            'Confidence_Score': rec.get('confidence', 0),
-            'Quality_Score': rec.get('quality_score', 0),
-            'Extraction_Method': rec.get('extraction_method', 'unknown'),
-            'Context_Lines': rec.get('context_lines', 0),
-            'Start_Line': rec.get('start_line', 0),
-            'End_Line': rec.get('end_line', 0),
-            'Document_Source': rec.get('document_context', {}).get('filename', 'Unknown'),
-            'Extracted_At': rec.get('extracted_at', datetime.now().isoformat()),
-            'Content_Preview': rec.get('text', '')[:100] + '...' if len(rec.get('text', '')) > 100 else rec.get('text', '')
-        })
-    
-    # Process responses
-    for i, resp in enumerate(responses):
-        all_items.append({
-            'Item_ID': f"RESP_{i+1:03d}",
-            'Type': 'Response',
-            'Number': resp.get('number', f'Auto_{i+1}'),
-            'Full_Text': resp.get('text', ''),
-            'Word_Count': resp.get('word_count', len(resp.get('text', '').split())),
-            'Character_Count': resp.get('char_count', len(resp.get('text', ''))),
-            'Confidence_Score': resp.get('confidence', 0),
-            'Quality_Score': resp.get('quality_score', 0),
-            'Extraction_Method': resp.get('extraction_method', 'unknown'),
-            'Context_Lines': resp.get('context_lines', 0),
-            'Start_Line': resp.get('start_line', 0),
-            'End_Line': resp.get('end_line', 0),
-            'Document_Source': resp.get('document_context', {}).get('filename', 'Unknown'),
-            'Response_Type': resp.get('response_type', 'unknown'),
-            'Extracted_At': resp.get('extracted_at', datetime.now().isoformat()),
-            'Content_Preview': resp.get('text', '')[:100] + '...' if len(resp.get('text', '')) > 100 else resp.get('text', '')
-        })
-    
-    if all_items:
+    """Create comprehensive CSV with all extraction data"""
+    try:
+        all_items = []
+        
+        # Process recommendations
+        for i, rec in enumerate(recommendations):
+            all_items.append({
+                'Item_ID': f"REC_{i+1:03d}",
+                'Type': 'Recommendation',
+                'Number': rec.get('number', ''),
+                'Full_Text': rec.get('text', ''),
+                'Word_Count': rec.get('word_count', 0),
+                'Character_Count': rec.get('char_count', 0),
+                'Quality_Score': rec.get('quality_score', 0),
+                'Confidence_Score': rec.get('confidence', 0),
+                'Extraction_Method': rec.get('extraction_method', ''),
+                'Document_Source': rec.get('document_context', {}).get('filename', ''),
+                'Content_Preview': rec.get('text', '')[:100] + "..." if len(rec.get('text', '')) > 100 else rec.get('text', ''),
+                'Context_Lines': rec.get('context_lines', 0),
+                'Start_Line': rec.get('start_line', 0),
+                'End_Line': rec.get('end_line', 0),
+                'Extracted_At': rec.get('extracted_at', ''),
+                'Response_Type': ''
+            })
+        
+        # Process responses
+        for i, resp in enumerate(responses):
+            all_items.append({
+                'Item_ID': f"RESP_{i+1:03d}",
+                'Type': 'Response',
+                'Number': resp.get('number', ''),
+                'Full_Text': resp.get('text', ''),
+                'Word_Count': resp.get('word_count', 0),
+                'Character_Count': resp.get('char_count', 0),
+                'Quality_Score': resp.get('quality_score', 0),
+                'Confidence_Score': resp.get('confidence', 0),
+                'Extraction_Method': resp.get('extraction_method', ''),
+                'Document_Source': resp.get('document_context', {}).get('filename', ''),
+                'Content_Preview': resp.get('text', '')[:100] + "..." if len(resp.get('text', '')) > 100 else resp.get('text', ''),
+                'Context_Lines': resp.get('context_lines', 0),
+                'Start_Line': resp.get('start_line', 0),
+                'End_Line': resp.get('end_line', 0),
+                'Extracted_At': resp.get('extracted_at', ''),
+                'Response_Type': resp.get('response_type', '')
+            })
+        
+        if not all_items:
+            return ""
+        
+        # Create DataFrame and CSV
         df = pd.DataFrame(all_items)
-        return df.to_csv(index=False)
-    return ""
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False, encoding='utf-8')
+        return csv_buffer.getvalue()
+        
+    except Exception as e:
+        logging.error(f"Error creating CSV: {e}")
+        return ""
 
-def create_detailed_json(recommendations: List[Dict], responses: List[Dict], metadata: Dict) -> str:
-    """Create detailed JSON export"""
-    export_data = {
-        'extraction_metadata': {
-            'timestamp': datetime.now().isoformat(),
-            'total_recommendations': len(recommendations),
-            'total_responses': len(responses),
-            'extraction_method': metadata.get('extraction_method', 'unknown'),
-            **metadata
-        },
-        'recommendations': recommendations,
-        'responses': responses,
-        'summary': {
-            'total_items': len(recommendations) + len(responses),
-            'total_words': sum(item.get('word_count', 0) for item in recommendations + responses),
-            'average_quality': sum(item.get('quality_score', 0) for item in recommendations + responses) / max(len(recommendations + responses), 1),
-            'extraction_timestamp': datetime.now().isoformat()
+def create_detailed_json(recommendations: List[Dict], responses: List[Dict], results: Dict) -> str:
+    """Create detailed JSON with full metadata"""
+    try:
+        export_data = {
+            'metadata': {
+                'extraction_timestamp': results.get('timestamp', datetime.now().isoformat()),
+                'extraction_method': results.get('extraction_method', 'unknown'),
+                'total_recommendations': len(recommendations),
+                'total_responses': len(responses),
+                'settings': results.get('settings', {}),
+                'processing_results': results.get('processing_results', [])
+            },
+            'statistics': {
+                'total_items': len(recommendations) + len(responses),
+                'avg_word_count': sum(item.get('word_count', 0) for item in recommendations + responses) / max(len(recommendations + responses), 1),
+                'avg_quality_score': sum(item.get('quality_score', 0) for item in recommendations + responses) / max(len(recommendations + responses), 1),
+                'quality_distribution': _calculate_quality_distribution(recommendations + responses),
+                'content_length_distribution': _calculate_length_distribution(recommendations + responses)
+            },
+            'recommendations': recommendations,
+            'responses': responses
         }
-    }
-    
-    return json.dumps(export_data, indent=2, ensure_ascii=False)
+        
+        return json.dumps(export_data, indent=2, ensure_ascii=False, default=str)
+        
+    except Exception as e:
+        logging.error(f"Error creating JSON: {e}")
+        return ""
 
 def create_formatted_report(recommendations: List[Dict], responses: List[Dict]) -> str:
-    """Create formatted text report"""
-    report_lines = [
-        "=" * 80,
-        "RECOMMENDATION-RESPONSE EXTRACTION REPORT",
-        "=" * 80,
-        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"Total Recommendations: {len(recommendations)}",
-        f"Total Responses: {len(responses)}",
-        "",
-        "RECOMMENDATIONS",
-        "=" * 40,
-        ""
-    ]
-    
-    # Add recommendations
-    for i, rec in enumerate(recommendations, 1):
-        report_lines.extend([
-            f"RECOMMENDATION {rec.get('number', i)}",
-            "-" * 30,
-            f"Quality: {rec.get('quality_score', 0):.3f} | Confidence: {rec.get('confidence', 0):.3f}",
-            f"Words: {rec.get('word_count', 0)} | Method: {rec.get('extraction_method', 'unknown')}",
-            "",
-            rec.get('text', 'No content'),
-            "",
-            ""
-        ])
-    
-    # Add responses
-    if responses:
-        report_lines.extend([
-            "",
-            "RESPONSES",
-            "=" * 40,
-            ""
-        ])
+    """Create human-readable formatted report"""
+    try:
+        report_lines = []
+        report_lines.append("=" * 80)
+        report_lines.append("EXTRACTION RESULTS REPORT")
+        report_lines.append("=" * 80)
+        report_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        report_lines.append("")
         
-        for i, resp in enumerate(responses, 1):
-            report_lines.extend([
-                f"RESPONSE {resp.get('number', i)} ({resp.get('response_type', 'Unknown').upper()})",
-                "-" * 40,
-                f"Quality: {resp.get('quality_score', 0):.3f} | Confidence: {resp.get('confidence', 0):.3f}",
-                f"Words: {resp.get('word_count', 0)} | Method: {resp.get('extraction_method', 'unknown')}",
-                "",
-                resp.get('text', 'No content'),
-                "",
-                ""
-            ])
+        # Summary
+        report_lines.append("SUMMARY")
+        report_lines.append("-" * 40)
+        report_lines.append(f"Total Recommendations: {len(recommendations)}")
+        report_lines.append(f"Total Responses: {len(responses)}")
+        total_words = sum(item.get('word_count', 0) for item in recommendations + responses)
+        report_lines.append(f"Total Words Extracted: {total_words:,}")
+        report_lines.append("")
+        
+        # Recommendations
+        if recommendations:
+            report_lines.append("RECOMMENDATIONS")
+            report_lines.append("=" * 50)
+            
+            for i, rec in enumerate(recommendations, 1):
+                report_lines.append(f"\nRECOMMENDATION {rec.get('number', i)}")
+                report_lines.append("-" * 30)
+                report_lines.append(f"Quality Score: {rec.get('quality_score', 0):.3f}")
+                report_lines.append(f"Word Count: {rec.get('word_count', 0)}")
+                report_lines.append(f"Source: {rec.get('document_context', {}).get('filename', 'Unknown')}")
+                report_lines.append("")
+                text = rec.get('text', '').strip()
+                # Wrap text to 80 characters
+                words = text.split()
+                lines = []
+                current_line = []
+                current_length = 0
+                
+                for word in words:
+                    if current_length + len(word) + 1 <= 80:
+                        current_line.append(word)
+                        current_length += len(word) + 1
+                    else:
+                        if current_line:
+                            lines.append(' '.join(current_line))
+                        current_line = [word]
+                        current_length = len(word)
+                
+                if current_line:
+                    lines.append(' '.join(current_line))
+                
+                for line in lines:
+                    report_lines.append(line)
+                report_lines.append("")
+        
+        # Responses
+        if responses:
+            report_lines.append("\nRESPONSES")
+            report_lines.append("=" * 50)
+            
+            for i, resp in enumerate(responses, 1):
+                report_lines.append(f"\nRESPONSE {resp.get('number', i)}")
+                report_lines.append("-" * 30)
+                report_lines.append(f"Type: {resp.get('response_type', 'unknown').replace('_', ' ').title()}")
+                report_lines.append(f"Quality Score: {resp.get('quality_score', 0):.3f}")
+                report_lines.append(f"Word Count: {resp.get('word_count', 0)}")
+                report_lines.append(f"Source: {resp.get('document_context', {}).get('filename', 'Unknown')}")
+                report_lines.append("")
+                text = resp.get('text', '').strip()
+                # Wrap text to 80 characters
+                words = text.split()
+                lines = []
+                current_line = []
+                current_length = 0
+                
+                for word in words:
+                    if current_length + len(word) + 1 <= 80:
+                        current_line.append(word)
+                        current_length += len(word) + 1
+                    else:
+                        if current_line:
+                            lines.append(' '.join(current_line))
+                        current_line = [word]
+                        current_length = len(word)
+                
+                if current_line:
+                    lines.append(' '.join(current_line))
+                
+                for line in lines:
+                    report_lines.append(line)
+                report_lines.append("")
+        
+        report_lines.append("=" * 80)
+        report_lines.append("END OF REPORT")
+        report_lines.append("=" * 80)
+        
+        return '\n'.join(report_lines)
+        
+    except Exception as e:
+        logging.error(f"Error creating report: {e}")
+        return ""
+
+def _calculate_quality_distribution(items: List[Dict]) -> Dict[str, int]:
+    """Calculate quality score distribution"""
+    distribution = {'high': 0, 'medium': 0, 'low': 0}
     
-    return "\n".join(report_lines)
-
-# ===============================================
-# UTILITY FUNCTIONS
-# ===============================================
-
-def clear_extraction_results():
-    """Clear extraction results from session state"""
-    if 'extraction_results' in st.session_state:
-        del st.session_state.extraction_results
-
-def get_extraction_statistics() -> Dict[str, Any]:
-    """Get extraction statistics"""
-    results = st.session_state.get('extraction_results', {})
+    for item in items:
+        quality = item.get('quality_score', 0)
+        if quality > 0.8:
+            distribution['high'] += 1
+        elif quality > 0.5:
+            distribution['medium'] += 1
+        else:
+            distribution['low'] += 1
     
-    return {
-        'total_recommendations': len(results.get('recommendations', [])),
-        'total_responses': len(results.get('responses', [])),
-        'extraction_method': results.get('extraction_method', 'unknown'),
-        'extraction_timestamp': results.get('timestamp', ''),
-        'settings': results.get('settings', {})
-    }
+    return distribution
 
-def get_recommendations_for_annotation() -> List[Dict]:
-    """Get extracted recommendations for annotation tab (backwards compatibility)"""
-    results = st.session_state.get('extraction_results', {})
-    return results.get('recommendations', [])
+def _calculate_length_distribution(items: List[Dict]) -> Dict[str, int]:
+    """Calculate content length distribution"""
+    distribution = {'short': 0, 'medium': 0, 'long': 0}
+    
+    for item in items:
+        word_count = item.get('word_count', 0)
+        if word_count < 20:
+            distribution['short'] += 1
+        elif word_count < 50:
+            distribution['medium'] += 1
+        else:
+            distribution['long'] += 1
+    
+    return distribution
 
 # ===============================================
-# MODULE EXPORTS
+# AI CONCEPT EXTRACTION INTEGRATION
+# ===============================================
+
+def integrate_ai_concept_extraction():
+    """Integrate AI concept extraction if available"""
+    try:
+        from modules.ai_concept_extraction import render_ai_concept_extraction_interface
+        st.markdown("---")
+        st.subheader("🤖 AI Concept Analysis")
+        st.markdown("*Enhanced semantic understanding and paragraph classification*")
+        render_ai_concept_extraction_interface()
+    except ImportError:
+        st.info("💡 AI Concept Extraction available - install sentence-transformers for enhanced semantic analysis")
+
+# ===============================================
+# EXPORT TO OTHER MODULES
 # ===============================================
 
 __all__ = [
-    # Main functions
     'render_extraction_tab',
-    'render_smart_extraction_interface',
-    'render_standard_extraction_interface',
-    'render_ai_extraction_interface',
-    'render_extraction_results',
-    
-    # Processing functions
-    'process_smart_extraction',
-    
-    # Data access functions (FIXED)
+    'SmartExtractor',
     'get_document_content_for_extraction',
     'detect_document_type',
     'validate_documents_for_extraction',
-    
-    # Display functions
-    'render_items_preview',
-    'render_quality_analysis',
-    
-    # Download functions
     'create_comprehensive_csv',
     'create_detailed_json',
-    'create_formatted_report',
-    
-    # Utility functions
-    'clear_extraction_results',
-    'get_extraction_statistics',
-    'get_recommendations_for_annotation',
-    
-    # Classes
-    'SmartExtractor',
-    
-    # Availability flags
-    'ENHANCED_EXTRACTOR_AVAILABLE',
-    'LLM_EXTRACTOR_AVAILABLE',
-    'CORE_UTILS_AVAILABLE'
+    'create_formatted_report'
 ]
-
-# ===============================================
-# MODULE INITIALIZATION
-# ===============================================
-
-logging.info("🎉 Enhanced Extraction Components loaded with Smart Extraction capabilities!")
-logging.info(f"Available features: Enhanced={ENHANCED_EXTRACTOR_AVAILABLE}, LLM={LLM_EXTRACTOR_AVAILABLE}, Core={CORE_UTILS_AVAILABLE}")
