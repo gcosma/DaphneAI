@@ -1,198 +1,151 @@
 # ===============================================
-# UPLOAD COMPONENTS MODULE - COMPLETE IMPLEMENTATION
-# Fixed Import Issues & Robust Error Handling
-# 
-# This module provides comprehensive document upload functionality
-# for the Recommendation-Response Tracker system.
-#
-# Key Features:
-# - Intelligent import fallbacks for DocumentProcessor
-# - Robust PDF text extraction with multiple library support
-# - Comprehensive error handling and user feedback
-# - Batch processing capabilities
-# - Document library management
-# - Export functionality for metadata and results
-#
-# Dependencies (with fallbacks):
-# - Primary: modules.document_processor.DocumentProcessor
-# - Fallback: pdfplumber for PDF processing
-# - Final fallback: PyMuPDF (fitz) for PDF processing
-# - Core utilities with mock implementations if unavailable
-#
-# Author: Recommendation-Response Tracker Team
-# Version: 2.0 - Complete with fallbacks
-# Last Updated: 2025
+# COMPLETE modules/ui/upload_components.py
+# Document upload and management functionality
 # ===============================================
 
 import streamlit as st
 import pandas as pd
 import logging
-from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-import time
-import os
-import tempfile
+import hashlib
+import io
+from pathlib import Path
 
-# Configure logging first
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 
-# Import core modules with better error handling
-DOCUMENT_PROCESSOR_AVAILABLE = False
-SECURITY_VALIDATOR_AVAILABLE = False
-CORE_UTILS_AVAILABLE = False
-
-# Try importing DocumentProcessor with multiple fallback paths
+# Import PDF processing with fallbacks
 try:
-    # Try direct import first
-    from modules.document_processor import DocumentProcessor
-    DOCUMENT_PROCESSOR_AVAILABLE = True
-    logging.info("✅ DocumentProcessor imported successfully")
+    import pdfplumber
+    PDF_PLUMBER_AVAILABLE = True
 except ImportError:
-    try:
-        # Try alternative import path
-        import sys
-        import os
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        from modules.document_processor import DocumentProcessor
-        DOCUMENT_PROCESSOR_AVAILABLE = True
-        logging.info("✅ DocumentProcessor imported via alternative path")
-    except ImportError:
-        try:
-            # Try relative import
-            from .document_processor import DocumentProcessor
-            DOCUMENT_PROCESSOR_AVAILABLE = True
-            logging.info("✅ DocumentProcessor imported via relative path")
-        except ImportError:
-            logging.error("❌ DocumentProcessor not available - will use fallback")
-            # Create fallback DocumentProcessor
-            class DocumentProcessor:
-                def __init__(self):
-                    self.logger = logging.getLogger(__name__)
-                
-                def extract_text_from_pdf(self, pdf_path: str, **kwargs) -> Dict[str, Any]:
-                    """Fallback extraction method"""
-                    try:
-                        # Try basic text extraction with pdfplumber
-                        try:
-                            import pdfplumber
-                            with pdfplumber.open(pdf_path) as pdf:
-                                text = ""
-                                for page in pdf.pages:
-                                    page_text = page.extract_text() or ""
-                                    text += page_text + "\n"
-                                
-                                return {
-                                    'success': True,
-                                    'filename': Path(pdf_path).name,
-                                    'text': text,
-                                    'content': text,
-                                    'sections': [],
-                                    'recommendations': [],
-                                    'responses': [],
-                                    'metadata': {
-                                        'total_pages': len(pdf.pages),
-                                        'extraction_method': 'fallback_pdfplumber',
-                                        'text_length': len(text)
-                                    },
-                                    'processed_at': datetime.now().isoformat(),
-                                    'extractor_version': 'Fallback_v1.0'
-                                }
-                        except ImportError:
-                            # Try PyMuPDF as final fallback
-                            try:
-                                import fitz
-                                doc = fitz.open(pdf_path)
-                                text = ""
-                                for page_num in range(len(doc)):
-                                    page = doc[page_num]
-                                    text += page.get_text() + "\n"
-                                doc.close()
-                                
-                                return {
-                                    'success': True,
-                                    'filename': Path(pdf_path).name,
-                                    'text': text,
-                                    'content': text,
-                                    'sections': [],
-                                    'recommendations': [],
-                                    'responses': [],
-                                    'metadata': {
-                                        'total_pages': len(doc),
-                                        'extraction_method': 'fallback_pymupdf',
-                                        'text_length': len(text)
-                                    },
-                                    'processed_at': datetime.now().isoformat(),
-                                    'extractor_version': 'Fallback_v1.0'
-                                }
-                            except ImportError:
-                                return {
-                                    'success': False,
-                                    'error': 'No PDF processing libraries available',
-                                    'filename': Path(pdf_path).name,
-                                    'text': '',
-                                    'content': '',
-                                    'sections': [],
-                                    'recommendations': [],
-                                    'responses': [],
-                                    'metadata': {'error': 'No PDF libraries'},
-                                    'processed_at': datetime.now().isoformat(),
-                                    'extractor_version': 'Fallback_v1.0'
-                                }
-                    except Exception as e:
-                        return {
-                            'success': False,
-                            'error': str(e),
-                            'filename': Path(pdf_path).name,
-                            'text': '',
-                            'content': '',
-                            'sections': [],
-                            'recommendations': [],
-                            'responses': [],
-                            'metadata': {'error': str(e)},
-                            'processed_at': datetime.now().isoformat(),
-                            'extractor_version': 'Fallback_v1.0'
-                        }
+    PDF_PLUMBER_AVAILABLE = False
+    logging.warning("pdfplumber not available")
 
-# Try importing other utilities
 try:
-    from modules.core_utils import (
-        SecurityValidator, 
-        log_user_action, 
-        extract_government_document_metadata,
-        detect_inquiry_document_structure
-    )
-    SECURITY_VALIDATOR_AVAILABLE = True
-    CORE_UTILS_AVAILABLE = True
-    logging.info("✅ Core utilities imported successfully")
-except ImportError as import_error:
-    logging.warning(f"⚠️ Core utilities not available: {import_error}")
-    
-    # Fallback implementations
-    class SecurityValidator:
-        @staticmethod
-        def validate_text_input(text, max_length=10000):
-            return str(text)[:max_length] if text else ""
-    
-    def log_user_action(action, details):
-        logging.info(f"User action: {action} - {details}")
-    
-    def extract_government_document_metadata(content):
-        return {'document_type': 'unknown', 'extraction_method': 'fallback'}
-    
-    def detect_inquiry_document_structure(content):
-        return {
-            'document_structure': 'unknown', 
-            'has_recommendations': 'recommendation' in content.lower() if content else False,
-            'has_responses': 'response' in content.lower() if content else False
-        }
+    import fitz  # PyMuPDF
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    PYMUPDF_AVAILABLE = False
+    logging.warning("PyMuPDF not available")
 
-# ===============================================
-# MAIN UPLOAD TAB FUNCTION
-# ===============================================
+class DocumentProcessor:
+    """Handle document upload and processing"""
+    
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+        self.supported_types = ['pdf']
+        self.max_file_size = 200 * 1024 * 1024  # 200MB
+    
+    def process_uploaded_file(self, uploaded_file) -> Dict[str, Any]:
+        """Process a single uploaded file"""
+        try:
+            # Basic file info
+            file_info = {
+                'filename': uploaded_file.name,
+                'size': uploaded_file.size,
+                'type': uploaded_file.type,
+                'uploaded_at': datetime.now().isoformat(),
+                'processing_status': 'processing'
+            }
+            
+            # Check file size
+            if uploaded_file.size > self.max_file_size:
+                file_info['error'] = f"File too large ({uploaded_file.size / 1024 / 1024:.1f}MB). Max size is 200MB."
+                file_info['processing_status'] = 'error'
+                return file_info
+            
+            # Generate file hash for deduplication
+            file_content = uploaded_file.read()
+            file_hash = hashlib.md5(file_content).hexdigest()
+            file_info['file_hash'] = file_hash
+            
+            # Reset file pointer
+            uploaded_file.seek(0)
+            
+            # Extract text content
+            if uploaded_file.type == 'application/pdf':
+                extraction_result = self._extract_pdf_content(uploaded_file)
+                file_info['extraction_result'] = extraction_result
+            else:
+                file_info['error'] = f"Unsupported file type: {uploaded_file.type}"
+                file_info['processing_status'] = 'error'
+                return file_info
+            
+            # Success
+            file_info['processing_status'] = 'completed'
+            return file_info
+            
+        except Exception as e:
+            self.logger.error(f"Error processing file {uploaded_file.name}: {e}")
+            file_info['error'] = str(e)
+            file_info['processing_status'] = 'error'
+            return file_info
+    
+    def _extract_pdf_content(self, pdf_file) -> Dict[str, Any]:
+        """Extract content from PDF file"""
+        extraction_result = {
+            'text': '',
+            'page_count': 0,
+            'metadata': {},
+            'extraction_method': 'none',
+            'success': False
+        }
+        
+        # Try pdfplumber first
+        if PDF_PLUMBER_AVAILABLE:
+            try:
+                with pdfplumber.open(pdf_file) as pdf:
+                    pages_text = []
+                    for page in pdf.pages:
+                        text = page.extract_text()
+                        if text:
+                            pages_text.append(text)
+                    
+                    extraction_result.update({
+                        'text': '\n'.join(pages_text),
+                        'page_count': len(pdf.pages),
+                        'metadata': pdf.metadata or {},
+                        'extraction_method': 'pdfplumber',
+                        'success': True
+                    })
+                    return extraction_result
+            except Exception as e:
+                self.logger.warning(f"pdfplumber extraction failed: {e}")
+        
+        # Try PyMuPDF as fallback
+        if PYMUPDF_AVAILABLE:
+            try:
+                pdf_file.seek(0)
+                pdf_document = fitz.open(stream=pdf_file.read(), filetype="pdf")
+                pages_text = []
+                
+                for page_num in range(pdf_document.page_count):
+                    page = pdf_document[page_num]
+                    text = page.get_text()
+                    if text:
+                        pages_text.append(text)
+                
+                extraction_result.update({
+                    'text': '\n'.join(pages_text),
+                    'page_count': pdf_document.page_count,
+                    'metadata': pdf_document.metadata,
+                    'extraction_method': 'pymupdf',
+                    'success': True
+                })
+                pdf_document.close()
+                return extraction_result
+                
+            except Exception as e:
+                self.logger.warning(f"PyMuPDF extraction failed: {e}")
+        
+        # If both methods fail
+        extraction_result['error'] = "Could not extract text from PDF"
+        return extraction_result
 
 def render_upload_tab():
-    """Render the main upload tab for document management"""
+    """Main upload tab interface"""
     st.header("📁 Document Upload & Management")
     
     st.markdown("""
@@ -200,490 +153,351 @@ def render_upload_tab():
     process and extract only the relevant sections for analysis.
     """)
     
-    # Show component availability status
+    # Status indicators
     col1, col2 = st.columns(2)
+    
     with col1:
-        if DOCUMENT_PROCESSOR_AVAILABLE:
+        if PDF_PLUMBER_AVAILABLE:
             st.success("✅ DocumentProcessor available")
         else:
-            st.warning("⚠️ DocumentProcessor using fallback mode")
+            st.warning("⚠️ Limited PDF processing available")
     
     with col2:
-        if CORE_UTILS_AVAILABLE:
-            st.success("✅ Core utilities available")
+        if st.session_state.get('uploaded_documents'):
+            st.info(f"📚 Core utilities using fallback mode")
         else:
-            st.info("ℹ️ Core utilities using fallback mode")
+            st.info("🔧 Core utilities using fallback mode")
     
-    # Main interface components
+    # Document upload section
     render_upload_interface()
+    
+    # Document library
     render_document_library()
+    
+    # Batch operations
     render_batch_operations()
 
-# ===============================================
-# UPLOAD INTERFACE - FIXED
-# ===============================================
-
 def render_upload_interface():
-    """Render the simplified file upload interface"""
-    st.subheader("📤 Upload New Documents")
+    """File upload interface"""
+    st.subheader("☁️ Upload New Documents")
     
+    # File uploader
     uploaded_files = st.file_uploader(
         "Choose PDF files",
         type=['pdf'],
         accept_multiple_files=True,
-        help="Upload PDF documents containing recommendations and responses. The system will automatically extract relevant sections."
+        help="Upload government inquiry reports, response documents, or related PDFs. Maximum 200MB per file.",
+        key="file_uploader"
     )
     
-    # Processing options in an expander
-    with st.expander("🔧 Processing Options"):
+    # Processing options
+    with st.expander("⚙️ Processing Options"):
         col1, col2 = st.columns(2)
         
         with col1:
-            max_file_size = st.selectbox(
-                "Max file size (MB):",
-                options=[10, 25, 50, 100, 200],
-                index=2,
-                help="Maximum file size to process"
-            )
+            extract_text = st.checkbox("Extract full text", value=True, 
+                                     help="Extract all text content from PDFs")
+            validate_documents = st.checkbox("Validate document structure", value=True,
+                                           help="Check if documents contain recommendations or responses")
         
         with col2:
-            batch_processing = st.checkbox(
-                "Batch processing",
-                value=True,
-                help="Process multiple files together for better performance"
-            )
+            remove_duplicates = st.checkbox("Remove duplicates", value=True,
+                                          help="Skip files that have already been uploaded")
+            auto_categorize = st.checkbox("Auto-categorize documents", value=True,
+                                        help="Automatically detect document types")
     
     # Process uploaded files
     if uploaded_files:
-        if st.button("🚀 Process Documents", type="primary"):
-            process_uploaded_files(uploaded_files, max_file_size, batch_processing)
+        process_uploaded_files(uploaded_files, {
+            'extract_text': extract_text,
+            'validate_documents': validate_documents,
+            'remove_duplicates': remove_duplicates,
+            'auto_categorize': auto_categorize
+        })
 
-# ===============================================
-# FIXED FILE PROCESSING LOGIC
-# ===============================================
-
-def process_uploaded_files(uploaded_files: List, max_file_size: int, batch_processing: bool):
-    """Process uploaded PDF files with robust error handling"""
+def process_uploaded_files(uploaded_files: List, options: Dict[str, bool]):
+    """Process the uploaded files"""
     
-    log_user_action("file_upload_started", f"Files: {len(uploaded_files)}, Batch: {batch_processing}")
+    processor = DocumentProcessor()
     
-    # Initialize processor with error handling
-    try:
-        processor = DocumentProcessor()
-        processor_status = "✅ Ready"
-    except Exception as e:
-        logging.error(f"Error initializing DocumentProcessor: {e}")
-        processor = DocumentProcessor()  # Fallback will be used
-        processor_status = "⚠️ Using fallback mode"
-    
-    # Initialize session state
+    # Initialize uploaded documents list if not exists
     if 'uploaded_documents' not in st.session_state:
         st.session_state.uploaded_documents = []
     
     # Progress tracking
     progress_bar = st.progress(0)
     status_text = st.empty()
-    results_container = st.container()
     
-    successful_uploads = 0
-    failed_uploads = 0
-    processing_results = []
-    
-    total_files = len(uploaded_files)
-    
-    # Create temp directory
-    temp_dir = Path("temp_uploads")
-    temp_dir.mkdir(exist_ok=True)
-    
-    status_text.text(f"Processor status: {processor_status}")
+    new_documents = []
+    duplicate_count = 0
+    error_count = 0
     
     for i, uploaded_file in enumerate(uploaded_files):
-        # Update progress
-        progress = (i + 1) / total_files
-        progress_bar.progress(progress)
-        status_text.text(f"Processing {uploaded_file.name} ({i+1}/{total_files}) - {processor_status}")
+        status_text.text(f"Processing {uploaded_file.name}...")
+        progress_bar.progress((i + 1) / len(uploaded_files))
         
-        temp_path = None
+        # Process the file
+        file_info = processor.process_uploaded_file(uploaded_file)
         
-        try:
-            # Validate file size
-            file_size_mb = len(uploaded_file.getvalue()) / (1024 * 1024)
-            if file_size_mb > max_file_size:
-                raise ValueError(f"File size ({file_size_mb:.1f}MB) exceeds limit ({max_file_size}MB)")
-            
-            # Save uploaded file temporarily with better error handling
-            temp_path = save_uploaded_file_temporarily(uploaded_file)
-            
-            if not temp_path or not temp_path.exists():
-                raise ValueError("Failed to save uploaded file")
-            
-            # Process with intelligent extraction
-            extraction_result = processor.extract_text_from_pdf(str(temp_path))
-            
-            if extraction_result and extraction_result.get('success'):
-                # Prepare document data for session state
-                doc_data = {
-                    'filename': uploaded_file.name,
-                    'file_size_mb': file_size_mb,
-                    'upload_timestamp': datetime.now().isoformat(),
-                    'extraction_result': extraction_result,
-                    'processing_mode': 'intelligent_sections',
-                    'temp_path': str(temp_path),
-                    'status': 'processed',
-                    'metadata': extraction_result.get('metadata', {}),
-                    'sections_count': len(extraction_result.get('sections', [])),
-                    'recommendations_count': len(extraction_result.get('recommendations', [])),
-                    'responses_count': len(extraction_result.get('responses', [])),
-                    'processor_status': processor_status,
-                    'text_length': len(extraction_result.get('text', '')),
-                    'extraction_method': extraction_result.get('metadata', {}).get('extraction_method', 'unknown')
-                }
-                
-                # Add to session state
-                st.session_state.uploaded_documents.append(doc_data)
-                successful_uploads += 1
-                
-                processing_results.append({
-                    'filename': uploaded_file.name,
-                    'status': '✅ Success',
-                    'size_mb': f"{file_size_mb:.1f}",
-                    'sections': len(extraction_result.get('sections', [])),
-                    'recommendations': len(extraction_result.get('recommendations', [])),
-                    'responses': len(extraction_result.get('responses', [])),
-                    'text_length': f"{len(extraction_result.get('text', '')):,}",
-                    'method': extraction_result.get('metadata', {}).get('extraction_method', 'unknown')
-                })
-                
-            else:
-                error_msg = extraction_result.get('error', 'Unknown processing error') if extraction_result else 'Failed to extract text'
-                failed_uploads += 1
-                processing_results.append({
-                    'filename': uploaded_file.name,
-                    'status': f'❌ Failed: {error_msg}',
-                    'size_mb': f"{file_size_mb:.1f}",
-                    'sections': 0,
-                    'recommendations': 0,
-                    'responses': 0,
-                    'text_length': '0',
-                    'method': 'failed'
-                })
-                
-        except Exception as e:
-            failed_uploads += 1
-            error_msg = str(e)
-            processing_results.append({
-                'filename': uploaded_file.name,
-                'status': f'❌ Error: {error_msg}',
-                'size_mb': 'N/A',
-                'sections': 0,
-                'recommendations': 0,
-                'responses': 0,
-                'text_length': '0',
-                'method': 'error'
-            })
-            logging.error(f"Error processing {uploaded_file.name}: {e}")
+        # Check for duplicates if enabled
+        if options.get('remove_duplicates', True):
+            existing_hashes = [doc.get('file_hash') for doc in st.session_state.uploaded_documents]
+            if file_info.get('file_hash') in existing_hashes:
+                duplicate_count += 1
+                continue
         
-        finally:
-            # Clean up temp file
-            if temp_path and temp_path.exists():
-                try:
-                    temp_path.unlink()
-                except Exception as cleanup_error:
-                    logging.warning(f"Could not clean up temp file {temp_path}: {cleanup_error}")
+        # Check for errors
+        if file_info.get('processing_status') == 'error':
+            error_count += 1
+            st.error(f"❌ Error processing {uploaded_file.name}: {file_info.get('error', 'Unknown error')}")
+            continue
+        
+        # Auto-categorize if enabled
+        if options.get('auto_categorize', True):
+            file_info['document_type'] = categorize_document(file_info)
+        
+        new_documents.append(file_info)
     
-    # Final progress update
+    # Add new documents to session state
+    st.session_state.uploaded_documents.extend(new_documents)
+    
+    # Show results
+    status_text.text("✅ Processing completed!")
     progress_bar.progress(1.0)
-    status_text.text("Processing complete!")
     
-    # Display results
-    with results_container:
-        st.subheader("📊 Processing Results")
+    # Summary
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("✅ Processed", len(new_documents))
+    with col2:
+        st.metric("🔄 Duplicates", duplicate_count)
+    with col3:
+        st.metric("❌ Errors", error_count)
+    with col4:
+        st.metric("📚 Total", len(st.session_state.uploaded_documents))
+    
+    if new_documents:
+        st.success(f"Successfully uploaded {len(new_documents)} new documents!")
         
-        # Summary metrics
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total Files", total_files)
-        with col2:
-            st.metric("Successful", successful_uploads, delta=successful_uploads)
-        with col3:
-            st.metric("Failed", failed_uploads, delta=-failed_uploads if failed_uploads > 0 else 0)
-        with col4:
-            success_rate = (successful_uploads / total_files * 100) if total_files > 0 else 0
-            st.metric("Success Rate", f"{success_rate:.1f}%")
-        
-        # Detailed results table
-        if processing_results:
-            results_df = pd.DataFrame(processing_results)
-            st.dataframe(results_df, use_container_width=True)
-        
-        # Success message
-        if successful_uploads > 0:
-            st.success(f"✅ Successfully processed {successful_uploads} document(s)! You can now proceed to the Extract tab.")
-            log_user_action("file_upload_completed", f"Success: {successful_uploads}, Failed: {failed_uploads}")
-        
-        # Troubleshooting info
-        if failed_uploads > 0:
-            with st.expander("🔧 Troubleshooting"):
-                st.markdown("""
-                **Common issues:**
-                - **DocumentProcessor not available**: Check if required libraries (pdfplumber, PyMuPDF) are installed
-                - **Large file size**: Try reducing file size or increasing the limit
-                - **Corrupted PDF**: Try with a different PDF file
-                - **Memory issues**: Try processing files one at a time
-                
-                **Current system status:**
-                - DocumentProcessor: {'Available' if DOCUMENT_PROCESSOR_AVAILABLE else 'Fallback mode'}
-                - Core utilities: {'Available' if CORE_UTILS_AVAILABLE else 'Fallback mode'}
-                """)
+        # Show preview of new documents
+        with st.expander("📋 Preview New Documents"):
+            for doc in new_documents[-3:]:  # Show last 3
+                st.write(f"**{doc['filename']}** ({doc['size'] / 1024:.1f} KB)")
+                if doc.get('extraction_result', {}).get('text'):
+                    preview_text = doc['extraction_result']['text'][:200] + "..."
+                    st.text(preview_text)
+                st.write("---")
 
-def save_uploaded_file_temporarily(uploaded_file) -> Optional[Path]:
-    """Save uploaded file to temporary location with better error handling"""
+def categorize_document(file_info: Dict[str, Any]) -> str:
+    """Auto-categorize document based on content"""
     try:
-        temp_dir = Path("temp_uploads")
-        temp_dir.mkdir(exist_ok=True)
+        text = file_info.get('extraction_result', {}).get('text', '').lower()
         
-        # Create unique filename to avoid conflicts
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-        safe_filename = "".join(c for c in uploaded_file.name if c.isalnum() or c in '._-')
-        temp_path = temp_dir / f"{timestamp}_{safe_filename}"
+        if not text:
+            return 'unknown'
         
-        with open(temp_path, "wb") as f:
-            f.write(uploaded_file.getvalue())
+        # Check for government response indicators
+        response_indicators = [
+            'government response',
+            'official response',
+            'ministerial response',
+            'department response',
+            'accepted',
+            'rejected',
+            'not accepted',
+            'partially accepted'
+        ]
         
-        return temp_path
+        if any(indicator in text for indicator in response_indicators):
+            return 'government_response'
+        
+        # Check for inquiry report indicators
+        inquiry_indicators = [
+            'inquiry report',
+            'investigation report',
+            'final report',
+            'recommendations',
+            'the inquiry recommends',
+            'committee recommends'
+        ]
+        
+        if any(indicator in text for indicator in inquiry_indicators):
+            return 'inquiry_report'
+        
+        # Check for specific document patterns
+        if 'recommendation' in text and text.count('recommendation') > 3:
+            return 'document_with_recommendations'
+        
+        return 'government_document'
         
     except Exception as e:
-        logging.error(f"Error saving uploaded file: {e}")
-        return None
-
-# ===============================================
-# DOCUMENT LIBRARY - ENHANCED
-# ===============================================
+        logging.warning(f"Document categorization failed: {e}")
+        return 'unknown'
 
 def render_document_library():
-    """Render the document library showing uploaded documents"""
+    """Display uploaded documents library"""
     st.subheader("📚 Document Library")
     
-    uploaded_docs = st.session_state.get('uploaded_documents', [])
-    
-    if not uploaded_docs:
-        st.info("📝 No documents uploaded yet. Upload some PDFs above to get started!")
+    if not st.session_state.get('uploaded_documents'):
+        st.info("📄 No documents uploaded yet. Upload some PDFs above to get started!")
         return
     
-    # Create library display
-    library_data = []
-    for i, doc in enumerate(uploaded_docs):
-        library_data.append({
-            'Index': i,
-            'Filename': doc.get('filename', 'Unknown'),
-            'Size (MB)': f"{doc.get('file_size_mb', 0):.1f}",
-            'Upload Time': doc.get('upload_timestamp', '').split('T')[0] if doc.get('upload_timestamp') else 'Unknown',
-            'Status': '✅ Processed' if doc.get('status') == 'processed' else '⚠️ Pending',
-            'Sections': doc.get('sections_count', 0),
-            'Recommendations': doc.get('recommendations_count', 0),
-            'Responses': doc.get('responses_count', 0),
-            'Text Length': f"{doc.get('text_length', 0):,}",
-            'Method': doc.get('extraction_method', 'unknown')
-        })
+    documents = st.session_state.uploaded_documents
     
-    # Display as dataframe
-    library_df = pd.DataFrame(library_data)
-    st.dataframe(library_df, use_container_width=True)
-    
-    # Document actions
-    col1, col2, col3 = st.columns(3)
+    # Library stats
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        if st.button("🔄 Refresh Library"):
-            st.rerun()
+        st.metric("Total Documents", len(documents))
     
     with col2:
-        if st.button("🗑️ Clear All Documents"):
-            if st.session_state.get('confirm_clear_all'):
-                st.session_state.uploaded_documents = []
-                st.session_state.confirm_clear_all = False
-                st.success("All documents cleared!")
-                st.rerun()
-            else:
-                st.session_state.confirm_clear_all = True
-                st.warning("Click again to confirm clearing all documents")
+        total_size = sum(doc.get('size', 0) for doc in documents)
+        st.metric("Total Size", f"{total_size / 1024 / 1024:.1f} MB")
     
     with col3:
-        if len(uploaded_docs) > 0:
-            selected_doc_index = st.selectbox(
-                "Select document to view details:",
-                options=range(len(uploaded_docs)),
-                format_func=lambda x: uploaded_docs[x].get('filename', f'Document {x}')
-            )
-            
-            if st.button("👁️ View Details"):
-                show_document_details(uploaded_docs[selected_doc_index])
+        successful_extractions = sum(1 for doc in documents 
+                                   if doc.get('extraction_result', {}).get('success', False))
+        st.metric("Text Extracted", successful_extractions)
+    
+    with col4:
+        doc_types = [doc.get('document_type', 'unknown') for doc in documents]
+        unique_types = len(set(doc_types))
+        st.metric("Document Types", unique_types)
+    
+    # Document list
+    st.markdown("#### 📋 Document List")
+    
+    # Create DataFrame for display
+    doc_data = []
+    for i, doc in enumerate(documents):
+        extraction = doc.get('extraction_result', {})
+        doc_data.append({
+            'Index': i + 1,
+            'Filename': doc.get('filename', 'Unknown'),
+            'Size (KB)': f"{doc.get('size', 0) / 1024:.1f}",
+            'Type': doc.get('document_type', 'unknown').replace('_', ' ').title(),
+            'Pages': extraction.get('page_count', 0),
+            'Text Extracted': '✅' if extraction.get('success') else '❌',
+            'Upload Date': doc.get('uploaded_at', '')[:10] if doc.get('uploaded_at') else 'Unknown'
+        })
+    
+    if doc_data:
+        df = pd.DataFrame(doc_data)
+        st.dataframe(df, use_container_width=True)
+        
+        # Document actions
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("🔍 Preview Documents"):
+                render_document_preview()
+        
+        with col2:
+            if st.button("📊 Export Document List"):
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="💾 Download CSV",
+                    data=csv,
+                    file_name=f"document_list_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
+        
+        with col3:
+            if st.button("🗑️ Clear All Documents"):
+                if st.session_state.get('confirm_clear'):
+                    st.session_state.uploaded_documents = []
+                    st.success("All documents cleared!")
+                    st.rerun()
+                else:
+                    st.session_state.confirm_clear = True
+                    st.warning("Click again to confirm deletion")
 
-def show_document_details(doc_data: Dict[str, Any]):
-    """Show detailed information about a document"""
-    st.subheader(f"📄 Document Details: {doc_data.get('filename', 'Unknown')}")
+def render_document_preview():
+    """Show document preview modal"""
+    documents = st.session_state.uploaded_documents
     
-    # Basic information
-    col1, col2 = st.columns(2)
+    if not documents:
+        return
     
-    with col1:
-        st.write("**File Information:**")
-        st.write(f"• Filename: {doc_data.get('filename', 'Unknown')}")
-        st.write(f"• Size: {doc_data.get('file_size_mb', 0):.1f} MB")
-        st.write(f"• Upload Time: {doc_data.get('upload_timestamp', 'Unknown')}")
-        st.write(f"• Processing Mode: {doc_data.get('processing_mode', 'Unknown')}")
-        st.write(f"• Processor Status: {doc_data.get('processor_status', 'Unknown')}")
-        st.write(f"• Text Length: {doc_data.get('text_length', 0):,} characters")
+    # Document selector
+    doc_names = [f"{i+1}. {doc.get('filename', 'Unknown')}" for i, doc in enumerate(documents)]
+    selected_doc_name = st.selectbox("Select document to preview:", doc_names)
     
-    with col2:
-        st.write("**Extraction Results:**")
-        st.write(f"• Status: {doc_data.get('status', 'Unknown')}")
-        st.write(f"• Sections Found: {doc_data.get('sections_count', 0)}")
-        st.write(f"• Recommendations: {doc_data.get('recommendations_count', 0)}")
-        st.write(f"• Responses: {doc_data.get('responses_count', 0)}")
-        st.write(f"• Extraction Method: {doc_data.get('extraction_method', 'Unknown')}")
-    
-    # Metadata
-    if doc_data.get('metadata'):
-        with st.expander("🔍 Document Metadata"):
-            metadata = doc_data['metadata']
-            for key, value in metadata.items():
-                st.write(f"**{key}:** {value}")
-    
-    # Show text preview if available
-    extraction_result = doc_data.get('extraction_result', {})
-    text_content = extraction_result.get('text', '')
-    if text_content:
-        with st.expander("📄 Text Preview (First 1000 characters)"):
-            st.text(text_content[:1000] + "..." if len(text_content) > 1000 else text_content)
-
-# ===============================================
-# BATCH OPERATIONS
-# ===============================================
+    if selected_doc_name:
+        doc_index = int(selected_doc_name.split('.')[0]) - 1
+        selected_doc = documents[doc_index]
+        
+        # Document info
+        st.write("**Document Information:**")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write(f"**Filename:** {selected_doc.get('filename')}")
+            st.write(f"**Size:** {selected_doc.get('size', 0) / 1024:.1f} KB")
+            st.write(f"**Type:** {selected_doc.get('document_type', 'unknown').replace('_', ' ').title()}")
+        
+        with col2:
+            extraction = selected_doc.get('extraction_result', {})
+            st.write(f"**Pages:** {extraction.get('page_count', 0)}")
+            st.write(f"**Extraction Method:** {extraction.get('extraction_method', 'none')}")
+            st.write(f"**Text Extracted:** {'✅ Yes' if extraction.get('success') else '❌ No'}")
+        
+        # Text content preview
+        if extraction.get('text'):
+            st.write("**Text Content Preview:**")
+            preview_text = extraction['text'][:1000] + "..." if len(extraction['text']) > 1000 else extraction['text']
+            st.text_area("Content", preview_text, height=200, disabled=True)
+        else:
+            st.warning("No text content available for preview")
 
 def render_batch_operations():
-    """Render batch operations for multiple documents"""
+    """Batch operations on uploaded documents"""
     st.subheader("⚡ Batch Operations")
     
-    uploaded_docs = st.session_state.get('uploaded_documents', [])
-    
-    if len(uploaded_docs) < 2:
-        st.info("📝 Upload at least 2 documents to use batch operations.")
+    if not st.session_state.get('uploaded_documents'):
+        st.info("📄 Upload at least 2 documents to use batch operations.")
         return
     
-    col1, col2 = st.columns(2)
+    documents = st.session_state.uploaded_documents
     
-    with col1:
-        st.write("**Available Operations:**")
-        
-        if st.button("📊 Generate Summary Report"):
-            generate_batch_summary_report(uploaded_docs)
-        
-        if st.button("📥 Export All Metadata"):
-            export_batch_metadata(uploaded_docs)
+    if len(documents) < 2:
+        st.info("📄 Upload at least 2 documents to use batch operations.")
+        return
     
-    with col2:
-        st.write("**Batch Statistics:**")
-        total_sections = sum(doc.get('sections_count', 0) for doc in uploaded_docs)
-        total_recommendations = sum(doc.get('recommendations_count', 0) for doc in uploaded_docs)
-        total_responses = sum(doc.get('responses_count', 0) for doc in uploaded_docs)
-        total_text_length = sum(doc.get('text_length', 0) for doc in uploaded_docs)
-        
-        st.metric("Total Documents", len(uploaded_docs))
-        st.metric("Total Sections", total_sections)
-        st.metric("Total Recommendations", total_recommendations)
-        st.metric("Total Responses", total_responses)
-        st.metric("Total Text Length", f"{total_text_length:,}")
-
-def generate_batch_summary_report(uploaded_docs: List[Dict[str, Any]]):
-    """Generate a summary report for all uploaded documents"""
-    st.subheader("📈 Batch Summary Report")
-    
-    # Calculate summary statistics
-    total_docs = len(uploaded_docs)
-    total_size_mb = sum(doc.get('file_size_mb', 0) for doc in uploaded_docs)
-    total_sections = sum(doc.get('sections_count', 0) for doc in uploaded_docs)
-    total_recommendations = sum(doc.get('recommendations_count', 0) for doc in uploaded_docs)
-    total_responses = sum(doc.get('responses_count', 0) for doc in uploaded_docs)
-    total_text_length = sum(doc.get('text_length', 0) for doc in uploaded_docs)
-    
-    # Display summary
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("Documents", total_docs)
-        st.metric("Total Size", f"{total_size_mb:.1f} MB")
+        if st.button("🔄 Re-process All"):
+            st.info("Re-processing functionality would be implemented here")
     
     with col2:
-        st.metric("Sections", total_sections)
-        st.metric("Avg per Doc", f"{total_sections/total_docs:.1f}")
+        if st.button("📊 Analyze All"):
+            st.info("Batch analysis functionality would be implemented here")
     
     with col3:
-        st.metric("Recommendations", total_recommendations)
-        st.metric("Responses", total_responses)
-    
-    # Document breakdown
-    breakdown_data = []
-    for doc in uploaded_docs:
-        breakdown_data.append({
-            'Document': doc.get('filename', 'Unknown'),
-            'Size (MB)': f"{doc.get('file_size_mb', 0):.1f}",
-            'Sections': doc.get('sections_count', 0),
-            'Recommendations': doc.get('recommendations_count', 0),
-            'Responses': doc.get('responses_count', 0),
-            'Text Length': f"{doc.get('text_length', 0):,}",
-            'Upload Date': doc.get('upload_timestamp', '').split('T')[0] if doc.get('upload_timestamp') else 'Unknown',
-            'Method': doc.get('extraction_method', 'unknown')
-        })
-    
-    breakdown_df = pd.DataFrame(breakdown_data)
-    st.dataframe(breakdown_df, use_container_width=True)
+        if st.button("📦 Export All"):
+            # Create combined export
+            all_text = []
+            for doc in documents:
+                extraction = doc.get('extraction_result', {})
+                if extraction.get('text'):
+                    all_text.append(f"=== {doc.get('filename')} ===\n{extraction['text']}\n\n")
+            
+            if all_text:
+                combined_text = '\n'.join(all_text)
+                st.download_button(
+                    label="💾 Download Combined Text",
+                    data=combined_text,
+                    file_name=f"all_documents_{datetime.now().strftime('%Y%m%d')}.txt",
+                    mime="text/plain"
+                )
+            else:
+                st.warning("No text content available for export")
 
-def export_batch_metadata(uploaded_docs: List[Dict[str, Any]]):
-    """Export metadata for all documents"""
-    export_data = []
-    
-    for doc in uploaded_docs:
-        export_data.append({
-            'filename': doc.get('filename', 'Unknown'),
-            'file_size_mb': doc.get('file_size_mb', 0),
-            'upload_timestamp': doc.get('upload_timestamp', ''),
-            'processing_mode': doc.get('processing_mode', 'Unknown'),
-            'status': doc.get('status', 'Unknown'),
-            'sections_count': doc.get('sections_count', 0),
-            'recommendations_count': doc.get('recommendations_count', 0),
-            'responses_count': doc.get('responses_count', 0),
-            'text_length': doc.get('text_length', 0),
-            'extraction_method': doc.get('extraction_method', 'unknown'),
-            'processor_status': doc.get('processor_status', 'unknown')
-        })
-    
-    export_df = pd.DataFrame(export_data)
-    
-    # Convert to CSV for download
-    csv_data = export_df.to_csv(index=False)
-    
-    st.download_button(
-        label="📥 Download Metadata CSV",
-        data=csv_data,
-        file_name=f"document_metadata_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv"
-    )
-    
-    st.success("✅ Metadata export ready for download!")
-
-# ===============================================
-# MAIN EXPORT
-# ===============================================
-
+# Export functions
 __all__ = [
     'render_upload_tab',
-    'render_upload_interface', 
-    'render_document_library',
-    'render_batch_operations',
-    'process_uploaded_files',
-    'save_uploaded_file_temporarily',
-    'show_document_details',
-    'generate_batch_summary_report',
-    'export_batch_metadata'
+    'DocumentProcessor',
+    'categorize_document'
 ]
