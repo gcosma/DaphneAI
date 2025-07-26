@@ -1,76 +1,99 @@
-[tool.app]
-name = "Recommendation-Response Tracker"
-version = "1.0.0"
-description = "AI-powered document analysis for tracking recommendations and responses"
-
-[tool.models]
-bert_model = "emilyalsentzer/Bio_ClinicalBERT"
-llm_model = "gpt-3.5-turbo"
-embedding_model = "text-embedding-ada-002"
-
-[tool.processing]
-chunk_size = 1000
-chunk_overlap = 200
-max_file_size_mb = 500
-similarity_threshold = 0.65
-max_themes_per_framework = 10
-
-[tool.vector_store]
-persist_directory = "./data/vector_store"
-collection_name = "recommendations_responses"
-
-[tool.logging]
-level = "INFO"
-file = "app.log"
-format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-
 # ===============================================
-# STREAMLIT CONFIGURATION
+# .streamlit/config.toml
+# OPTIMIZED STREAMLIT CONFIGURATION
 # ===============================================
 
+# ===============================================
+# SERVER CONFIGURATION
+# ===============================================
 [server]
-maxUploadSize = 500  # 500MB upload limit for Streamlit
-maxMessageSize = 500  # 500MB message size limit
-enableCORS = false
-enableXsrfProtection = true
-headless = false
-runOnSave = false
-allowRunOnSave = false
-port = 8501
-baseUrlPath = ""
+# File upload settings (CRITICAL for large files)
+maxUploadSize = 500              # 500MB max upload size
+maxMessageSize = 500             # 500MB max message size
 
+# Server settings
+headless = false                 # Set to true for production deployment
+runOnSave = false               # Disable auto-rerun on file changes
+allowRunOnSave = false          # Disable manual run on save
+port = 8501                     # Default Streamlit port
+baseUrlPath = ""                # Leave empty for root path
+
+# CORS and security
+enableCORS = false              # Enable if accessing from different domains
+enableXsrfProtection = true     # Keep enabled for security
+
+# Performance settings
+fileWatcherType = "auto"        # File watching mechanism
+enableStaticServing = true      # Enable static file serving
+enableWebsocketCompression = true  # Compress WebSocket data
+
+# ===============================================
+# BROWSER CONFIGURATION
+# ===============================================
 [browser]
-gatherUsageStats = false
-showErrorDetails = true
-serverAddress = "localhost"
-serverPort = 8501
+gatherUsageStats = false        # Disable usage statistics
+showErrorDetails = true         # Show detailed errors (disable in production)
+serverAddress = "localhost"     # Server address for browser
+serverPort = 8501              # Browser connection port
 
+# ===============================================
+# CLIENT CONFIGURATION
+# ===============================================
 [client]
-toolbarMode = "auto"
-showErrorDetails = true
-displayEnabled = true
+toolbarMode = "auto"           # Toolbar display mode
+showErrorDetails = true        # Show client-side error details
+displayEnabled = true          # Enable display
+caching = true                 # Enable client-side caching
 
+# ===============================================
+# RUNNER CONFIGURATION
+# ===============================================
 [runner]
-magicEnabled = true
-installTracer = false
-fixMatplotlib = true
-postScriptGC = true
-fastReruns = true
+magicEnabled = true            # Enable Streamlit magic commands
+installTracer = false          # Disable install tracing
+fixMatplotlib = true          # Fix matplotlib backend
+postScriptGC = true           # Enable garbage collection
+fastReruns = true             # Enable fast reruns for better performance
+enforceSerializableSessionState = false  # Allow non-serializable session state
 
+# ===============================================
+# LOGGER CONFIGURATION
+# ===============================================
 [logger]
-level = "info"
-messageFormat = "%(asctime)s %(message)s"
-enableLogging = true
+level = "info"                # Log level (debug, info, warning, error, critical)
+messageFormat = "%(asctime)s %(message)s"  # Log message format
+enableLogging = true          # Enable logging
 
+# ===============================================
+# THEME CONFIGURATION
+# ===============================================
 [theme]
-base = "light"
-primaryColor = "#1f77b4"
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f0f2f6"
-textColor = "#262730"
-font = "sans serif"
+base = "light"                # Theme base (light/dark)
+primaryColor = "#FF6B6B"      # Primary color for UI elements
+backgroundColor = "#FFFFFF"    # Main background color
+secondaryBackgroundColor = "#F0F2F6"  # Secondary background color
+textColor = "#262730"         # Text color
+font = "sans serif"           # Font family (sans serif, serif, monospace)
 
+# ===============================================
+# GLOBAL CONFIGURATION
+# ===============================================
 [global]
-developmentMode = false
-logLevel = "info"
-unitTest = false
+developmentMode = false       # Set to true for development
+logLevel = "info"            # Global log level
+unitTest = false             # Disable unit test mode
+minCachedMessageSize = 0     # Minimum size for message caching
+maxCachedMessageAge = 2      # Maximum age for cached messages (days)
+
+# ===============================================
+# DEPRECATION SETTINGS
+# ===============================================
+[deprecation]
+showPyplotGlobalUse = false  # Hide pyplot global use warnings
+
+# ===============================================
+# UI CONFIGURATION
+# ===============================================
+[ui]
+hideTopBar = false           # Hide top bar (set to true to hide hamburger menu)
+hideSidebarNav = false       # Hide sidebar navigation
