@@ -1,5 +1,5 @@
 # ===============================================
-# FILE: .gitignore
+# COMPLETE .gitignore
 # ===============================================
 
 # Byte-compiled / optimized / DLL files
@@ -126,9 +126,81 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# Streamlit
+.streamlit/
+.streamlit/config.toml
+.streamlit/credentials.toml
+
 # Application specific
 data/
+uploads/
+temp/
+cache/
+logs/
 *.pdf
 *.cache
-app.log
-.streamlit/
+*.tmp
+app.log*
+*.db
+*.sqlite
+
+# AI Models (large files)
+models/
+*.bin
+*.safetensors
+*.onnx
+pytorch_model.bin
+tf_model.h5
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Configuration files with sensitive data
+config.json
+secrets.json
+credentials.json
+
+# Large data files
+*.csv
+*.xlsx
+*.json
+data.json
+results.json
+
+# Temporary processing files
+processing/
+extracted/
+output/
+results/
+
+# Documentation build
+docs/build/
+site/
+
+# Test files
+test_data/
+test_results/
+coverage_html/
+
+# Deployment files
+docker-compose.override.yml
+.env.local
+.env.production
