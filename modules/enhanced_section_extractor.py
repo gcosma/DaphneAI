@@ -1,5 +1,5 @@
 # ===============================================
-# FILE: modules/enhanced_section_extractor.py (COMPLETE FINAL VERSION)
+# FILE: modules/enhanced_section_extractor.py (COMPLETE FIXED VERSION)
 # ===============================================
 
 import re
@@ -9,30 +9,27 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 import io
 
-# NLTK for sentence tokenization
+# NLTK for sentence tokenization with better fallback
 try:
     import nltk
     from nltk.tokenize import sent_tokenize
-    nltk.data.find('tokenizers/punkt')
-    NLTK_AVAILABLE = True
-    logging.info("✅ NLTK imported successfully")
-except (ImportError, LookupError):
     try:
-        import nltk
-        nltk.download('punkt', quiet=True)
-        from nltk.tokenize import sent_tokenize
+        nltk.data.find('tokenizers/punkt')
         NLTK_AVAILABLE = True
-        logging.info("✅ NLTK downloaded and imported successfully")
-    except ImportError:
-        NLTK_AVAILABLE = False
-        logging.warning("⚠️ NLTK not available - using fallback sentence splitting")
-        
-        def sent_tokenize(text):
-            """Fallback sentence tokenizer"""
-            sentences = re.split(r'[.!?]+', text)
-            return [s.strip() for s in sentences if s.strip()]
+    except LookupError:
+        nltk.download('punkt', quiet=True)
+        NLTK_AVAILABLE = True
+    logging.info("✅ NLTK imported successfully")
+except ImportError:
+    NLTK_AVAILABLE = False
+    logging.warning("⚠️ NLTK not available - using fallback sentence splitting")
+    
+    def sent_tokenize(text):
+        """Fallback sentence tokenizer"""
+        sentences = re.split(r'[.!?]+', text)
+        return [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
 
-# PDF processing libraries with fallback handling
+# PDF processing libraries
 try:
     import pdfplumber
     PDFPLUMBER_AVAILABLE = True
@@ -51,7 +48,7 @@ except ImportError:
 
 class EnhancedSectionExtractor:
     """
-    Enhanced Section Extractor with Hybrid Approach
+    Enhanced Section Extractor with Fixed Hybrid Approach
     
     Combines original functionality with new generic sentence-based extraction.
     Maintains full backward compatibility while adding universal inquiry support.
@@ -72,36 +69,36 @@ class EnhancedSectionExtractor:
             'total_processing_time': 0
         }
         
-        # NEW: Generic patterns for any inquiry (sentence-based approach)
+        # FIXED: Simplified and more effective patterns for sentence-based extraction
         self.recommend_terms = [
-            r'\brecommend(?:s|ed|ing|ation|ations)?\b',
-            r'\bsuggest(?:s|ed|ing|ion|ions)?\b',
-            r'\bpropose(?:s|d|ing|al|als)?\b',
-            r'\badvise(?:s|d|ing)?\b',
-            r'\burge(?:s|d|ing)?\b',
-            r'\bshould\b',
-            r'\bmust\b',
-            r'\bough?t\s+to\b',
-            r'\bneed(?:s|ed|ing)?\s+to\b',
-            r'\brequire(?:s|d|ing)?\b',
-            r'\bensure(?:s|d|ing)?\b',
-            r'\bestablish(?:es|ed|ing)?\b',
-            r'\bimplement(?:s|ed|ing|ation)?\b'
+            r'recommend',
+            r'suggest',
+            r'propose',
+            r'advise',
+            r'urge',
+            r'should',
+            r'must',
+            r'ought\s+to',
+            r'need\s+to',
+            r'require',
+            r'ensure',
+            r'establish',
+            r'implement'
         ]
         
         self.response_terms = [
-            r'\brespons(?:e|es|ed|ing|ible|ibility)?\b',
-            r'\brepl(?:y|ies|ied|ying)?\b',
-            r'\banswer(?:s|ed|ing)?\b',
-            r'\baccept(?:s|ed|ing|ance)?\b',
-            r'\breject(?:s|ed|ing|ion)?\b',
-            r'\bagree(?:s|d|ing|ment)?\b',
-            r'\bdisagree(?:s|d|ing|ment)?\b',
-            r'\bimplement(?:s|ed|ing|ation)?\b',
-            r'\badopt(?:s|ed|ing|ion)?\b',
-            r'\baction(?:s)?\b',
-            r'\bmeasure(?:s)?\b',
-            r'\bstep(?:s)?\b'
+            r'response',
+            r'reply',
+            r'answer',
+            r'accept',
+            r'reject',
+            r'agree',
+            r'disagree',
+            r'implement',
+            r'adopt',
+            r'action',
+            r'measure',
+            r'step'
         ]
         
         # ORIGINAL: Maintain existing patterns for backward compatibility
@@ -130,14 +127,13 @@ class EnhancedSectionExtractor:
                 r'(?i)^(?:\d+\.?\d*\s+)?executive\s+summary'
             ],
             'recommendation_patterns': [
-                r'(?i)(?:^|\n)\s*(?:recommendation\s+)?(\d+)[\.\):\s]+(.+?)(?=(?:^|\n)\s*(?:recommendation\s+)?\d+[\.\):\s]|$)',
-                r'(?i)(?:^|\n)\s*(\d+)[\.\)]\s*(.+?)(?=(?:^|\n)\s*\d+[\.\)]|$)',
-                r'(?i)(?:^|\n)\s*•\s*(.+?)(?=(?:^|\n)\s*•|$)'
+                r'(?i)recommendation\s+(\d+)[:\.]?\s*(.+?)(?=recommendation\s+\d+|$)',
+                r'(?i)(\d+)\.\s+(.+?)(?=\d+\.|$)',
+                r'(?i)•\s*(.+?)(?=•|$)'
             ],
             'response_patterns': [
-                r'(?i)(?:government\s+)?response(?:\s+to\s+recommendation\s+(\d+))?[:\s]*(.+?)(?=(?:^|\n)(?:government\s+)?response|$)',
-                r'(?i)(?:the\s+government\s+)?(?:accepts?|rejects?|agrees?|disagrees?)\s*[:\s]*(.+?)(?=(?:^|\n)|$)',
-                r'(?i)(?:accepted|rejected|partially\s+accepted)[:\s]*(.+?)(?=(?:^|\n)|$)'
+                r'(?i)response\s+to\s+recommendation\s+(\d+)[:\.]?\s*(.+?)(?=response\s+to|$)',
+                r'(?i)(accepted|rejected|agreed)\s*[:\.]?\s*(.+?)(?=accepted|rejected|agreed|$)'
             ]
         }
         
@@ -151,103 +147,50 @@ class EnhancedSectionExtractor:
         }
 
     # ============================================================================
-    # ORIGINAL METHODS - Maintaining backward compatibility
+    # MAIN EXTRACTION METHODS - FIXED
     # ============================================================================
 
-    def extract_sections_from_pdf(self, pdf_content: bytes, filename: str = "document.pdf") -> Dict[str, Any]:
-        """Original method - extract sections from PDF content (maintains compatibility)"""
-        try:
-            self.extraction_stats['documents_processed'] += 1
-            start_time = datetime.now()
-            
-            # Try pdfplumber first, then PyMuPDF as fallback
-            if PDFPLUMBER_AVAILABLE:
-                result = self._extract_pages_with_pdfplumber(pdf_content, filename)
-            elif PYMUPDF_AVAILABLE:
-                result = self._extract_pages_with_pymupdf(pdf_content, filename)
-            else:
-                result = self._extract_with_fallback(pdf_content, filename)
-            
-            if result and result.get('full_text'):
-                # Process the extracted text for sections
-                sections = self._find_recommendation_response_sections(result['full_text'])
-                result['sections'] = sections
-                result['section_count'] = len(sections)
-                
-                # Extract individual items using BOTH old and new methods
-                old_recommendations = self._extract_individual_recommendations_original(result['full_text'])
-                new_recommendations = self._extract_recommendations_hybrid(result['full_text'])
-                
-                old_responses = self._extract_individual_responses_original(result['full_text'])
-                new_responses = self._extract_responses_hybrid(result['full_text'])
-                
-                # Combine results with deduplication
-                combined_recs = self._combine_extraction_results(old_recommendations, new_recommendations)
-                combined_resps = self._combine_extraction_results(old_responses, new_responses)
-                
-                result['individual_recommendations'] = combined_recs
-                result['individual_responses'] = combined_resps
-                
-                # Update stats
-                self.extraction_stats['recommendations_found'] = len(combined_recs)
-                self.extraction_stats['responses_found'] = len(combined_resps)
-                self.extraction_stats['sections_extracted'] = len(sections)
-                self.extraction_stats['last_extraction_time'] = datetime.now()
-                
-                # Calculate processing time
-                processing_time = (datetime.now() - start_time).total_seconds()
-                self.extraction_stats['total_processing_time'] += processing_time
-                
-                result['success'] = True
-                result['extraction_method'] = 'hybrid_enhanced'
-                result['processing_time'] = processing_time
-                
-                # Add document analysis
-                result['document_analysis'] = self._analyze_document_content(result['full_text'])
-                
-            return result
-            
-        except Exception as e:
-            logging.error(f"Error in extract_sections_from_pdf: {e}")
-            return {
-                'success': False,
-                'error': str(e),
-                'filename': filename,
-                'individual_recommendations': [],
-                'individual_responses': [],
-                'sections': []
-            }
-
     def extract_individual_recommendations(self, text: str) -> List[Dict[str, Any]]:
-        """Enhanced method - combines original + new hybrid approach"""
+        """FIXED: Enhanced method - combines original + new hybrid approach"""
+        if self.debug_mode:
+            self.logger.info(f"Starting recommendation extraction on text length: {len(text)}")
+        
         try:
             # Get results from both methods
             original_recs = self._extract_individual_recommendations_original(text)
-            hybrid_recs = self._extract_recommendations_hybrid(text)
+            hybrid_recs = self._extract_recommendations_hybrid_fixed(text)
             
             # Combine and deduplicate
-            combined_recs = self._combine_extraction_results(original_recs, hybrid_recs)
+            combined_recs = self._combine_extraction_results_fixed(original_recs, hybrid_recs)
             
             self.extraction_stats['recommendations_found'] = len(combined_recs)
             
             if self.debug_mode:
                 self.logger.info(f"Found {len(combined_recs)} recommendations ({len(original_recs)} original + {len(hybrid_recs)} hybrid)")
+                for i, rec in enumerate(combined_recs):
+                    self.logger.info(f"  {i+1}. {rec['text'][:100]}... (confidence: {rec.get('confidence', 0):.2f})")
             
             return combined_recs
             
         except Exception as e:
-            logging.error(f"Error in extract_individual_recommendations: {e}")
+            self.logger.error(f"Error in extract_individual_recommendations: {e}")
+            if self.debug_mode:
+                import traceback
+                self.logger.error(traceback.format_exc())
             return []
 
     def extract_individual_responses(self, text: str) -> List[Dict[str, Any]]:
-        """Enhanced method - combines original + new hybrid approach"""
+        """FIXED: Enhanced method - combines original + new hybrid approach"""
+        if self.debug_mode:
+            self.logger.info(f"Starting response extraction on text length: {len(text)}")
+        
         try:
             # Get results from both methods
             original_resps = self._extract_individual_responses_original(text)
-            hybrid_resps = self._extract_responses_hybrid(text)
+            hybrid_resps = self._extract_responses_hybrid_fixed(text)
             
             # Combine and deduplicate
-            combined_resps = self._combine_extraction_results(original_resps, hybrid_resps)
+            combined_resps = self._combine_extraction_results_fixed(original_resps, hybrid_resps)
             
             self.extraction_stats['responses_found'] = len(combined_resps)
             
@@ -257,80 +200,272 @@ class EnhancedSectionExtractor:
             return combined_resps
             
         except Exception as e:
-            logging.error(f"Error in extract_individual_responses: {e}")
+            self.logger.error(f"Error in extract_individual_responses: {e}")
+            if self.debug_mode:
+                import traceback
+                self.logger.error(traceback.format_exc())
             return []
 
-    def get_extraction_statistics(self) -> Dict[str, Any]:
-        """Original method - get extraction statistics"""
-        return {
-            'documents_processed': self.extraction_stats['documents_processed'],
-            'sections_extracted': self.extraction_stats['sections_extracted'],
-            'recommendations_found': self.extraction_stats['recommendations_found'],
-            'responses_found': self.extraction_stats['responses_found'],
-            'last_extraction_time': self.extraction_stats['last_extraction_time'],
-            'total_processing_time': self.extraction_stats['total_processing_time']
-        }
-
     # ============================================================================
-    # NEW HYBRID METHODS - Adding generic sentence-based extraction
+    # FIXED HYBRID EXTRACTION METHODS
     # ============================================================================
 
-    def extract_all_content_hybrid(self, text: str, document_source: str = "", inquiry_type: str = "auto") -> Dict[str, Any]:
-        """NEW: Main hybrid extraction method for any inquiry document"""
-        if self.debug_mode:
-            self.logger.info(f"Starting hybrid extraction for {document_source}")
+    def _extract_recommendations_hybrid_fixed(self, text: str) -> List[Dict[str, Any]]:
+        """FIXED: Sentence-based recommendation extraction"""
+        recommendations = []
         
-        # Auto-detect inquiry type if not specified
-        if inquiry_type == "auto":
-            inquiry_type = self._detect_inquiry_type(text)
-        
-        # Clean and preprocess text
-        text = self._preprocess_text(text)
-        
-        # Extract using sentence-based approach (generic)
-        sentence_results = self._extract_by_sentences(text, document_source)
-        
-        # Extract using original specific patterns
-        pattern_results = self._extract_by_original_patterns(text, document_source)
-        
-        # Combine and deduplicate results
-        combined_results = self._combine_hybrid_results(sentence_results, pattern_results)
-        
-        # Add metadata
-        combined_results['extraction_metadata'] = {
-            'document_source': document_source,
-            'inquiry_type': inquiry_type,
-            'extraction_methods': ['sentence_based', 'pattern_based', 'original'],
-            'total_recommendations': len(combined_results.get('recommendations', [])),
-            'total_responses': len(combined_results.get('responses', [])),
-            'confidence_stats': self._calculate_confidence_stats(combined_results)
-        }
-        
-        if self.debug_mode:
-            self._log_results_summary(combined_results)
-        
-        return combined_results
-
-    def quick_extract_recommendations(self, text: str) -> List[str]:
-        """NEW: Quick function to get just recommendation text"""
         try:
-            recommendations = self.extract_individual_recommendations(text)
-            return [rec.get('text', '') for rec in recommendations if rec.get('confidence', 0) >= 0.7]
+            sentences = sent_tokenize(text)
+            
+            if self.debug_mode:
+                self.logger.info(f"Split text into {len(sentences)} sentences for recommendation analysis")
+            
+            for i, sentence in enumerate(sentences):
+                if len(sentence.strip()) < 10:  # Skip very short sentences
+                    continue
+                
+                # Check if sentence contains recommendation terms
+                contains_rec_term = False
+                matched_terms = []
+                
+                for term in self.recommend_terms:
+                    if re.search(term, sentence, re.IGNORECASE):
+                        contains_rec_term = True
+                        matched_terms.append(term)
+                
+                if contains_rec_term:
+                    # Calculate confidence
+                    confidence = self._calculate_recommendation_confidence_fixed(sentence, matched_terms)
+                    
+                    if confidence > 0.5:  # Only include items with reasonable confidence
+                        rec_type = self._classify_recommendation_type_fixed(sentence)
+                        
+                        recommendation = {
+                            'id': f"hybrid_rec_{i+1}",
+                            'text': sentence.strip(),
+                            'type': rec_type,
+                            'confidence': confidence,
+                            'extraction_method': 'sentence_based',
+                            'position': i,
+                            'matched_terms': matched_terms,
+                            'references': self._extract_references_fixed(sentence)
+                        }
+                        
+                        recommendations.append(recommendation)
+                        
+                        if self.debug_mode:
+                            self.logger.info(f"Hybrid found recommendation: {sentence[:50]}... (confidence: {confidence:.2f})")
+        
         except Exception as e:
-            logging.error(f"Error in quick_extract_recommendations: {e}")
-            return []
+            self.logger.error(f"Error in hybrid recommendation extraction: {e}")
+        
+        return recommendations
 
-    def quick_extract_responses(self, text: str) -> List[str]:
-        """NEW: Quick function to get just response text"""
+    def _extract_responses_hybrid_fixed(self, text: str) -> List[Dict[str, Any]]:
+        """FIXED: Sentence-based response extraction"""
+        responses = []
+        
         try:
-            responses = self.extract_individual_responses(text)
-            return [resp.get('text', '') for resp in responses if resp.get('confidence', 0) >= 0.7]
+            sentences = sent_tokenize(text)
+            
+            for i, sentence in enumerate(sentences):
+                if len(sentence.strip()) < 10:
+                    continue
+                
+                # Check if sentence contains response terms
+                contains_resp_term = False
+                matched_terms = []
+                
+                for term in self.response_terms:
+                    if re.search(term, sentence, re.IGNORECASE):
+                        contains_resp_term = True
+                        matched_terms.append(term)
+                
+                if contains_resp_term:
+                    # Calculate confidence
+                    confidence = self._calculate_response_confidence_fixed(sentence, matched_terms)
+                    
+                    if confidence > 0.5:
+                        resp_type = self._classify_response_type_fixed(sentence)
+                        
+                        response = {
+                            'id': f"hybrid_resp_{i+1}",
+                            'text': sentence.strip(),
+                            'type': resp_type,
+                            'confidence': confidence,
+                            'extraction_method': 'sentence_based',
+                            'position': i,
+                            'matched_terms': matched_terms,
+                            'references': self._extract_references_fixed(sentence)
+                        }
+                        
+                        responses.append(response)
+                        
+                        if self.debug_mode:
+                            self.logger.info(f"Hybrid found response: {sentence[:50]}... (confidence: {confidence:.2f})")
+        
         except Exception as e:
-            logging.error(f"Error in quick_extract_responses: {e}")
-            return []
+            self.logger.error(f"Error in hybrid response extraction: {e}")
+        
+        return responses
+
+    def _calculate_recommendation_confidence_fixed(self, text: str, matched_terms: List[str]) -> float:
+        """FIXED: Calculate confidence score for recommendations"""
+        if not text or not matched_terms:
+            return 0.0
+        
+        confidence = 0.6  # Base confidence for having matched terms
+        text_lower = text.lower()
+        
+        try:
+            # Boost for strong recommendation indicators
+            if 'i recommend' in text_lower:
+                confidence += 0.3
+            if re.search(r'recommendation\s+\d+', text_lower):
+                confidence += 0.25
+            if any(word in text_lower for word in ['should', 'must', 'ought']):
+                confidence += 0.2
+            if any(word in text_lower for word in ['ensure', 'establish', 'implement']):
+                confidence += 0.15
+            
+            # Boost for multiple matched terms
+            confidence += min(len(matched_terms) * 0.05, 0.15)
+            
+            # Reduce for weak contexts
+            if any(weak in text_lower for weak in ['recommend reading', 'recommend visiting']):
+                confidence -= 0.4
+            
+            # Boost for formal language
+            if any(formal in text_lower for formal in ['government', 'committee', 'inquiry', 'report']):
+                confidence += 0.1
+            
+            return min(max(confidence, 0.0), 1.0)
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating recommendation confidence: {e}")
+            return 0.6  # Return base confidence on error
+
+    def _calculate_response_confidence_fixed(self, text: str, matched_terms: List[str]) -> float:
+        """FIXED: Calculate confidence score for responses"""
+        if not text or not matched_terms:
+            return 0.0
+        
+        confidence = 0.6  # Base confidence
+        text_lower = text.lower()
+        
+        try:
+            # Boost for strong response indicators
+            if 'government response' in text_lower or 'official response' in text_lower:
+                confidence += 0.3
+            if any(word in text_lower for word in ['accepted', 'rejected', 'agreed', 'disagreed']):
+                confidence += 0.25
+            if 'response to recommendation' in text_lower:
+                confidence += 0.2
+            if any(phrase in text_lower for phrase in ['accepted in full', 'accepted in principle', 'not accepted']):
+                confidence += 0.25
+            
+            # Boost for multiple matched terms
+            confidence += min(len(matched_terms) * 0.05, 0.15)
+            
+            # Boost for implementation language
+            if any(word in text_lower for word in ['implement', 'action', 'measure']):
+                confidence += 0.15
+            
+            return min(max(confidence, 0.0), 1.0)
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating response confidence: {e}")
+            return 0.6
+
+    def _classify_recommendation_type_fixed(self, text: str) -> str:
+        """FIXED: Classify recommendation type"""
+        text_lower = text.lower()
+        
+        if 'i recommend' in text_lower:
+            return 'direct_recommendation'
+        elif re.search(r'recommendation\s+\d+', text_lower):
+            return 'numbered_recommendation'
+        elif any(word in text_lower for word in ['should', 'must', 'ought']):
+            return 'prescriptive_recommendation'
+        elif any(word in text_lower for word in ['suggest', 'propose']):
+            return 'suggestive_recommendation'
+        elif any(word in text_lower for word in ['ensure', 'establish', 'implement']):
+            return 'action_recommendation'
+        else:
+            return 'general_recommendation'
+
+    def _classify_response_type_fixed(self, text: str) -> str:
+        """FIXED: Classify response type"""
+        text_lower = text.lower()
+        
+        if 'accepted in full' in text_lower:
+            return 'accepted_full'
+        elif 'accepted in principle' in text_lower:
+            return 'accepted_principle'
+        elif 'not accepted' in text_lower or 'rejected' in text_lower:
+            return 'rejected'
+        elif 'partially accepted' in text_lower:
+            return 'accepted_partial'
+        elif 'government response' in text_lower:
+            return 'government_response'
+        elif 'will implement' in text_lower:
+            return 'implementation_response'
+        else:
+            return 'general_response'
+
+    def _extract_references_fixed(self, text: str) -> List[str]:
+        """FIXED: Extract references from text"""
+        references = []
+        
+        try:
+            # Recommendation numbers
+            rec_nums = re.findall(r'recommendation\s+(\d+)', text, re.IGNORECASE)
+            references.extend([f"rec_{num}" for num in rec_nums])
+            
+            # Page references
+            page_nums = re.findall(r'page\s+(\d+)', text, re.IGNORECASE)
+            references.extend([f"page_{num}" for num in page_nums])
+            
+            # Paragraph references
+            para_nums = re.findall(r'paragraph\s+(\d+)', text, re.IGNORECASE)
+            references.extend([f"para_{num}" for num in para_nums])
+            
+            # Section references
+            section_nums = re.findall(r'section\s+(\d+(?:\.\d+)?)', text, re.IGNORECASE)
+            references.extend([f"section_{num}" for num in section_nums])
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting references: {e}")
+        
+        return list(set(references))
+
+    def _combine_extraction_results_fixed(self, original_results: List[Dict], hybrid_results: List[Dict]) -> List[Dict[str, Any]]:
+        """FIXED: Combine results from original and hybrid extraction methods"""
+        combined = []
+        seen_texts = set()
+        
+        try:
+            # Combine all results
+            all_results = original_results + hybrid_results
+            
+            # Sort by confidence (highest first)
+            all_results.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+            
+            for result in all_results:
+                # Create normalized text key for deduplication
+                text_key = re.sub(r'\s+', ' ', result.get('text', '').lower().strip())[:100]
+                
+                if text_key not in seen_texts and len(text_key) > 10:
+                    seen_texts.add(text_key)
+                    combined.append(result)
+        
+        except Exception as e:
+            self.logger.error(f"Error combining extraction results: {e}")
+        
+        return combined
 
     # ============================================================================
-    # HELPER METHODS - Supporting both original and new functionality
+    # ORIGINAL METHODS - Maintaining backward compatibility
     # ============================================================================
 
     def _extract_individual_recommendations_original(self, text: str) -> List[Dict[str, Any]]:
@@ -373,7 +508,7 @@ class EnhancedSectionExtractor:
                     })
         
         except Exception as e:
-            logging.error(f"Error in original recommendation extraction: {e}")
+            self.logger.error(f"Error in original recommendation extraction: {e}")
         
         return recommendations
 
@@ -402,259 +537,138 @@ class EnhancedSectionExtractor:
                         })
         
         except Exception as e:
-            logging.error(f"Error in original response extraction: {e}")
+            self.logger.error(f"Error in original response extraction: {e}")
         
         return responses
 
-    def _extract_recommendations_hybrid(self, text: str) -> List[Dict[str, Any]]:
-        """NEW: Sentence-based recommendation extraction"""
-        recommendations = []
-        
+    def get_extraction_statistics(self) -> Dict[str, Any]:
+        """Original method - get extraction statistics"""
+        return {
+            'documents_processed': self.extraction_stats['documents_processed'],
+            'sections_extracted': self.extraction_stats['sections_extracted'],
+            'recommendations_found': self.extraction_stats['recommendations_found'],
+            'responses_found': self.extraction_stats['responses_found'],
+            'last_extraction_time': self.extraction_stats['last_extraction_time'],
+            'total_processing_time': self.extraction_stats['total_processing_time']
+        }
+
+    # ============================================================================
+    # NEW CONVENIENCE METHODS
+    # ============================================================================
+
+    def quick_extract_recommendations(self, text: str) -> List[str]:
+        """NEW: Quick function to get just recommendation text"""
         try:
-            sentences = sent_tokenize(text)
-            
-            for i, sentence in enumerate(sentences):
-                if self._contains_recommendation_terms(sentence):
-                    confidence = self._calculate_recommendation_confidence(sentence)
-                    if confidence >= 0.6:
-                        recommendations.append({
-                            'id': f"hybrid_rec_{i+1}",
-                            'text': sentence.strip(),
-                            'type': self._classify_recommendation_type(sentence),
-                            'confidence': confidence,
-                            'extraction_method': 'sentence_based',
-                            'position': i,
-                            'references': self._extract_references(sentence)
-                        })
-        
+            recommendations = self.extract_individual_recommendations(text)
+            return [rec.get('text', '') for rec in recommendations if rec.get('confidence', 0) >= 0.6]
         except Exception as e:
-            logging.error(f"Error in hybrid recommendation extraction: {e}")
-        
-        return recommendations
+            self.logger.error(f"Error in quick_extract_recommendations: {e}")
+            return []
 
-    def _extract_responses_hybrid(self, text: str) -> List[Dict[str, Any]]:
-        """NEW: Sentence-based response extraction"""
-        responses = []
-        
+    def quick_extract_responses(self, text: str) -> List[str]:
+        """NEW: Quick function to get just response text"""
         try:
-            sentences = sent_tokenize(text)
-            
-            for i, sentence in enumerate(sentences):
-                if self._contains_response_terms(sentence):
-                    confidence = self._calculate_response_confidence(sentence)
-                    if confidence >= 0.6:
-                        responses.append({
-                            'id': f"hybrid_resp_{i+1}",
-                            'text': sentence.strip(),
-                            'type': self._classify_response_type(sentence),
-                            'confidence': confidence,
-                            'extraction_method': 'sentence_based',
-                            'position': i,
-                            'references': self._extract_references(sentence)
-                        })
-        
+            responses = self.extract_individual_responses(text)
+            return [resp.get('text', '') for resp in responses if resp.get('confidence', 0) >= 0.6]
         except Exception as e:
-            logging.error(f"Error in hybrid response extraction: {e}")
-        
-        return responses
+            self.logger.error(f"Error in quick_extract_responses: {e}")
+            return []
 
-    def _contains_recommendation_terms(self, text: str) -> bool:
-        """Check if text contains recommendation-related terms"""
-        text_lower = text.lower()
-        return any(re.search(pattern, text_lower) for pattern in self.recommend_terms)
-
-    def _contains_response_terms(self, text: str) -> bool:
-        """Check if text contains response-related terms"""
-        text_lower = text.lower()
-        return any(re.search(pattern, text_lower) for pattern in self.response_terms)
-
-    def _calculate_recommendation_confidence(self, text: str) -> float:
-        """Calculate confidence score for recommendation text"""
-        text_lower = text.lower()
-        confidence = 0.5
+    def extract_all_content_hybrid(self, text: str, document_source: str = "", inquiry_type: str = "auto") -> Dict[str, Any]:
+        """NEW: Main hybrid extraction method for any inquiry document"""
+        if self.debug_mode:
+            self.logger.info(f"Starting hybrid extraction for {document_source}")
         
-        # Strong recommendation indicators
-        if re.search(r'\bi\s+recommend', text_lower):
-            confidence += 0.3
-        if re.search(r'\brecommendation\s+\d+', text_lower):
-            confidence += 0.25
-        if re.search(r'\b(?:should|must|ought\s+to)\b', text_lower):
-            confidence += 0.2
-        if re.search(r'\b(?:ensure|establish|implement|require)\b', text_lower):
-            confidence += 0.15
+        # Auto-detect inquiry type if not specified
+        if inquiry_type == "auto":
+            inquiry_type = self._detect_inquiry_type(text)
         
-        # Reduce confidence for weak matches
-        weak_indicators = ['recommend reading', 'recommend visiting', 'recommend that you']
-        for weak in weak_indicators:
-            if weak in text_lower:
-                confidence -= 0.3
+        # Clean and preprocess text
+        text = self._preprocess_text(text)
         
-        # Boost for formal language
-        if len(text) > 50 and any(term in text_lower for term in ['government', 'policy', 'procedure', 'system']):
-            confidence += 0.1
+        # Extract using both methods
+        recommendations = self.extract_individual_recommendations(text)
+        responses = self.extract_individual_responses(text)
         
-        return min(confidence, 1.0)
-
-    def _calculate_response_confidence(self, text: str) -> float:
-        """Calculate confidence score for response text"""
-        text_lower = text.lower()
-        confidence = 0.5
-        
-        # Strong response indicators
-        if re.search(r'\b(?:government|official)\s+response', text_lower):
-            confidence += 0.3
-        if re.search(r'\b(?:accepted|rejected|agreed|disagreed)', text_lower):
-            confidence += 0.25
-        if re.search(r'\bresponse\s+to\s+recommendation', text_lower):
-            confidence += 0.2
-        if re.search(r'\b(?:accepted\s+in\s+(?:full|principle)|not\s+accepted)', text_lower):
-            confidence += 0.25
-        
-        # Boost for implementation language
-        if re.search(r'\b(?:will\s+implement|has\s+been\s+implemented|action\s+taken)', text_lower):
-            confidence += 0.15
-        
-        return min(confidence, 1.0)
-
-    def _classify_recommendation_type(self, text: str) -> str:
-        """Classify the type of recommendation"""
-        text_lower = text.lower()
-        
-        if re.search(r'\bi\s+recommend', text_lower):
-            return 'direct_recommendation'
-        elif re.search(r'\brecommendation\s+\d+', text_lower):
-            return 'numbered_recommendation'
-        elif re.search(r'\b(?:should|must|ought)\b', text_lower):
-            return 'prescriptive_recommendation'
-        elif re.search(r'\b(?:suggest|propose)\b', text_lower):
-            return 'suggestive_recommendation'
-        elif re.search(r'\b(?:ensure|establish|implement)\b', text_lower):
-            return 'action_recommendation'
-        else:
-            return 'general_recommendation'
-
-    def _classify_response_type(self, text: str) -> str:
-        """Classify the type of response"""
-        text_lower = text.lower()
-        
-        if re.search(r'\baccepted\s+in\s+full', text_lower):
-            return 'accepted_full'
-        elif re.search(r'\baccepted\s+in\s+principle', text_lower):
-            return 'accepted_principle'
-        elif re.search(r'\bnot\s+accepted|rejected', text_lower):
-            return 'rejected'
-        elif re.search(r'\bpartially\s+accepted', text_lower):
-            return 'accepted_partial'
-        elif re.search(r'\bgovernment\s+response', text_lower):
-            return 'government_response'
-        elif re.search(r'\bwill\s+implement', text_lower):
-            return 'implementation_response'
-        else:
-            return 'general_response'
-
-    def _extract_references(self, text: str) -> List[str]:
-        """Extract references like recommendation numbers, pages, etc."""
-        references = []
-        
-        try:
-            # Recommendation numbers
-            rec_nums = re.findall(r'\brecommendation\s+(\d+)', text, re.IGNORECASE)
-            references.extend([f"rec_{num}" for num in rec_nums])
-            
-            # Page references
-            page_nums = re.findall(r'\bpage\s+(\d+)', text, re.IGNORECASE)
-            references.extend([f"page_{num}" for num in page_nums])
-            
-            # Paragraph references
-            para_nums = re.findall(r'\bparagraph\s+(\d+)', text, re.IGNORECASE)
-            references.extend([f"para_{num}" for num in para_nums])
-            
-            # Section references
-            section_nums = re.findall(r'\bsection\s+(\d+(?:\.\d+)?)', text, re.IGNORECASE)
-            references.extend([f"section_{num}" for num in section_nums])
-        
-        except Exception as e:
-            logging.error(f"Error extracting references: {e}")
-        
-        return list(set(references))
-
-    def _combine_extraction_results(self, original_results: List[Dict], hybrid_results: List[Dict]) -> List[Dict[str, Any]]:
-        """Combine results from original and hybrid extraction methods"""
-        combined = []
-        seen_texts = set()
-        
-        try:
-            # Combine all results
-            all_results = original_results + hybrid_results
-            
-            # Sort by confidence (highest first)
-            all_results.sort(key=lambda x: x.get('confidence', 0), reverse=True)
-            
-            for result in all_results:
-                # Create normalized text key for deduplication
-                text_key = re.sub(r'\s+', ' ', result.get('text', '').lower().strip())[:100]
-                
-                if text_key not in seen_texts and len(text_key) > 10:
-                    seen_texts.add(text_key)
-                    combined.append(result)
-        
-        except Exception as e:
-            logging.error(f"Error combining extraction results: {e}")
-        
-        return combined
-
-    def _detect_inquiry_type(self, text: str) -> str:
-        """Auto-detect the type of inquiry document"""
-        text_lower = text.lower()
-        
-        if any(term in text_lower for term in ['infected blood', 'contaminated blood', 'haemophilia', 'hepatitis c']):
-            return 'infected_blood'
-        elif any(term in text_lower for term in ['public inquiry', 'statutory inquiry']):
-            return 'public_inquiry'
-        elif any(term in text_lower for term in ['grenfell', 'tower', 'fire']):
-            return 'grenfell'
-        else:
-            return 'generic'
-
-    def _preprocess_text(self, text: str) -> str:
-        """Clean and normalize text"""
-        # Remove excessive whitespace
-        text = re.sub(r'\s+', ' ', text)
-        
-        # Fix sentence boundaries
-        text = re.sub(r'([.!?])\s*\n\s*([A-Z])', r'\1 \2', text)
-        
-        # Normalize numbered items
-        text = re.sub(r'\n\s*(\d+)\.\s+', r'\n\1. ', text)
-        text = re.sub(r'\n\s*\(([a-z])\)\s+', r'\n(\1) ', text)
-        
-        # Remove page headers/footers
-        text = re.sub(r'\n\s*Page\s+\d+\s*\n', '\n', text, flags=re.IGNORECASE)
-        text = re.sub(r'\n\s*\d+\s*\n', '\n', text)
-        
-        return text.strip()
-
-    def _analyze_document_content(self, text: str) -> Dict[str, Any]:
-        """Analyze document content for metadata"""
-        analysis = {
-            'word_count': len(text.split()),
-            'char_count': len(text),
-            'paragraph_count': len([p for p in text.split('\n\n') if p.strip()]),
-            'has_recommendations': self._contains_recommendation_terms(text),
-            'has_responses': self._contains_response_terms(text),
-            'inquiry_type': self._detect_inquiry_type(text),
-            'estimated_pages': len(text) // 3000  # Rough estimate
+        # Create results structure
+        results = {
+            'recommendations': recommendations,
+            'responses': responses,
+            'extraction_metadata': {
+                'document_source': document_source,
+                'inquiry_type': inquiry_type,
+                'extraction_methods': ['sentence_based', 'pattern_based'],
+                'total_recommendations': len(recommendations),
+                'total_responses': len(responses),
+                'confidence_stats': self._calculate_confidence_stats(recommendations, responses)
+            }
         }
         
-        # Count potential recommendation and response indicators
-        analysis['recommendation_indicators'] = len(re.findall(r'recommend', text, re.IGNORECASE))
-        analysis['response_indicators'] = len(re.findall(r'response', text, re.IGNORECASE))
+        if self.debug_mode:
+            self._log_results_summary(results)
         
-        return analysis
+        return results
 
     # ============================================================================
-    # ORIGINAL HELPER METHODS - Maintaining compatibility
+    # PDF PROCESSING METHODS - Maintaining compatibility
     # ============================================================================
+
+    def extract_sections_from_pdf(self, pdf_content: bytes, filename: str = "document.pdf") -> Dict[str, Any]:
+        """Original method - extract sections from PDF content (maintains compatibility)"""
+        try:
+            self.extraction_stats['documents_processed'] += 1
+            start_time = datetime.now()
+            
+            # Try pdfplumber first, then PyMuPDF as fallback
+            if PDFPLUMBER_AVAILABLE:
+                result = self._extract_pages_with_pdfplumber(pdf_content, filename)
+            elif PYMUPDF_AVAILABLE:
+                result = self._extract_pages_with_pymupdf(pdf_content, filename)
+            else:
+                result = self._extract_with_fallback(pdf_content, filename)
+            
+            if result and result.get('full_text'):
+                # Process the extracted text for sections
+                sections = self._find_recommendation_response_sections(result['full_text'])
+                result['sections'] = sections
+                result['section_count'] = len(sections)
+                
+                # Extract individual items using enhanced methods
+                recommendations = self.extract_individual_recommendations(result['full_text'])
+                responses = self.extract_individual_responses(result['full_text'])
+                
+                result['individual_recommendations'] = recommendations
+                result['individual_responses'] = responses
+                
+                # Update stats
+                self.extraction_stats['recommendations_found'] = len(recommendations)
+                self.extraction_stats['responses_found'] = len(responses)
+                self.extraction_stats['sections_extracted'] = len(sections)
+                self.extraction_stats['last_extraction_time'] = datetime.now()
+                
+                # Calculate processing time
+                processing_time = (datetime.now() - start_time).total_seconds()
+                self.extraction_stats['total_processing_time'] += processing_time
+                
+                result['success'] = True
+                result['extraction_method'] = 'hybrid_enhanced'
+                result['processing_time'] = processing_time
+                
+                # Add document analysis
+                result['document_analysis'] = self._analyze_document_content(result['full_text'])
+                
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error in extract_sections_from_pdf: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'filename': filename,
+                'individual_recommendations': [],
+                'individual_responses': [],
+                'sections': []
+            }
 
     def _extract_pages_with_pdfplumber(self, pdf_content: bytes, filename: str) -> Dict[str, Any]:
         """Original PDF extraction with pdfplumber"""
@@ -690,7 +704,7 @@ class EnhancedSectionExtractor:
                 }
                 
         except Exception as e:
-            logging.error(f"pdfplumber extraction failed: {e}")
+            self.logger.error(f"pdfplumber extraction failed: {e}")
             return {'success': False, 'error': str(e), 'extraction_method': 'pdfplumber'}
 
     def _extract_pages_with_pymupdf(self, pdf_content: bytes, filename: str) -> Dict[str, Any]:
@@ -731,7 +745,7 @@ class EnhancedSectionExtractor:
             }
             
         except Exception as e:
-            logging.error(f"PyMuPDF extraction failed: {e}")
+            self.logger.error(f"PyMuPDF extraction failed: {e}")
             return {'success': False, 'error': str(e), 'extraction_method': 'pymupdf'}
 
     def _extract_with_fallback(self, pdf_content: bytes, filename: str) -> Dict[str, Any]:
@@ -745,6 +759,59 @@ class EnhancedSectionExtractor:
             'total_pages': 0,
             'extraction_method': 'fallback'
         }
+
+    # ============================================================================
+    # HELPER METHODS - Supporting functionality
+    # ============================================================================
+
+    def _detect_inquiry_type(self, text: str) -> str:
+        """Auto-detect the type of inquiry document"""
+        text_lower = text.lower()
+        
+        if any(term in text_lower for term in ['infected blood', 'contaminated blood', 'haemophilia', 'hepatitis c']):
+            return 'infected_blood'
+        elif any(term in text_lower for term in ['public inquiry', 'statutory inquiry']):
+            return 'public_inquiry'
+        elif any(term in text_lower for term in ['grenfell', 'tower', 'fire']):
+            return 'grenfell'
+        else:
+            return 'generic'
+
+    def _preprocess_text(self, text: str) -> str:
+        """Clean and normalize text"""
+        # Remove excessive whitespace
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Fix sentence boundaries
+        text = re.sub(r'([.!?])\s*\n\s*([A-Z])', r'\1 \2', text)
+        
+        # Normalize numbered items
+        text = re.sub(r'\n\s*(\d+)\.\s+', r'\n\1. ', text)
+        text = re.sub(r'\n\s*\(([a-z])\)\s+', r'\n(\1) ', text)
+        
+        # Remove page headers/footers
+        text = re.sub(r'\n\s*Page\s+\d+\s*\n', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'\n\s*\d+\s*\n', '\n', text)
+        
+        return text.strip()
+
+    def _analyze_document_content(self, text: str) -> Dict[str, Any]:
+        """Analyze document content for metadata"""
+        analysis = {
+            'word_count': len(text.split()),
+            'char_count': len(text),
+            'paragraph_count': len([p for p in text.split('\n\n') if p.strip()]),
+            'has_recommendations': any(re.search(term, text, re.IGNORECASE) for term in self.recommend_terms),
+            'has_responses': any(re.search(term, text, re.IGNORECASE) for term in self.response_terms),
+            'inquiry_type': self._detect_inquiry_type(text),
+            'estimated_pages': len(text) // 3000  # Rough estimate
+        }
+        
+        # Count potential recommendation and response indicators
+        analysis['recommendation_indicators'] = len(re.findall(r'recommend', text, re.IGNORECASE))
+        analysis['response_indicators'] = len(re.findall(r'response', text, re.IGNORECASE))
+        
+        return analysis
 
     def _find_recommendation_response_sections(self, text: str) -> List[Dict[str, Any]]:
         """Original section finding logic"""
@@ -789,12 +856,12 @@ class EnhancedSectionExtractor:
             self.extraction_stats['sections_extracted'] = len(sections)
             
             if self.debug_mode:
-                logging.info(f"Found {len(sections)} sections using pattern matching")
+                self.logger.info(f"Found {len(sections)} sections using pattern matching")
             
             return sections
             
         except Exception as section_error:
-            logging.error(f"Error finding sections: {section_error}")
+            self.logger.error(f"Error finding sections: {section_error}")
             return []
 
     def _find_section_starts(self, text: str) -> List[Tuple[str, int]]:
@@ -813,7 +880,7 @@ class EnhancedSectionExtractor:
             section_starts.sort(key=lambda x: x[1])
         
         except Exception as e:
-            logging.error(f"Error finding section starts: {e}")
+            self.logger.error(f"Error finding section starts: {e}")
         
         return section_starts
 
@@ -853,42 +920,8 @@ class EnhancedSectionExtractor:
         page_markers = len(re.findall(r'--- Page \d+ ---', text_before))
         return max(1, page_markers)
 
-    # Additional placeholder methods for full compatibility
-    def _extract_by_sentences(self, text: str, source: str) -> Dict[str, List[Dict[str, Any]]]:
-        """Extract using sentence-based approach"""
-        return {
-            'recommendations': self._extract_recommendations_hybrid(text),
-            'responses': self._extract_responses_hybrid(text)
-        }
-
-    def _extract_by_original_patterns(self, text: str, source: str) -> Dict[str, List[Dict[str, Any]]]:
-        """Extract using original patterns"""
-        return {
-            'recommendations': self._extract_individual_recommendations_original(text),
-            'responses': self._extract_individual_responses_original(text)
-        }
-
-    def _combine_hybrid_results(self, sentence_results: Dict, pattern_results: Dict) -> Dict[str, List[Dict[str, Any]]]:
-        """Combine sentence and pattern results"""
-        combined_recs = self._combine_extraction_results(
-            pattern_results.get('recommendations', []),
-            sentence_results.get('recommendations', [])
-        )
-        combined_resps = self._combine_extraction_results(
-            pattern_results.get('responses', []),
-            sentence_results.get('responses', [])
-        )
-        
-        return {
-            'recommendations': combined_recs,
-            'responses': combined_resps
-        }
-
-    def _calculate_confidence_stats(self, results: Dict) -> Dict[str, Any]:
+    def _calculate_confidence_stats(self, recommendations: List[Dict], responses: List[Dict]) -> Dict[str, Any]:
         """Calculate confidence statistics"""
-        recs = results.get('recommendations', [])
-        resps = results.get('responses', [])
-        
         def get_stats(items):
             if not items:
                 return {'mean': 0, 'high_confidence': 0, 'medium_confidence': 0, 'low_confidence': 0}
@@ -907,8 +940,8 @@ class EnhancedSectionExtractor:
             }
         
         return {
-            'recommendations': get_stats(recs),
-            'responses': get_stats(resps)
+            'recommendations': get_stats(recommendations),
+            'responses': get_stats(responses)
         }
 
     def _log_results_summary(self, results: Dict) -> None:
@@ -974,7 +1007,7 @@ class EnhancedSectionExtractor:
             }
             
         except Exception as e:
-            logging.error(f"Error comparing documents: {e}")
+            self.logger.error(f"Error comparing documents: {e}")
             return {
                 'matched_pairs': [],
                 'unmatched_recommendations': [],
@@ -1063,8 +1096,8 @@ def debug_section_detection(text: str) -> Dict[str, Any]:
         'text_length': len(text),
         'has_recommend_terms': any(re.search(pattern, text.lower()) for pattern in extractor.recommend_terms),
         'has_response_terms': any(re.search(pattern, text.lower()) for pattern in extractor.response_terms),
-        'recommendation_sentences': len([s for s in sent_tokenize(text) if extractor._contains_recommendation_terms(s)]),
-        'response_sentences': len([s for s in sent_tokenize(text) if extractor._contains_response_terms(s)]),
+        'recommendation_sentences': len([s for s in sent_tokenize(text) if any(re.search(term, s, re.IGNORECASE) for term in extractor.recommend_terms)]),
+        'response_sentences': len([s for s in sent_tokenize(text) if any(re.search(term, s, re.IGNORECASE) for term in extractor.response_terms)]),
         'inquiry_type': extractor._detect_inquiry_type(text),
         'document_analysis': extractor._analyze_document_content(text)
     }
@@ -1171,60 +1204,64 @@ def extract_by_inquiry_type(text: str, inquiry_type: str = "auto") -> Dict[str, 
     }
 
 # ============================================================================
-# MODULE EXPORTS - Maintaining compatibility
+# TESTING AND EXAMPLE FUNCTIONS
 # ============================================================================
 
-__all__ = [
-    # Main class
-    'EnhancedSectionExtractor',
+def test_extraction_simple(text: str = None) -> Dict[str, Any]:
+    """Simple test function with debugging output"""
+    if not text:
+        text = """
+        The committee recommends that the government should implement new safety measures immediately.
+        I recommend establishing a monitoring system for compliance.
+        It is recommended that annual reviews be conducted.
+        
+        Government Response:
+        Recommendation 1 is accepted in full and will be implemented by March 2025.
+        The government response is that recommendation 2 is accepted in principle.
+        """
     
-    # Original standalone functions
-    'extract_sections_from_pdf',
-    'get_section_summary',
-    'validate_section_extraction',
-    'extract_government_recommendations',
-    'extract_government_responses',
+    print("=== Enhanced Section Extractor Test ===")
+    print(f"Input text length: {len(text)} characters")
     
-    # Testing and debugging
-    'test_extraction',
-    'debug_section_detection', 
-    'test_individual_extraction',
+    extractor = EnhancedSectionExtractor(debug_mode=True)
     
-    # NEW: Additional convenience functions
-    'quick_extract_from_text',
-    'extract_with_confidence_filter',
-    'get_extraction_summary',
-    'extract_by_inquiry_type',
+    # Test recommendations
+    print("\n--- Testing Recommendation Extraction ---")
+    recommendations = extractor.extract_individual_recommendations(text)
+    print(f"Recommendations found: {len(recommendations)}")
+    for i, rec in enumerate(recommendations, 1):
+        print(f"  {i}. Text: {rec['text'][:100]}...")
+        print(f"     Confidence: {rec.get('confidence', 0):.2f}")
+        print(f"     Type: {rec.get('type', 'unknown')}")
+        print(f"     Method: {rec.get('extraction_method', 'unknown')}")
+        if rec.get('matched_terms'):
+            print(f"     Matched terms: {rec.get('matched_terms', [])}")
     
-    # Availability flags
-    'PDFPLUMBER_AVAILABLE',
-    'PYMUPDF_AVAILABLE',
-    'NLTK_AVAILABLE'
-]
-
-# ============================================================================
-# MODULE INITIALIZATION
-# ============================================================================
-
-if PDFPLUMBER_AVAILABLE and PYMUPDF_AVAILABLE:
-    logging.info("✅ Enhanced Section Extractor loaded with full PDF support (pdfplumber + PyMuPDF)")
-elif PDFPLUMBER_AVAILABLE:
-    logging.info("✅ Enhanced Section Extractor loaded with pdfplumber support")
-elif PYMUPDF_AVAILABLE:
-    logging.info("✅ Enhanced Section Extractor loaded with PyMuPDF support")
-else:
-    logging.warning("⚠️ Enhanced Section Extractor loaded with fallback mode (no PDF libraries)")
-
-if NLTK_AVAILABLE:
-    logging.info("✅ NLTK sentence tokenization available")
-else:
-    logging.info("✅ Using fallback sentence tokenization")
-
-logging.info("🎉 Enhanced Section Extractor with Hybrid Approach - Ready for any inquiry document!")
-
-# ============================================================================
-# EXAMPLE USAGE AND TESTING
-# ============================================================================
+    # Test responses
+    print("\n--- Testing Response Extraction ---")
+    responses = extractor.extract_individual_responses(text)
+    print(f"Responses found: {len(responses)}")
+    for i, resp in enumerate(responses, 1):
+        print(f"  {i}. Text: {resp['text'][:100]}...")
+        print(f"     Confidence: {resp.get('confidence', 0):.2f}")
+        print(f"     Type: {resp.get('type', 'unknown')}")
+        print(f"     Method: {resp.get('extraction_method', 'unknown')}")
+        if resp.get('matched_terms'):
+            print(f"     Matched terms: {resp.get('matched_terms', [])}")
+    
+    # Get statistics
+    stats = extractor.get_extraction_statistics()
+    print(f"\n--- Extraction Statistics ---")
+    print(f"Documents processed: {stats['documents_processed']}")
+    print(f"Recommendations found: {stats['recommendations_found']}")
+    print(f"Responses found: {stats['responses_found']}")
+    
+    return {
+        'recommendations': recommendations,
+        'responses': responses,
+        'statistics': stats,
+        'test_passed': len(recommendations) > 0 or len(responses) > 0
+    }
 
 def example_usage():
     """Example of how to use the enhanced extractor"""
@@ -1274,38 +1311,62 @@ def example_usage():
     print(f"- Mean response confidence: {summary['response_stats']['mean_confidence']:.2f}")
     print(f"- Extraction methods used: {summary['extraction_methods_used']}")
 
-def run_comprehensive_test():
-    """Run comprehensive test of all functionality"""
-    print("=== Running Comprehensive Test ===")
-    
-    # Test 1: Basic functionality
-    print("\n1. Testing basic functionality...")
-    extractor = EnhancedSectionExtractor(debug_mode=False)
-    stats = extractor.get_extraction_statistics()
-    print(f"   Initial stats: {stats}")
-    
-    # Test 2: Text extraction
-    print("\n2. Testing text extraction...")
-    test_text = "I recommend implementing new safety measures. The government response is that this recommendation is accepted."
-    recs = extractor.extract_individual_recommendations(test_text)
-    resps = extractor.extract_individual_responses(test_text)
-    print(f"   Found {len(recs)} recommendations and {len(resps)} responses")
-    
-    # Test 3: Confidence filtering
-    print("\n3. Testing confidence filtering...")
-    filtered = extract_with_confidence_filter(test_text, 0.7)
-    print(f"   High confidence items: {len(filtered['recommendations'])} recs, {len(filtered['responses'])} resps")
-    
-    # Test 4: Quick extraction
-    print("\n4. Testing quick extraction...")
-    quick = quick_extract_from_text(test_text)
-    print(f"   Quick results: {len(quick['recommendations'])} recs, {len(quick['responses'])} resps")
-    
-    print("\n✅ All tests completed successfully!")
+# ============================================================================
+# MODULE EXPORTS - Maintaining compatibility
+# ============================================================================
 
-if __name__ == "__main__":
-    # Run example usage
-    example_usage()
+__all__ = [
+    # Main class
+    'EnhancedSectionExtractor',
     
-    # Run comprehensive test
-    run_comprehensive_test()
+    # Original standalone functions
+    'extract_sections_from_pdf',
+    'get_section_summary',
+    'validate_section_extraction',
+    'extract_government_recommendations',
+    'extract_government_responses',
+    
+    # Testing and debugging
+    'test_extraction',
+    'debug_section_detection', 
+    'test_individual_extraction',
+    'test_extraction_simple',
+    
+    # NEW: Additional convenience functions
+    'quick_extract_from_text',
+    'extract_with_confidence_filter',
+    'get_extraction_summary',
+    'extract_by_inquiry_type',
+    'example_usage',
+    
+    # Availability flags
+    'PDFPLUMBER_AVAILABLE',
+    'PYMUPDF_AVAILABLE',
+    'NLTK_AVAILABLE'
+]
+
+# ============================================================================
+# MODULE INITIALIZATION
+# ============================================================================
+
+if PDFPLUMBER_AVAILABLE and PYMUPDF_AVAILABLE:
+    logging.info("✅ Enhanced Section Extractor loaded with full PDF support (pdfplumber + PyMuPDF)")
+elif PDFPLUMBER_AVAILABLE:
+    logging.info("✅ Enhanced Section Extractor loaded with pdfplumber support")
+elif PYMUPDF_AVAILABLE:
+    logging.info("✅ Enhanced Section Extractor loaded with PyMuPDF support")
+else:
+    logging.warning("⚠️ Enhanced Section Extractor loaded with fallback mode (no PDF libraries)")
+
+if NLTK_AVAILABLE:
+    logging.info("✅ NLTK sentence tokenization available")
+else:
+    logging.info("✅ Using fallback sentence tokenization")
+
+logging.info("🎉 Enhanced Section Extractor with Fixed Hybrid Approach - Ready for any inquiry document!")
+
+# Test on import (optional)
+if __name__ == "__main__":
+    example_usage()
+    print("\n" + "="*60)
+    test_extraction_simple()
