@@ -1,467 +1,465 @@
 # ===============================================
-# MODULAR RAG EXTRACTOR - SEPARATE FILE
+# RAG EXTRACTOR BACKEND MODULE
 # modules/rag_extractor.py
-# Clean, focused RAG implementation
+# Intelligent RAG-based extraction engine
 # ===============================================
 
 import logging
-from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
 import re
+from typing import List, Dict, Any, Tuple
+from datetime import datetime
 import numpy as np
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Import dependencies with fallbacks
-try:
-    from sentence_transformers import SentenceTransformer
-    from sklearn.metrics.pairwise import cosine_similarity
-    from sklearn.cluster import DBSCAN
-    RAG_AVAILABLE = True
-    logging.info("✅ RAG dependencies available")
-except ImportError:
-    RAG_AVAILABLE = False
-    logging.warning("⚠️ RAG dependencies not available")
+def is_rag_available() -> bool:
+    """Check if RAG dependencies are available"""
+    try:
+        import sentence_transformers
+        import sklearn
+        return True
+    except ImportError:
+        return False
+
+def get_rag_status() -> Dict[str, Any]:
+    """Get detailed RAG system status"""
+    status = {
+        'dependencies_available': False,
+        'models_loaded': False,
+        'backend_ready': False
+    }
+    
+    try:
+        import sentence_transformers
+        import sklearn
+        status['dependencies_available'] = True
+        
+        # Try to load a small model to test
+        from sentence_transformers import SentenceTransformer
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+        status['models_loaded'] = True
+        status['backend_ready'] = True
+        
+    except Exception as e:
+        logger.warning(f"RAG status check failed: {e}")
+    
+    return status
 
 class IntelligentRAGExtractor:
-    """
-    Intelligent RAG-based extraction system
-    Focused, clean implementation for maximum accuracy
-    """
+    """Advanced RAG-based extraction with semantic understanding"""
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self.sentence_model = None
-        self.extraction_templates = self._load_templates()
-        
-        # Initialize models
-        self._initialize_models()
+        self.model = None
+        self.recommendation_patterns = [
+            r'(?:recommend|suggests?|should|must|ought to|proposes?)[^.!?]*[.!?]',
+            r'(?:The|A|An)\s+(?:Department|Ministry|Government|Authority|Committee|Panel)\s+(?:should|must|ought to|recommends?)[^.!?]*[.!?]',
+            r'(?:We|I)\s+(?:recommend|suggest|propose)[^.!?]*[.!?]',
+            r'(?:It is|This is)\s+(?:recommended|suggested|proposed)[^.!?]*[.!?]',
+            r'(?:Action|Steps?|Measures?)\s+(?:should|must|ought to)\s+be\s+taken[^.!?]*[.!?]'
+        ]
+        self.response_patterns = [
+            r'(?:accept|accepted|agree|agreed|implement|implemented|will)[^.!?]*[.!?]',
+            r'(?:The Government|We|The Department)\s+(?:accept|agree|will|has|have)[^.!?]*[.!?]',
+            r'(?:In response|Response|Reply)[^.!?]*[.!?]',
+            r'(?:This|That)\s+(?:recommendation|suggestion)\s+(?:is|has been|will be)[^.!?]*[.!?]',
+            r'(?:Action|Implementation|Progress)[^.!?]*[.!?]'
+        ]
+        self._initialize_model()
     
-    def _initialize_models(self):
-        """Initialize RAG models"""
+    def _initialize_model(self):
+        """Initialize the sentence transformer model"""
         try:
-            if RAG_AVAILABLE:
-                self.sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
-                self.logger.info("✅ RAG models initialized")
+            if is_rag_available():
+                from sentence_transformers import SentenceTransformer
+                self.model = SentenceTransformer('all-MiniLM-L6-v2')
+                self.logger.info("✅ RAG model initialized successfully")
             else:
-                self.logger.warning("⚠️ RAG models not available")
+                self.logger.warning("⚠️ RAG dependencies not available, using fallback mode")
         except Exception as e:
-            self.logger.error(f"Failed to initialize RAG models: {e}")
+            self.logger.error(f"❌ Failed to initialize RAG model: {e}")
+            self.model = None
     
-    def _load_templates(self) -> Dict[str, List[str]]:
-        """Load extraction query templates"""
-        return {
-            'recommendation_queries': [
-                "government inquiry recommendation committee recommends that",
-                "department should must implement establish create",
-                "recommendation numbered formal official action required"
-            ],
-            'response_queries': [
-                "government response accepted rejected recommendation",
-                "ministry department official response implementation",
-                "accepted partially not accepted government position"
-            ]
-        }
-    
-    def extract_with_rag(self, document_text: str, filename: str = "", 
-                        chunk_size: int = 500, max_items: int = 25) -> Dict[str, Any]:
-        """
-        Main RAG extraction function
-        """
+    def extract_with_rag(self, content: str, filename: str, chunk_size: int = 500, max_items: int = 50) -> Dict[str, Any]:
+        """Main RAG extraction method"""
         try:
-            # Step 1: Intelligent chunking
-            chunks = self._smart_chunking(document_text, chunk_size)
+            self.logger.info(f"Starting RAG extraction for {filename}")
             
-            # Step 2: Create embeddings if possible
-            embeddings = []
-            if self.sentence_model and chunks:
-                embeddings = self.sentence_model.encode(chunks)
+            # Step 1: Smart chunking
+            chunks = self._smart_chunk_document(content, chunk_size)
+            self.logger.info(f"Created {len(chunks)} semantic chunks")
             
-            # Step 3: RAG extraction
-            recommendations = self._rag_extract_content(
-                document_text, chunks, embeddings, 'recommendation'
-            )
-            responses = self._rag_extract_content(
-                document_text, chunks, embeddings, 'response'
-            )
+            # Step 2: Find relevant chunks using semantic search
+            recommendation_chunks = self._find_relevant_chunks(chunks, "recommendations suggestions should must")
+            response_chunks = self._find_relevant_chunks(chunks, "response accept implement agreed government")
+            
+            self.logger.info(f"Found {len(recommendation_chunks)} recommendation chunks, {len(response_chunks)} response chunks")
+            
+            # Step 3: Extract from relevant chunks
+            recommendations = self._extract_from_chunks(recommendation_chunks, 'recommendation', max_items // 2)
+            responses = self._extract_from_chunks(response_chunks, 'response', max_items // 2)
             
             # Step 4: Post-process and validate
-            final_recommendations = self._post_process(recommendations, max_items)
-            final_responses = self._post_process(responses, max_items)
+            recommendations = self._post_process_extractions(recommendations, 'recommendation')
+            responses = self._post_process_extractions(responses, 'response')
+            
+            self.logger.info(f"Extracted {len(recommendations)} recommendations, {len(responses)} responses")
             
             return {
-                'recommendations': final_recommendations,
-                'responses': final_responses,
+                'recommendations': recommendations,
+                'responses': responses,
                 'metadata': {
-                    'method': 'rag_intelligent',
                     'chunks_processed': len(chunks),
-                    'rag_enabled': bool(self.sentence_model),
-                    'filename': filename
+                    'recommendation_chunks': len(recommendation_chunks),
+                    'response_chunks': len(response_chunks),
+                    'method': 'rag_intelligent',
+                    'model_used': 'sentence-transformers/all-MiniLM-L6-v2' if self.model else 'fallback',
+                    'extraction_timestamp': datetime.now().isoformat()
                 }
             }
             
         except Exception as e:
             self.logger.error(f"RAG extraction failed: {e}")
-            return self._fallback_extraction(document_text)
+            # Fallback to basic extraction
+            return self._fallback_extraction(content, filename, max_items)
     
-    def _smart_chunking(self, text: str, chunk_size: int = 500) -> List[str]:
-        """Smart chunking that preserves semantic boundaries"""
-        # Split by double newlines (paragraphs) first
-        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
-        
+    def _smart_chunk_document(self, content: str, chunk_size: int) -> List[Dict[str, Any]]:
+        """Create semantic chunks that preserve meaning"""
         chunks = []
+        
+        # Split by paragraphs first
+        paragraphs = re.split(r'\n\s*\n', content)
+        
         current_chunk = ""
+        chunk_index = 0
         
-        for paragraph in paragraphs:
-            # If adding this paragraph exceeds chunk size
-            if len(current_chunk) + len(paragraph) > chunk_size and current_chunk:
-                chunks.append(current_chunk.strip())
-                current_chunk = paragraph
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+            
+            # If adding this paragraph would exceed chunk size, save current chunk
+            if len(current_chunk) + len(para) > chunk_size and current_chunk:
+                chunks.append({
+                    'content': current_chunk.strip(),
+                    'index': chunk_index,
+                    'length': len(current_chunk),
+                    'type': 'semantic'
+                })
+                current_chunk = para
+                chunk_index += 1
             else:
-                current_chunk += " " + paragraph if current_chunk else paragraph
+                current_chunk += "\n\n" + para if current_chunk else para
         
-        # Add final chunk
+        # Add the last chunk
         if current_chunk:
-            chunks.append(current_chunk.strip())
+            chunks.append({
+                'content': current_chunk.strip(),
+                'index': chunk_index,
+                'length': len(current_chunk),
+                'type': 'semantic'
+            })
         
         return chunks
     
-    def _rag_extract_content(self, full_text: str, chunks: List[str], 
-                           embeddings: List, content_type: str) -> List[Dict]:
-        """RAG-based content extraction"""
-        extractions = []
+    def _find_relevant_chunks(self, chunks: List[Dict], query: str) -> List[Dict]:
+        """Find chunks most relevant to the query using semantic similarity"""
+        if not self.model or not chunks:
+            # Fallback: simple keyword matching
+            return self._keyword_filter_chunks(chunks, query)
         
-        # Get relevant query templates
-        query_key = f'{content_type}_queries'
-        queries = self.extraction_templates.get(query_key, [])
-        
-        if self.sentence_model and len(embeddings) > 0 and queries:
-            # Create query embeddings
-            query_embeddings = self.sentence_model.encode(queries)
+        try:
+            from sklearn.metrics.pairwise import cosine_similarity
             
-            # Find relevant chunks using semantic similarity
-            for i, chunk in enumerate(chunks):
-                if i < len(embeddings):
-                    chunk_embedding = embeddings[i].reshape(1, -1)
-                    
-                    # Calculate similarity to all queries
-                    similarities = []
-                    for query_emb in query_embeddings:
-                        sim = cosine_similarity(chunk_embedding, query_emb.reshape(1, -1))[0][0]
-                        similarities.append(sim)
-                    
-                    max_similarity = max(similarities)
-                    
-                    # Extract from relevant chunks
-                    if max_similarity > 0.25:  # Similarity threshold
-                        chunk_extractions = self._extract_from_chunk(
-                            chunk, content_type, max_similarity
-                        )
-                        extractions.extend(chunk_extractions)
-        
-        # Also do pattern-based extraction as backup
-        pattern_extractions = self._pattern_extract(full_text, content_type)
-        
-        # Merge results intelligently
-        merged = self._merge_extractions(extractions, pattern_extractions)
-        
-        return merged
+            # Get embeddings for query and chunks
+            query_embedding = self.model.encode([query])
+            chunk_texts = [chunk['content'] for chunk in chunks]
+            chunk_embeddings = self.model.encode(chunk_texts)
+            
+            # Calculate similarities
+            similarities = cosine_similarity(query_embedding, chunk_embeddings)[0]
+            
+            # Rank chunks by similarity
+            ranked_chunks = []
+            for i, similarity in enumerate(similarities):
+                if similarity > 0.3:  # Threshold for relevance
+                    chunk = chunks[i].copy()
+                    chunk['similarity_score'] = float(similarity)
+                    ranked_chunks.append(chunk)
+            
+            # Sort by similarity score
+            ranked_chunks.sort(key=lambda x: x['similarity_score'], reverse=True)
+            
+            return ranked_chunks[:10]  # Return top 10 most relevant chunks
+            
+        except Exception as e:
+            self.logger.warning(f"Semantic similarity failed, using keyword fallback: {e}")
+            return self._keyword_filter_chunks(chunks, query)
     
-    def _extract_from_chunk(self, chunk: str, content_type: str, similarity: float) -> List[Dict]:
-        """Extract content from a relevant chunk"""
-        extractions = []
+    def _keyword_filter_chunks(self, chunks: List[Dict], query: str) -> List[Dict]:
+        """Fallback method using keyword matching"""
+        keywords = query.lower().split()
+        relevant_chunks = []
         
-        # Define extraction patterns based on content type
-        if content_type == 'recommendation':
-            patterns = [
-                r'(?i)recommendation\s+(\d+(?:\.\d+)*)[:\.\-]?\s*(.{15,300})',
-                r'(?i)(?:we\s+)?recommend\s+that\s+(.{15,200})',
-                r'(?i)(?:should|must|ought\s+to)\s+(.{15,150})',
-                r'(?i)(?:the\s+)?(?:committee|inquiry|panel)\s+recommends?\s+(.{15,200})'
-            ]
-        else:  # response
-            patterns = [
-                r'(?i)(?:government\s+)?response[:\.\-]?\s*(.{15,200})',
-                r'(?i)(?:accepted|rejected|not\s+accepted|partially\s+accepted)[:\.\-]?\s*(.{15,150})',
-                r'(?i)the\s+government\s+(?:accepts?|rejects?|acknowledges?)\s+(.{15,150})'
-            ]
-        
-        for pattern in patterns:
-            matches = re.finditer(pattern, chunk, re.MULTILINE | re.DOTALL)
+        for chunk in chunks:
+            content_lower = chunk['content'].lower()
+            score = sum(1 for keyword in keywords if keyword in content_lower)
             
-            for match in matches:
-                # Extract the matched text
-                if len(match.groups()) > 1:
-                    text = match.group(2).strip()
-                else:
-                    text = match.group(1).strip()
+            if score > 0:
+                chunk_copy = chunk.copy()
+                chunk_copy['keyword_score'] = score
+                relevant_chunks.append(chunk_copy)
+        
+        # Sort by keyword score
+        relevant_chunks.sort(key=lambda x: x.get('keyword_score', 0), reverse=True)
+        return relevant_chunks[:10]
+    
+    def _extract_from_chunks(self, chunks: List[Dict], extraction_type: str, max_items: int) -> List[Dict]:
+        """Extract recommendations or responses from relevant chunks"""
+        extractions = []
+        patterns = self.recommendation_patterns if extraction_type == 'recommendation' else self.response_patterns
+        
+        for chunk in chunks:
+            content = chunk['content']
+            
+            # Apply all patterns
+            for pattern in patterns:
+                matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE)
                 
-                # Clean and validate
-                text = self._clean_text(text)
-                
-                if self._is_valid_extraction(text):
-                    confidence = min(0.9, 0.6 + similarity * 0.3)
+                for match in matches:
+                    matched_text = match.group().strip()
+                    
+                    # Skip if too short or already found
+                    if len(matched_text) < 50:
+                        continue
+                    
+                    # Check for duplicates
+                    if any(self._is_similar_text(matched_text, existing['content']) 
+                          for existing in extractions):
+                        continue
+                    
+                    # Calculate confidence score
+                    confidence = self._calculate_extraction_confidence(
+                        matched_text, chunk, extraction_type
+                    )
                     
                     extraction = {
-                        'text': text,
+                        'content': matched_text,
                         'confidence': confidence,
-                        'extraction_method': 'rag_semantic',
-                        'similarity_score': similarity,
-                        'content_type': content_type,
-                        'word_count': len(text.split()),
-                        'char_count': len(text),
-                        'extracted_at': datetime.now().isoformat()
+                        'chunk_index': chunk['index'],
+                        'similarity_score': chunk.get('similarity_score', chunk.get('keyword_score', 0)),
+                        'pattern_used': pattern[:50] + "..." if len(pattern) > 50 else pattern,
+                        'extraction_type': extraction_type,
+                        'context': content[max(0, match.start()-100):match.end()+100]
                     }
                     
-                    # Add response type for responses
-                    if content_type == 'response':
-                        extraction['response_type'] = self._classify_response(text)
-                    
                     extractions.append(extraction)
-        
-        return extractions
-    
-    def _pattern_extract(self, text: str, content_type: str) -> List[Dict]:
-        """Simple pattern-based extraction as backup"""
-        extractions = []
-        lines = text.split('\n')
-        
-        if content_type == 'recommendation':
-            pattern = r'(?i)^\s*(?:recommendation\s+\d+|we\s+recommend|should\s+)'
-        else:
-            pattern = r'(?i)^\s*(?:response|government\s+response|accepted|rejected)'
-        
-        i = 0
-        while i < len(lines):
-            line = lines[i].strip()
-            
-            if re.match(pattern, line):
-                # Collect multi-line content
-                content_lines = [line]
-                j = i + 1
-                
-                while j < len(lines) and j < i + 5:  # Max 5 lines
-                    next_line = lines[j].strip()
-                    if not next_line:  # Empty line
+                    
+                    if len(extractions) >= max_items:
                         break
-                    if re.match(r'(?i)^\s*(?:recommendation|response)', next_line):
-                        break  # Next item
-                    content_lines.append(next_line)
-                    j += 1
                 
-                full_text = ' '.join(content_lines)
-                full_text = self._clean_text(full_text)
-                
-                if self._is_valid_extraction(full_text):
-                    extraction = {
-                        'text': full_text,
-                        'confidence': 0.7,
-                        'extraction_method': 'pattern_backup',
-                        'content_type': content_type,
-                        'word_count': len(full_text.split()),
-                        'char_count': len(full_text),
-                        'extracted_at': datetime.now().isoformat()
-                    }
-                    
-                    if content_type == 'response':
-                        extraction['response_type'] = self._classify_response(full_text)
-                    
-                    extractions.append(extraction)
-                
-                i = j
-            else:
-                i += 1
-        
-        return extractions
-    
-    def _merge_extractions(self, rag_items: List[Dict], pattern_items: List[Dict]) -> List[Dict]:
-        """Merge RAG and pattern extractions, avoiding duplicates"""
-        merged = []
-        
-        # Add high-confidence RAG items first
-        for item in rag_items:
-            if item.get('confidence', 0) > 0.7:
-                merged.append(item)
-        
-        # Add pattern items that don't significantly overlap
-        for pattern_item in pattern_items:
-            is_duplicate = False
-            
-            for existing in merged:
-                similarity = self._calculate_overlap(
-                    pattern_item.get('text', ''), 
-                    existing.get('text', '')
-                )
-                if similarity > 0.7:  # High overlap
-                    is_duplicate = True
-                    # Boost confidence of existing item
-                    existing['confidence'] = min(0.95, existing['confidence'] + 0.1)
-                    existing['pattern_confirmed'] = True
+                if len(extractions) >= max_items:
                     break
             
-            if not is_duplicate:
-                merged.append(pattern_item)
+            if len(extractions) >= max_items:
+                break
         
-        # Add remaining RAG items
-        for item in rag_items:
-            if item.get('confidence', 0) <= 0.7:
-                is_duplicate = any(
-                    self._calculate_overlap(item.get('text', ''), existing.get('text', '')) > 0.7
-                    for existing in merged
-                )
-                if not is_duplicate:
-                    merged.append(item)
-        
-        return merged
+        return extractions
     
-    def _post_process(self, extractions: List[Dict], max_items: int) -> List[Dict]:
-        """Post-process and filter extractions"""
-        # Calculate final confidence scores
-        for extraction in extractions:
-            base_confidence = extraction.get('confidence', 0)
-            text = extraction.get('text', '')
-            
-            # Quality bonuses
-            quality_bonus = 0
-            if text.strip().endswith('.'):
-                quality_bonus += 0.1
-            if len(text.split()) > 15:
-                quality_bonus += 0.1
-            if extraction.get('pattern_confirmed'):
-                quality_bonus += 0.1
-            
-            final_confidence = min(0.95, base_confidence + quality_bonus)
-            extraction['final_confidence'] = final_confidence
+    def _calculate_extraction_confidence(self, text: str, chunk: Dict, extraction_type: str) -> float:
+        """Calculate confidence score for an extraction"""
+        confidence = 0.5  # Base confidence
         
-        # Filter and sort
-        valid_extractions = [
-            ext for ext in extractions 
-            if ext.get('final_confidence', 0) > 0.4
-        ]
+        # Length factor
+        if len(text) > 100:
+            confidence += 0.1
+        if len(text) > 200:
+            confidence += 0.1
         
-        # Sort by confidence
-        valid_extractions.sort(key=lambda x: x.get('final_confidence', 0), reverse=True)
+        # Semantic similarity factor
+        similarity = chunk.get('similarity_score', chunk.get('keyword_score', 0))
+        if isinstance(similarity, (int, float)):
+            confidence += min(similarity * 0.3, 0.3)
         
-        # Add ranking
-        for i, extraction in enumerate(valid_extractions[:max_items]):
-            extraction['rank'] = i + 1
-            extraction['extraction_id'] = f"{extraction['content_type'].upper()}_{i+1:03d}"
-        
-        return valid_extractions[:max_items]
-    
-    def _clean_text(self, text: str) -> str:
-        """Clean extracted text"""
-        # Remove extra whitespace
-        text = ' '.join(text.split())
-        
-        # Remove common artifacts
-        text = re.sub(r'^\W+', '', text)  # Leading non-word chars
-        text = re.sub(r'\s+', ' ', text)  # Multiple spaces
-        
-        return text.strip()
-    
-    def _is_valid_extraction(self, text: str) -> bool:
-        """Check if extraction is valid"""
-        if not text or len(text.strip()) < 15:
-            return False
-        
-        word_count = len(text.split())
-        if word_count < 5:
-            return False
-        
-        # Check for meaningful content
-        if not any(c.isalpha() for c in text):
-            return False
-        
-        return True
-    
-    def _classify_response(self, text: str) -> str:
-        """Classify government response type"""
-        text_lower = text.lower()
-        
-        if any(word in text_lower for word in ['accept', 'accepted', 'agree']):
-            if 'partially' in text_lower or 'in part' in text_lower:
-                return 'partially_accepted'
-            else:
-                return 'accepted'
-        elif any(word in text_lower for word in ['reject', 'rejected', 'not accept', 'decline']):
-            return 'rejected'
-        elif any(word in text_lower for word in ['consider', 'review', 'under consideration']):
-            return 'under_consideration'
+        # Pattern quality factor
+        if extraction_type == 'recommendation':
+            keywords = ['recommend', 'should', 'must', 'suggest', 'propose']
         else:
-            return 'government_response'
-    
-    def _calculate_overlap(self, text1: str, text2: str) -> float:
-        """Calculate text overlap percentage"""
-        if not text1 or not text2:
-            return 0.0
+            keywords = ['accept', 'implement', 'agree', 'response', 'action']
         
+        text_lower = text.lower()
+        keyword_matches = sum(1 for keyword in keywords if keyword in text_lower)
+        confidence += min(keyword_matches * 0.05, 0.2)
+        
+        # Structure factor
+        if re.search(r'^\d+\.', text.strip()):  # Numbered item
+            confidence += 0.1
+        
+        return min(confidence, 1.0)
+    
+    def _is_similar_text(self, text1: str, text2: str) -> bool:
+        """Check if two texts are similar (basic implementation)"""
+        # Simple similarity check based on word overlap
         words1 = set(text1.lower().split())
         words2 = set(text2.lower().split())
         
         if not words1 or not words2:
-            return 0.0
+            return False
         
-        intersection = words1.intersection(words2)
-        union = words1.union(words2)
+        overlap = len(words1.intersection(words2))
+        similarity = overlap / min(len(words1), len(words2))
         
-        return len(intersection) / len(union)
+        return similarity > 0.7
     
-    def _fallback_extraction(self, text: str) -> Dict[str, Any]:
-        """Fallback when RAG fails"""
-        # Simple pattern extraction
-        recommendations = self._pattern_extract(text, 'recommendation')
-        responses = self._pattern_extract(text, 'response')
+    def _post_process_extractions(self, extractions: List[Dict], extraction_type: str) -> List[Dict]:
+        """Post-process extractions to improve quality"""
+        if not extractions:
+            return extractions
+        
+        # Sort by confidence
+        extractions.sort(key=lambda x: x['confidence'], reverse=True)
+        
+        # Remove duplicates more thoroughly
+        unique_extractions = []
+        for extraction in extractions:
+            is_duplicate = False
+            for existing in unique_extractions:
+                if self._is_similar_text(extraction['content'], existing['content']):
+                    is_duplicate = True
+                    # Keep the one with higher confidence
+                    if extraction['confidence'] > existing['confidence']:
+                        unique_extractions.remove(existing)
+                        unique_extractions.append(extraction)
+                    break
+            
+            if not is_duplicate:
+                unique_extractions.append(extraction)
+        
+        # Add final confidence scores
+        for extraction in unique_extractions:
+            extraction['final_confidence'] = self._calculate_final_confidence(extraction)
+        
+        return unique_extractions
+    
+    def _calculate_final_confidence(self, extraction: Dict) -> float:
+        """Calculate final confidence score with validation"""
+        base_confidence = extraction.get('confidence', 0.5)
+        
+        # Content quality factors
+        content = extraction.get('content', '')
+        
+        # Length quality
+        length_score = min(len(content) / 200, 1.0) * 0.1
+        
+        # Completeness (ends with punctuation)
+        completeness_score = 0.1 if content.strip().endswith(('.', '!', '?')) else 0
+        
+        # Structure quality (starts with capital, proper grammar indicators)
+        structure_score = 0.1 if content.strip()[0].isupper() else 0
+        
+        final_confidence = min(base_confidence + length_score + completeness_score + structure_score, 1.0)
+        
+        return round(final_confidence, 3)
+    
+    def _fallback_extraction(self, content: str, filename: str, max_items: int) -> Dict[str, Any]:
+        """Fallback extraction method when RAG is not available"""
+        self.logger.info("Using fallback extraction method")
+        
+        recommendations = []
+        responses = []
+        
+        # Basic pattern extraction
+        for pattern in self.recommendation_patterns:
+            matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE)
+            for match in matches:
+                text = match.group().strip()
+                if len(text) >= 50 and len(recommendations) < max_items // 2:
+                    recommendations.append({
+                        'content': text,
+                        'confidence': 0.6,
+                        'extraction_type': 'recommendation',
+                        'method': 'fallback_pattern'
+                    })
+        
+        for pattern in self.response_patterns:
+            matches = re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE)
+            for match in matches:
+                text = match.group().strip()
+                if len(text) >= 50 and len(responses) < max_items // 2:
+                    responses.append({
+                        'content': text,
+                        'confidence': 0.6,
+                        'extraction_type': 'response',
+                        'method': 'fallback_pattern'
+                    })
         
         return {
-            'recommendations': recommendations[:10],
-            'responses': responses[:10],
+            'recommendations': recommendations,
+            'responses': responses,
             'metadata': {
-                'method': 'pattern_fallback',
-                'note': 'RAG unavailable, using pattern extraction'
+                'method': 'fallback_pattern',
+                'extraction_timestamp': datetime.now().isoformat(),
+                'note': 'RAG not available, used basic patterns'
             }
         }
 
-# ===============================================
-# UTILITY FUNCTIONS
-# ===============================================
-
-def is_rag_available() -> bool:
-    """Check if RAG dependencies are available"""
-    return RAG_AVAILABLE
-
-def get_rag_status() -> Dict[str, Any]:
-    """Get detailed RAG system status"""
-    status = {
-        'available': RAG_AVAILABLE,
-        'models_loaded': False,
-        'dependencies': {
-            'sentence_transformers': False,
-            'sklearn': False,
-            'numpy': False
-        }
+# Additional utility functions
+def validate_rag_extraction(results: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate RAG extraction results"""
+    validation = {
+        'total_items': len(results.get('recommendations', [])) + len(results.get('responses', [])),
+        'avg_confidence': 0.0,
+        'high_confidence_items': 0,
+        'method_used': results.get('metadata', {}).get('method', 'unknown')
     }
     
-    if RAG_AVAILABLE:
-        try:
-            # Test model loading
-            model = SentenceTransformer('all-MiniLM-L6-v2')
-            status['models_loaded'] = True
-            status['dependencies'] = {
-                'sentence_transformers': True,
-                'sklearn': True,
-                'numpy': True
-            }
-        except Exception as e:
-            logging.warning(f"RAG model loading failed: {e}")
+    all_items = results.get('recommendations', []) + results.get('responses', [])
     
-    return status
+    if all_items:
+        confidences = [item.get('final_confidence', item.get('confidence', 0)) for item in all_items]
+        validation['avg_confidence'] = sum(confidences) / len(confidences)
+        validation['high_confidence_items'] = sum(1 for c in confidences if c > 0.8)
+    
+    return validation
 
-# Export main classes and functions
+def merge_similar_extractions(extractions: List[Dict], similarity_threshold: float = 0.8) -> List[Dict]:
+    """Merge extractions that are very similar"""
+    if not extractions:
+        return extractions
+    
+    merged = []
+    processed = set()
+    
+    for i, extraction in enumerate(extractions):
+        if i in processed:
+            continue
+        
+        similar_group = [extraction]
+        processed.add(i)
+        
+        for j, other in enumerate(extractions[i+1:], i+1):
+            if j in processed:
+                continue
+            
+            # Check similarity
+            extractor = IntelligentRAGExtractor()
+            if extractor._is_similar_text(extraction['content'], other['content']):
+                similar_group.append(other)
+                processed.add(j)
+        
+        # Merge the group - keep the one with highest confidence
+        best_extraction = max(similar_group, key=lambda x: x.get('final_confidence', x.get('confidence', 0)))
+        merged.append(best_extraction)
+    
+    return merged
+
+# Export key functions
 __all__ = [
     'IntelligentRAGExtractor',
-    'is_rag_available',
+    'is_rag_available', 
     'get_rag_status',
-    'RAG_AVAILABLE'
+    'validate_rag_extraction',
+    'merge_similar_extractions'
 ]
