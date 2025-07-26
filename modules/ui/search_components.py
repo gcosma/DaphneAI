@@ -1,6 +1,5 @@
-# ===============================================
-# FILE: modules/ui/search_components.py (COMPLETE ENHANCED VERSION)
-# ===============================================
+# modules/ui/search_components.py
+# COMPLETE SEARCH COMPONENTS FILE - All functions included
 
 import streamlit as st
 import pandas as pd
@@ -28,6 +27,10 @@ except ImportError as e:
     class RAGQueryEngine:
         def query(self, question): return {'answer': 'Mock response', 'sources': []}
 
+# ===============================================
+# MAIN SEARCH TAB FUNCTIONS
+# ===============================================
+
 def render_smart_search_tab():
     """Render the smart search tab with enhanced concern search"""
     st.header("🔎 Smart Search Engine")
@@ -53,8 +56,16 @@ def render_smart_search_tab():
     # Display search results
     display_search_results()
     
-    # ADD CONCERN SEARCH FUNCTIONALITY
+    # Enhanced concern search functionality
     render_concern_search_section()
+
+def render_search_tab():
+    """Alias for render_smart_search_tab for backward compatibility"""
+    return render_smart_search_tab()
+
+# ===============================================
+# SEARCH AVAILABILITY CHECK
+# ===============================================
 
 def check_search_availability():
     """Check if search functionality is available"""
@@ -73,920 +84,555 @@ def check_search_availability():
         st.info("Please go to the 'Find Responses' tab and index your documents first.")
         return False
     
-    # Enhanced status display
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("📚 Indexed Documents", indexed_docs)
-    
-    with col2:
-        available_docs = len(st.session_state.get('uploaded_documents', []))
-        st.metric("📁 Available Documents", available_docs)
-    
-    with col3:
-        extracted_concerns = len(st.session_state.get('extracted_concerns', []))
-        st.metric("⚠️ Extracted Concerns", extracted_concerns)
-    
-    with col4:
-        search_ready = "✅ Ready" if indexed_docs > 0 else "❌ Not Ready"
-        st.metric("🔍 Search Status", search_ready)
-    
+    # Show search status
+    st.success(f"✅ Search ready! {indexed_docs} document chunks indexed")
     return True
+
+# ===============================================
+# SEARCH INTERFACE
+# ===============================================
 
 def render_search_interface():
     """Render the main search interface"""
-    st.subheader("🔍 Search Query")
+    st.subheader("🔍 Search Interface")
     
     # Search input
-    col1, col2 = st.columns([3, 1])
+    search_query = st.text_input(
+        "Enter your search query:",
+        placeholder="e.g. 'patient safety recommendations', 'communication protocols', 'training requirements'",
+        key="main_search_query"
+    )
     
-    with col1:
-        search_query = st.text_input(
-            "Enter your search query:",
-            placeholder="e.g., 'recommendations about safety training' or 'implementation of ground radar systems'",
-            help="Use natural language to search across all documents",
-            key="search_query_input"
-        )
-    
-    with col2:
-        search_button = st.button("🔍 Search", type="primary", use_container_width=True)
-    
-    # Quick search suggestions
-    if not search_query:
-        render_search_suggestions()
-    
-    # Execute search
-    if search_button and search_query:
-        execute_search(search_query)
-    elif search_button and not search_query:
-        st.warning("Please enter a search query.")
-
-def render_search_suggestions():
-    """Render search suggestions based on extracted content"""
-    st.markdown("**💡 Search Suggestions:**")
-    
-    # Generate suggestions based on available content
-    suggestions = []
-    
-    # From recommendations
-    recommendations = st.session_state.get('extracted_recommendations', [])
-    if recommendations:
-        suggestions.extend([
-            "safety recommendations",
-            "training requirements",
-            "implementation guidelines",
-            "quality improvements"
-        ])
-    
-    # From concerns
-    concerns = st.session_state.get('extracted_concerns', [])
-    if concerns:
-        suggestions.extend([
-            "safety concerns",
-            "identified issues",
-            "risk factors",
-            "operational challenges"
-        ])
-    
-    # From annotations
-    annotations = st.session_state.get('annotation_results', {})
-    if annotations:
-        # Extract common themes
-        themes = set()
-        for result in annotations.values():
-            for framework, theme_list in result.get('annotations', {}).items():
-                for theme in theme_list:
-                    theme_name = theme.get('theme', '').lower()
-                    if theme_name:
-                        themes.add(theme_name)
-        
-        suggestions.extend(list(themes)[:4])
-    
-    # Display as clickable buttons
-    if suggestions:
-        suggestion_cols = st.columns(min(len(suggestions), 4))
-        
-        for i, suggestion in enumerate(suggestions[:8]):  # Limit to 8 suggestions
-            col_idx = i % 4
-            with suggestion_cols[col_idx]:
-                if st.button(f"🔗 {suggestion}", key=f"suggestion_{i}", use_container_width=True):
-                    st.session_state.search_query_input = suggestion
-                    st.rerun()
-
-def render_search_history():
-    """Render search history"""
-    search_history = st.session_state.get('search_history', [])
-    
-    if search_history:
-        with st.expander("📜 Recent Searches"):
-            st.markdown("Click on a previous search to run it again:")
-            
-            # Show recent searches as buttons
-            for i, search_item in enumerate(reversed(search_history[-10:])):  # Last 10 searches
-                query = search_item.get('query', '')
-                timestamp = search_item.get('timestamp', '')
-                result_count = search_item.get('result_count', 0)
-                
-                if st.button(
-                    f"🔍 {query} ({result_count} results) - {timestamp[:19]}",
-                    key=f"history_{i}",
-                    use_container_width=True
-                ):
-                    st.session_state.search_query_input = query
-                    st.rerun()
-            
-            # Clear history option
-            if st.button("🗑️ Clear Search History", type="secondary"):
-                st.session_state.search_history = []
-                st.rerun()
-
-def render_advanced_search():
-    """Render advanced search options"""
-    with st.expander("🔧 Advanced Search Options"):
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            search_mode = st.selectbox(
-                "Search Mode:",
-                ["Semantic Search", "RAG Query", "Hybrid"],
-                index=2,  # Default to Hybrid
-                help="Choose how to process your search",
-                key="search_mode"
-            )
-            
-            max_results = st.slider(
-                "Max Results:",
-                1, 50, 10,
-                help="Maximum number of results to return",
-                key="max_search_results"
-            )
-        
-        with col2:
-            content_type_filter = st.multiselect(
-                "Content Type Filter:",
-                ["recommendation", "response", "concern", "general"],
-                default=[],
-                help="Filter by content type",
-                key="content_type_filter"
-            )
-            
-            confidence_threshold = st.slider(
-                "Similarity Threshold:",
-                0.0, 1.0, 0.3, 0.05,
-                help="Minimum similarity score",
-                key="search_similarity_threshold"
-            )
-        
-        with col3:
-            document_filter = st.multiselect(
-                "Document Filter:",
-                [doc['filename'] for doc in st.session_state.get('uploaded_documents', [])],
-                default=[],
-                help="Search only in selected documents",
-                key="document_filter"
-            )
-            
-            include_metadata = st.checkbox(
-                "Include Metadata",
-                value=True,
-                help="Include document metadata in results",
-                key="include_search_metadata"
-            )
-
-# ===============================================
-# ENHANCED CONCERN SEARCH FUNCTIONALITY
-# ===============================================
-
-def render_concern_search_section():
-    """Add concern search functionality to existing search tab"""
-    
-    concerns = st.session_state.get('extracted_concerns', [])
-    if not concerns:
-        return
-    
-    st.markdown("---")
-    st.subheader("⚠️ Concern Search & Analysis")
-    st.write(f"📊 **{len(concerns)} concerns** available for analysis")
-    
-    # Simple tabs for concern functionality
-    concern_tabs = st.tabs(["🔍 Find Similar", "🔄 Query Reformulation", "📊 Browse Concerns"])
-    
-    with concern_tabs[0]:
-        render_simple_concern_search(concerns)
-    
-    with concern_tabs[1]:
-        render_query_reformulation(concerns)
-    
-    with concern_tabs[2]:
-        render_browse_concerns(concerns)
-
-def render_simple_concern_search(concerns):
-    """Simple concern similarity search"""
-    if len(concerns) < 2:
-        st.info("Need at least 2 concerns for similarity search")
-        return
-    
-    # Select reference concern
-    concern_options = []
-    for i, concern in enumerate(concerns):
-        text = concern.get('text', '')[:80] + "..."
-        source = concern.get('document_source', 'Unknown')
-        confidence = concern.get('confidence_score', 0)
-        concern_options.append(f"[{source}] {text} (conf: {confidence:.2f})")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        selected_idx = st.selectbox("Select concern to find similar ones:", range(len(concern_options)), 
-                                   format_func=lambda x: concern_options[x], key="concern_search_select")
-    
-    with col2:
-        similarity_threshold = st.slider("Similarity Threshold:", 0.0, 1.0, 0.15, 0.05, key="concern_sim_threshold")
-    
-    if st.button("🔍 Find Similar Concerns", use_container_width=True):
-        reference = concerns[selected_idx]
-        similar = find_similar_concerns_simple(reference, concerns, similarity_threshold)
-        
-        if similar:
-            st.success(f"Found {len(similar)} similar concerns:")
-            for sim in similar[:5]:  # Show top 5
-                with st.expander(f"Similarity: {sim['similarity']:.2f} - {sim.get('document_source', 'Unknown')}"):
-                    st.write("**Text:**", sim.get('text', ''))
-                    st.write("**Source:**", sim.get('document_source', 'Unknown'))
-                    st.write("**Method:**", sim.get('extraction_method', 'Unknown'))
-                    if sim.get('metadata'):
-                        st.write("**Metadata:**", sim['metadata'])
-        else:
-            st.info("No similar concerns found with the current threshold")
-
-def render_query_reformulation(concerns):
-    """Simple query reformulation from selected concerns"""
-    
-    # Multi-select concerns
-    concern_options = {}
-    for i, concern in enumerate(concerns):
-        text = concern.get('text', '')[:60] + "..."
-        source = concern.get('document_source', 'Unknown')
-        key = f"[{source}] {text}"
-        concern_options[key] = i
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        selected_keys = st.multiselect("Select concerns for query reformulation:", 
-                                      list(concern_options.keys()), key="concern_query_select")
-    
-    with col2:
-        query_type = st.selectbox("Query Type:", ["Keywords", "Boolean", "Phrases"], key="query_type_select")
-    
-    if len(selected_keys) >= 1 and st.button("🔄 Generate Search Queries", use_container_width=True):
-        selected_concerns = [concerns[concern_options[key]] for key in selected_keys]
-        queries = generate_search_queries(selected_concerns, query_type)
-        
-        st.write("**Generated Search Queries:**")
-        for i, query in enumerate(queries, 1):
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.code(f"Query {i}: {query}")
-            with col2:
-                if st.button(f"🔍 Search", key=f"execute_query_{i}"):
-                    # Use existing search function
-                    st.session_state.search_query_input = query
-                    st.rerun()
-
-def render_browse_concerns(concerns):
-    """Browse and filter concerns"""
-    
-    # Filter options
+    # Search options
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        min_confidence = st.slider("Min Confidence:", 0.0, 1.0, 0.0, 0.05, key="browse_confidence")
-        sources = list(set(c.get('document_source', 'Unknown') for c in concerns))
-        selected_sources = st.multiselect("Sources:", sources, default=sources, key="browse_sources")
+        search_type = st.selectbox(
+            "Search Type:",
+            ["All Content", "Recommendations Only", "Responses Only", "Concerns Only"],
+            key="search_type"
+        )
     
     with col2:
-        methods = list(set(c.get('extraction_method', 'Unknown') for c in concerns))
-        selected_methods = st.multiselect("Methods:", methods, default=methods, key="browse_methods")
-        min_length = st.slider("Min Length:", 0, 1000, 50, key="browse_length")
+        max_results = st.slider("Max Results:", 1, 20, 5, key="max_search_results")
     
     with col3:
-        sort_options = ["Confidence ↓", "Confidence ↑", "Length ↓", "Length ↑", "Source"]
-        sort_by = st.selectbox("Sort by:", sort_options, key="browse_sort")
-        show_metadata = st.checkbox("Show Metadata", value=True, key="browse_metadata")
+        include_score = st.checkbox("Show Relevance Scores", value=True, key="include_scores")
     
-    # Apply filters
-    filtered = []
-    for concern in concerns:
-        if (concern.get('confidence_score', 0) >= min_confidence and
-            concern.get('document_source', 'Unknown') in selected_sources and
-            concern.get('extraction_method', 'Unknown') in selected_methods and
-            len(concern.get('text', '')) >= min_length):
-            filtered.append(concern)
-    
-    # Apply sorting
-    if sort_by == "Confidence ↓":
-        filtered.sort(key=lambda x: x.get('confidence_score', 0), reverse=True)
-    elif sort_by == "Confidence ↑":
-        filtered.sort(key=lambda x: x.get('confidence_score', 0))
-    elif sort_by == "Length ↓":
-        filtered.sort(key=lambda x: len(x.get('text', '')), reverse=True)
-    elif sort_by == "Length ↑":
-        filtered.sort(key=lambda x: len(x.get('text', '')))
-    elif sort_by == "Source":
-        filtered.sort(key=lambda x: x.get('document_source', ''))
-    
-    # Display results
-    if filtered:
-        st.success(f"Found {len(filtered)} concerns matching filters")
-        
-        # Pagination
-        per_page = 5
-        total_pages = (len(filtered) + per_page - 1) // per_page
-        
-        if total_pages > 1:
-            page = st.selectbox(f"Page (showing {per_page} per page):", range(1, total_pages + 1), key="browse_page") - 1
-            start_idx = page * per_page
-            end_idx = min(start_idx + per_page, len(filtered))
-            page_concerns = filtered[start_idx:end_idx]
+    # Search button
+    if st.button("🔍 Search", key="main_search_btn", type="primary"):
+        if search_query.strip():
+            perform_search(search_query, search_type, max_results, include_score)
         else:
-            page_concerns = filtered
-        
-        # Display concerns
-        for i, concern in enumerate(page_concerns):
-            with st.expander(f"Concern {i+1} - {concern.get('document_source', 'Unknown')} (conf: {concern.get('confidence_score', 0):.2f})"):
-                st.write("**Text:**")
-                st.write(concern.get('text', ''))
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write(f"**Confidence:** {concern.get('confidence_score', 0):.2f}")
-                    st.write(f"**Method:** {concern.get('extraction_method', 'Unknown')}")
-                with col2:
-                    st.write(f"**Length:** {len(concern.get('text', ''))} chars")
-                    st.write(f"**Source:** {concern.get('document_source', 'Unknown')}")
-                
-                if show_metadata and concern.get('metadata'):
-                    st.write("**Metadata:**")
-                    for key, value in concern['metadata'].items():
-                        st.write(f"- **{key.replace('_', ' ').title()}:** {value}")
-    else:
-        st.warning("No concerns match the current filters")
+            st.warning("Please enter a search query")
 
-def find_similar_concerns_simple(reference, all_concerns, threshold=0.15):
-    """Simple similarity search using word overlap"""
-    ref_words = set(extract_keywords(reference.get('text', '')))
-    similar = []
-    
-    for concern in all_concerns:
-        if concern.get('id') == reference.get('id'):
-            continue
-        
-        concern_words = set(extract_keywords(concern.get('text', '')))
-        
-        # Jaccard similarity
-        intersection = len(ref_words & concern_words)
-        union = len(ref_words | concern_words)
-        similarity = intersection / union if union > 0 else 0
-        
-        if similarity >= threshold:
-            concern_copy = concern.copy()
-            concern_copy['similarity'] = similarity
-            concern_copy['matching_words'] = list(ref_words & concern_words)
-            similar.append(concern_copy)
-    
-    return sorted(similar, key=lambda x: x['similarity'], reverse=True)
-
-def extract_keywords(text):
-    """Extract meaningful keywords from text"""
-    words = re.findall(r'\b[a-zA-Z]{4,}\b', text.lower())
-    stopwords = {
-        'this', 'that', 'with', 'have', 'will', 'from', 'they', 'been', 'were', 'said', 
-        'each', 'which', 'their', 'time', 'more', 'very', 'when', 'much', 'some', 'what', 
-        'know', 'just', 'first', 'into', 'over', 'think', 'also', 'your', 'work', 'life', 
-        'only', 'could', 'should', 'would', 'there', 'where', 'these', 'those'
-    }
-    return [word for word in words if word not in stopwords]
-
-def generate_search_queries(concerns, query_type="Keywords"):
-    """Generate search queries from selected concerns"""
-    
-    # Extract keywords from all selected concerns
-    all_words = []
-    for concern in concerns:
-        words = extract_keywords(concern.get('text', ''))
-        all_words.extend(words)
-    
-    # Get most common words
-    word_counts = Counter(all_words)
-    top_words = [word for word, count in word_counts.most_common(10)]
-    
-    queries = []
-    
-    if query_type == "Keywords":
-        # Simple keyword queries
-        if len(top_words) >= 3:
-            queries.append(' '.join(top_words[:3]))
-            queries.append(' '.join(top_words[:5]))
-        
-        # Category-specific queries
-        safety_words = [w for w in top_words if any(s in w for s in ['safety', 'safe', 'risk', 'danger', 'hazard'])]
-        if safety_words:
-            queries.append(' '.join(safety_words[:3]))
-        
-        process_words = [w for w in top_words if any(s in w for s in ['process', 'procedure', 'method', 'system'])]
-        if process_words:
-            queries.append(' '.join(process_words[:3]))
-    
-    elif query_type == "Boolean":
-        # Boolean queries
-        if len(top_words) >= 3:
-            queries.append(f"{top_words[0]} AND {top_words[1]}")
-            queries.append(f"{top_words[0]} OR {top_words[1]} OR {top_words[2]}")
-            queries.append(f"({top_words[0]} OR {top_words[1]}) AND {top_words[2]}")
-    
-    elif query_type == "Phrases":
-        # Extract phrases from concerns
-        for concern in concerns[:3]:  # First 3 concerns
-            text = concern.get('text', '')
-            sentences = re.split(r'[.!?]', text)
-            for sentence in sentences:
-                sentence = sentence.strip()
-                if 20 < len(sentence) < 80:  # Good phrase length
-                    queries.append(f'"{sentence}"')
-                    break
-    
-    # Add contextual queries
-    if top_words:
-        queries.append(f"concerns about {top_words[0]}")
-        queries.append(f"issues with {' '.join(top_words[:2])}")
-    
-    return queries[:6]  # Return top 6 queries
-
-# ===============================================
-# EXISTING SEARCH FUNCTIONS (UNCHANGED)
-# ===============================================
-
-def execute_search(query: str):
-    """Execute search query and store results"""
-    if not query.strip():
-        st.warning("Please enter a search query.")
-        return
-    
-    vector_store = st.session_state.vector_store_manager
-    rag_engine = st.session_state.get('rag_engine')
+def perform_search(query: str, search_type: str, max_results: int, include_score: bool):
+    """Perform the actual search"""
+    vector_store = st.session_state.get('vector_store_manager')
     
     if not vector_store:
-        st.error("Search not available - vector store not initialized.")
+        st.error("Search not available - vector store not initialized")
         return
     
-    # Get search configuration
-    search_mode = st.session_state.get('search_mode', 'Hybrid')
-    max_results = st.session_state.get('max_search_results', 10)
-    content_type_filter = st.session_state.get('content_type_filter', [])
-    confidence_threshold = st.session_state.get('search_similarity_threshold', 0.3)
-    document_filter = st.session_state.get('document_filter', [])
-    include_metadata = st.session_state.get('include_search_metadata', True)
+    # Map search type to filter
+    content_type_map = {
+        "All Content": None,
+        "Recommendations Only": "recommendation",
+        "Responses Only": "response", 
+        "Concerns Only": "concern"
+    }
     
-    with st.spinner(f"🔍 Searching for: '{query}'..."):
+    filter_dict = None
+    if search_type != "All Content":
+        filter_dict = {'content_type': content_type_map[search_type]}
+    
+    with st.spinner(f"🔍 Searching {search_type.lower()}..."):
         try:
-            search_results = []
-            rag_response = None
-            
-            # Execute search based on mode
-            if search_mode in ["Semantic Search", "Hybrid"]:
-                # Semantic search
-                filter_dict = {}
-                
-                if content_type_filter:
-                    # For now, we'll filter results after retrieval
-                    pass
-                
-                # Get semantic search results
-                semantic_results = vector_store.similarity_search_with_score(
-                    query, 
-                    k=max_results * 2,  # Get more to allow for filtering
-                    filter_dict=filter_dict if filter_dict else None
+            if include_score:
+                results = vector_store.similarity_search_with_score(
+                    query, k=max_results, filter_dict=filter_dict
                 )
-                
-                # Process and filter results
-                for doc, score in semantic_results:
-                    if score >= confidence_threshold:
-                        # Apply content type filter
-                        if content_type_filter:
-                            doc_content_type = doc.metadata.get('content_type', 'general')
-                            if doc_content_type not in content_type_filter:
-                                continue
-                        
-                        # Apply document filter
-                        if document_filter:
-                            doc_source = doc.metadata.get('source', '')
-                            if doc_source not in document_filter:
-                                continue
-                        
-                        result_item = {
-                            'type': 'semantic',
-                            'content': doc.page_content,
-                            'score': float(score),
-                            'source': doc.metadata.get('source', 'Unknown'),
-                            'metadata': doc.metadata if include_metadata else {},
-                            'content_type': doc.metadata.get('content_type', 'general')
-                        }
-                        search_results.append(result_item)
-                        
-                        if len(search_results) >= max_results:
-                            break
+            else:
+                docs = vector_store.similarity_search(
+                    query, k=max_results, filter_dict=filter_dict
+                )
+                results = [(doc, 0.0) for doc in docs]
             
-            if search_mode in ["RAG Query", "Hybrid"] and rag_engine:
-                # RAG query
-                try:
-                    rag_response = rag_engine.query(query, include_sources=True)
-                except Exception as e:
-                    st.warning(f"RAG query failed: {str(e)}")
-                    rag_response = None
-            
-            # Store search results
-            search_result = {
-                'query': query,
-                'timestamp': datetime.now().isoformat(),
-                'mode': search_mode,
-                'semantic_results': search_results,
-                'rag_response': rag_response,
-                'result_count': len(search_results),
-                'configuration': {
-                    'max_results': max_results,
-                    'confidence_threshold': confidence_threshold,
-                    'content_type_filter': content_type_filter,
-                    'document_filter': document_filter
-                }
-            }
-            
-            # Update session state
+            # Store results in session state
             if 'search_results' not in st.session_state:
                 st.session_state.search_results = {}
             
-            search_id = f"search_{len(st.session_state.search_results) + 1}"
-            st.session_state.search_results[search_id] = search_result
+            st.session_state.search_results[query] = results
+            st.session_state.last_search_query = query
             
             # Add to search history
             if 'search_history' not in st.session_state:
                 st.session_state.search_history = []
             
-            history_item = {
+            st.session_state.search_history.insert(0, {
                 'query': query,
-                'timestamp': datetime.now().isoformat(),
-                'result_count': len(search_results),
-                'search_id': search_id
-            }
-            st.session_state.search_history.append(history_item)
+                'type': search_type,
+                'results_count': len(results),
+                'timestamp': datetime.now().isoformat()
+            })
             
-            # Keep only last 50 searches
-            if len(st.session_state.search_history) > 50:
-                st.session_state.search_history = st.session_state.search_history[-50:]
+            # Keep only last 10 searches
+            st.session_state.search_history = st.session_state.search_history[:10]
             
-            # Show results summary
-            if search_results or rag_response:
-                st.success(f"✅ Search completed! Found {len(search_results)} semantic results.")
-                if rag_response:
-                    st.info("🤖 RAG response generated successfully.")
-            else:
-                st.warning("⚠️ No results found. Try adjusting your search terms or filters.")
+            st.success(f"✅ Found {len(results)} results")
             
         except Exception as e:
-            error_msg = f"Search failed: {str(e)}"
-            st.error(f"❌ {error_msg}")
-            add_error_message(error_msg)
-            logging.error(f"Search error: {e}", exc_info=True)
+            st.error(f"Search failed: {e}")
+            logging.error(f"Search error: {e}")
+
+# ===============================================
+# SEARCH RESULTS DISPLAY
+# ===============================================
 
 def display_search_results():
     """Display search results"""
-    search_results = st.session_state.get('search_results', {})
-    
-    if not search_results:
-        st.info("💡 No search results yet. Enter a query above to start searching.")
+    if not st.session_state.get('search_results'):
         return
     
-    # Get the most recent search
-    latest_search_id = max(search_results.keys(), key=lambda x: search_results[x]['timestamp'])
-    latest_result = search_results[latest_search_id]
-    
-    st.subheader(f"🔍 Results for: '{latest_result['query']}'")
-    
-    # Results tabs
-    semantic_results = latest_result.get('semantic_results', [])
-    rag_response = latest_result.get('rag_response')
-    
-    if semantic_results and rag_response:
-        semantic_tab, rag_tab, combined_tab = st.tabs(["📄 Document Results", "🤖 AI Response", "📊 Combined View"])
-    elif semantic_results:
-        semantic_tab = st.container()
-        rag_tab = None
-        combined_tab = None
-    elif rag_response:
-        rag_tab = st.container()
-        semantic_tab = None
-        combined_tab = None
-    else:
-        st.warning("No results to display.")
+    last_query = st.session_state.get('last_search_query')
+    if not last_query or last_query not in st.session_state.search_results:
         return
     
-    # Display semantic results
-    if semantic_tab and semantic_results:
-        with semantic_tab:
-            display_semantic_results(semantic_results, latest_result)
+    results = st.session_state.search_results[last_query]
     
-    # Display RAG response
-    if rag_tab and rag_response:
-        with rag_tab:
-            display_rag_response(rag_response, latest_result)
-    
-    # Display combined view
-    if combined_tab and semantic_results and rag_response:
-        with combined_tab:
-            display_combined_search_view(semantic_results, rag_response, latest_result)
-
-def display_semantic_results(results: List[Dict], search_info: Dict):
-    """Display semantic search results"""
     if not results:
-        st.info("No semantic results found.")
+        st.info("No results found for your search query")
         return
+    
+    st.subheader(f"📋 Search Results ({len(results)} found)")
     
     # Results summary
-    st.markdown(f"**Found {len(results)} relevant document chunks**")
-    
-    # Filter and sort options
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        score_filter = st.slider(
-            "Min Score:",
-            0.0, 1.0, 0.0, 0.05,
-            key="semantic_score_filter"
-        )
-    
-    with col2:
-        content_type_display_filter = st.selectbox(
-            "Content Type:",
-            ['All'] + sorted(list(set(r['content_type'] for r in results))),
-            key="semantic_content_type_display_filter"
-        )
-    
-    with col3:
-        sort_option = st.selectbox(
-            "Sort by:",
-            ["Relevance (High to Low)", "Relevance (Low to High)", "Source", "Content Type"],
-            key="semantic_sort_option"
-        )
-    
-    # Apply filters
-    filtered_results = []
-    for result in results:
-        if result['score'] >= score_filter:
-            if content_type_display_filter == 'All' or result['content_type'] == content_type_display_filter:
-                filtered_results.append(result)
-    
-    # Apply sorting
-    if sort_option == "Relevance (High to Low)":
-        filtered_results.sort(key=lambda x: x['score'], reverse=True)
-    elif sort_option == "Relevance (Low to High)":
-        filtered_results.sort(key=lambda x: x['score'])
-    elif sort_option == "Source":
-        filtered_results.sort(key=lambda x: x['source'])
-    elif sort_option == "Content Type":
-        filtered_results.sort(key=lambda x: x['content_type'])
-    
-    if not filtered_results:
-        st.warning("No results match the current filters.")
-        return
-    
-    st.write(f"Showing {len(filtered_results)} of {len(results)} results")
+    if len(results) > 0:
+        scores = [score for _, score in results if score > 0]
+        if scores:
+            avg_score = sum(scores) / len(scores)
+            st.info(f"Average relevance score: {avg_score:.3f}")
     
     # Display results
-    for i, result in enumerate(filtered_results, 1):
-        display_semantic_result_item(result, i)
-    
-    # Export option
-    if st.button("📥 Export Semantic Results", use_container_width=True):
-        export_semantic_results(filtered_results, search_info)
+    for i, (doc, score) in enumerate(results):
+        with st.expander(f"Result {i+1}" + (f" (Relevance: {score:.3f})" if score > 0 else "")):
+            # Main content
+            st.write(doc.page_content)
+            
+            # Show metadata
+            if hasattr(doc, 'metadata') and doc.metadata:
+                st.divider()
+                st.caption("**Source Information:**")
+                metadata_cols = st.columns(3)
+                
+                metadata_items = list(doc.metadata.items())
+                for idx, (key, value) in enumerate(metadata_items):
+                    if key not in ['content', 'page_content'] and value:
+                        col_idx = idx % 3
+                        with metadata_cols[col_idx]:
+                            st.caption(f"**{key.replace('_', ' ').title()}:** {value}")
+            
+            # Action buttons
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button(f"📋 Copy Text", key=f"copy_{i}"):
+                    st.session_state[f"copied_text_{i}"] = doc.page_content
+                    st.success("Text copied to clipboard!")
+            
+            with col2:
+                if st.button(f"🔍 Similar", key=f"similar_{i}"):
+                    find_similar_content(doc.page_content)
+            
+            with col3:
+                if st.button(f"📊 Analyze", key=f"analyze_{i}"):
+                    analyze_content(doc.page_content)
 
-def display_semantic_result_item(result: Dict, index: int):
-    """Display a single semantic search result"""
-    score = result['score']
-    content_type = result['content_type']
-    source = result['source']
-    content = result['content']
+def find_similar_content(content: str):
+    """Find content similar to the selected result"""
+    vector_store = st.session_state.get('vector_store_manager')
+    if not vector_store:
+        st.error("Vector store not available")
+        return
     
-    # Color coding based on score
-    if score >= 0.8:
-        score_color = "🟢"
-    elif score >= 0.6:
-        score_color = "🟡"
-    else:
-        score_color = "🔴"
+    # Take first 200 characters for similarity search
+    query = content[:200] + "..."
     
-    # Content type emoji
-    type_emoji = {
-        'recommendation': '💡',
-        'response': '✅',
-        'concern': '⚠️',
-        'general': '📄'
-    }.get(content_type, '📄')
+    with st.spinner("Finding similar content..."):
+        try:
+            results = vector_store.similarity_search(query, k=3)
+            
+            if results:
+                st.subheader("🔗 Similar Content Found:")
+                for i, doc in enumerate(results):
+                    with st.expander(f"Similar Content {i+1}"):
+                        st.write(doc.page_content)
+            else:
+                st.info("No similar content found")
+                
+        except Exception as e:
+            st.error(f"Error finding similar content: {e}")
+
+def analyze_content(content: str):
+    """Analyze selected content"""
+    st.subheader("📊 Content Analysis")
     
-    with st.expander(f"{index}. {score_color} {type_emoji} {source} - {content_type} (score: {score:.3f})"):
-        col1, col2 = st.columns([3, 1])
+    # Basic text analysis
+    word_count = len(content.split())
+    char_count = len(content)
+    sentence_count = len(re.split(r'[.!?]+', content))
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Words", word_count)
+    with col2:
+        st.metric("Characters", char_count)
+    with col3:
+        st.metric("Sentences", sentence_count)
+    
+    # Keyword extraction (simple)
+    words = re.findall(r'\b\w+\b', content.lower())
+    word_freq = Counter(words)
+    
+    # Remove common words
+    common_words = {'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'will', 'would', 'could', 'should', 'this', 'that', 'these', 'those'}
+    filtered_words = {word: count for word, count in word_freq.items() if word not in common_words and len(word) > 3}
+    
+    if filtered_words:
+        st.subheader("🔤 Top Keywords:")
+        top_words = sorted(filtered_words.items(), key=lambda x: x[1], reverse=True)[:10]
+        
+        for word, count in top_words:
+            st.write(f"• **{word}**: {count} times")
+
+# ===============================================
+# SEARCH HISTORY
+# ===============================================
+
+def render_search_history():
+    """Render search history"""
+    if not st.session_state.get('search_history'):
+        return
+    
+    with st.expander("📚 Search History"):
+        st.markdown("**Recent Searches:**")
+        
+        for i, search in enumerate(st.session_state.search_history):
+            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+            
+            with col1:
+                st.text(search['query'])
+            
+            with col2:
+                st.caption(search['type'])
+            
+            with col3:
+                st.caption(f"{search['results_count']} results")
+            
+            with col4:
+                if st.button("🔄", key=f"repeat_search_{i}", help="Repeat this search"):
+                    st.session_state.main_search_query = search['query']
+                    st.rerun()
+        
+        # Clear history button
+        if st.button("🗑️ Clear History", key="clear_search_history"):
+            st.session_state.search_history = []
+            st.success("Search history cleared")
+            st.rerun()
+
+# ===============================================
+# ADVANCED SEARCH OPTIONS
+# ===============================================
+
+def render_advanced_search():
+    """Render advanced search options"""
+    with st.expander("⚙️ Advanced Search Options"):
+        st.markdown("**Filter by Document Properties:**")
+        
+        col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("**Content:**")
-            st.write(content)
+            # Document type filter
+            uploaded_docs = st.session_state.get('uploaded_documents', [])
+            doc_types = ["All"] + list(set([doc.get('document_type', 'Unknown') for doc in uploaded_docs]))
+            selected_doc_type = st.selectbox("Document Type:", doc_types, key="adv_doc_type")
+            
+            # Source filter
+            sources = ["All"] + list(set([doc.get('filename', 'Unknown') for doc in uploaded_docs]))
+            selected_source = st.selectbox("Source Document:", sources, key="adv_source")
         
         with col2:
-            st.markdown("**Details:**")
-            st.write(f"**Source:** {source}")
-            st.write(f"**Type:** {content_type}")
-            st.write(f"**Score:** {score:.3f}")
+            # Date filter
+            date_filter = st.checkbox("Filter by Date Range", key="adv_date_filter")
+            if date_filter:
+                from_date = st.date_input("From Date:", key="adv_from_date")
+                to_date = st.date_input("To Date:", key="adv_to_date")
             
-            # Show metadata if available
-            metadata = result.get('metadata', {})
-            if metadata:
-                st.markdown("**Metadata:**")
-                for key, value in metadata.items():
-                    if key not in ['source', 'content_type']:  # Don't repeat already shown info
-                        st.write(f"**{key}:** {value}")
-
-def display_rag_response(rag_response: Dict, search_info: Dict):
-    """Display RAG query response"""
-    answer = rag_response.get('answer', 'No answer generated')
-    confidence = rag_response.get('confidence', 0)
-    sources = rag_response.get('sources', [])
-    
-    # Answer
-    st.subheader("🤖 AI-Generated Response")
-    st.write(answer)
-    
-    # Confidence indicator
-    if confidence >= 0.8:
-        conf_color = "🟢"
-        conf_text = "High"
-    elif confidence >= 0.6:
-        conf_color = "🟡"
-        conf_text = "Medium"
-    else:
-        conf_color = "🔴"
-        conf_text = "Low"
-    
-    st.markdown(f"**Confidence:** {conf_color} {conf_text} ({confidence:.2f})")
-    
-    # Sources
-    if sources:
-        st.subheader("📚 Sources Used")
+            # Content length filter
+            min_length = st.slider("Minimum Content Length:", 0, 1000, 50, key="adv_min_length")
         
-        for i, source in enumerate(sources, 1):
-            with st.expander(f"Source {i}: {source.get('metadata', {}).get('source', 'Unknown')}"):
-                content = source.get('content', 'No content available')
-                st.write(content)
-                
-                metadata = source.get('metadata', {})
-                if metadata:
-                    st.markdown("**Metadata:**")
-                    for key, value in metadata.items():
-                        st.write(f"**{key}:** {value}")
-    
-    # Export option
-    if st.button("📥 Export RAG Response", use_container_width=True):
-        export_rag_response(rag_response, search_info)
-
-def display_combined_search_view(semantic_results: List[Dict], rag_response: Dict, search_info: Dict):
-    """Display combined view of semantic and RAG results"""
-    st.subheader("📊 Combined Search Analysis")
-    
-    # Summary metrics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Semantic Results", len(semantic_results))
-    
-    with col2:
-        avg_score = sum(r['score'] for r in semantic_results) / len(semantic_results) if semantic_results else 0
-        st.metric("Avg Relevance", f"{avg_score:.2f}")
-    
-    with col3:
-        rag_confidence = rag_response.get('confidence', 0)
-        st.metric("RAG Confidence", f"{rag_confidence:.2f}")
-    
-    with col4:
-        source_count = len(rag_response.get('sources', []))
-        st.metric("RAG Sources", source_count)
-    
-    # Content type distribution
-    if semantic_results:
-        st.subheader("📈 Content Type Distribution")
-        type_counts = {}
-        for result in semantic_results:
-            content_type = result['content_type']
-            type_counts[content_type] = type_counts.get(content_type, 0) + 1
+        # Search mode
+        st.markdown("**Search Mode:**")
+        search_mode = st.radio(
+            "Choose search approach:",
+            ["Semantic Search", "Keyword Search", "Hybrid Search"],
+            key="adv_search_mode",
+            help="Semantic: AI-powered meaning search, Keyword: Exact word matching, Hybrid: Both combined"
+        )
         
-        type_df = pd.DataFrame(list(type_counts.items()), columns=['Content Type', 'Count'])
-        st.bar_chart(type_df.set_index('Content Type'))
-    
-    # Score distribution
-    if semantic_results:
-        st.subheader("📊 Relevance Score Distribution")
-        scores = [r['score'] for r in semantic_results]
-        score_df = pd.DataFrame({'Relevance Score': scores})
-        st.histogram_chart(score_df, x='Relevance Score')
-    
-    # Export combined results
-    if st.button("📥 Export All Results", use_container_width=True):
-        export_combined_search_results(semantic_results, rag_response, search_info)
+        # Export options
+        st.markdown("**Export Options:**")
+        if st.button("📥 Export Search Results", key="export_search_results"):
+            export_search_results()
 
-def export_semantic_results(results: List[Dict], search_info: Dict):
-    """Export semantic search results as CSV"""
-    if not results:
-        st.warning("No results to export.")
+def export_search_results():
+    """Export current search results"""
+    if not st.session_state.get('search_results'):
+        st.warning("No search results to export")
         return
+    
+    last_query = st.session_state.get('last_search_query')
+    if not last_query or last_query not in st.session_state.search_results:
+        st.warning("No recent search results found")
+        return
+    
+    results = st.session_state.search_results[last_query]
     
     # Prepare data for export
     export_data = []
-    for i, result in enumerate(results, 1):
+    for i, (doc, score) in enumerate(results):
         export_data.append({
-            'Rank': i,
-            'Query': search_info['query'],
-            'Content': result['content'],
-            'Source': result['source'],
-            'Content_Type': result['content_type'],
-            'Relevance_Score': result['score'],
-            'Search_Timestamp': search_info['timestamp']
+            'result_number': i + 1,
+            'content': doc.page_content,
+            'relevance_score': score,
+            'source': doc.metadata.get('source', 'Unknown') if hasattr(doc, 'metadata') else 'Unknown',
+            'document_type': doc.metadata.get('document_type', 'Unknown') if hasattr(doc, 'metadata') else 'Unknown',
+            'search_query': last_query
         })
     
+    # Convert to DataFrame
     df = pd.DataFrame(export_data)
-    csv = df.to_csv(index=False).encode('utf-8')
     
+    # Download button
+    csv = df.to_csv(index=False)
     st.download_button(
-        label="📥 Download Semantic Results CSV",
+        label="📥 Download CSV",
         data=csv,
-        file_name=f"semantic_search_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv",
-        use_container_width=True
+        file_name=f"search_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv"
     )
 
-def export_rag_response(rag_response: Dict, search_info: Dict):
-    """Export RAG response as text file"""
-    query = search_info['query']
-    answer = rag_response.get('answer', '')
-    confidence = rag_response.get('confidence', 0)
-    sources = rag_response.get('sources', [])
-    timestamp = search_info['timestamp']
-    
-    # Format export content
-    export_content = f"""RAG Query Response
-==================
+# ===============================================
+# ENHANCED CONCERN SEARCH
+# ===============================================
 
-Query: {query}
-Timestamp: {timestamp}
-Confidence: {confidence:.2f}
-
-Answer:
-{answer}
-
-Sources Used:
-"""
+def render_concern_search_section():
+    """Render enhanced concern search functionality"""
+    st.divider()
+    st.subheader("🚨 Coroner Concerns Search")
     
-    for i, source in enumerate(sources, 1):
-        export_content += f"\n{i}. {source.get('metadata', {}).get('source', 'Unknown')}\n"
-        export_content += f"   {source.get('content', '')[:200]}...\n"
+    st.markdown("""
+    **Enhanced search specifically for coroner concerns and recommendations.**
+    Use natural language to find specific concerns, patterns, and related responses.
+    """)
     
-    st.download_button(
-        label="📥 Download RAG Response",
-        data=export_content.encode('utf-8'),
-        file_name=f"rag_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-        mime="text/plain",
-        use_container_width=True
+    # Concern search interface
+    concern_query = st.text_input(
+        "Search for concerns:",
+        placeholder="e.g. 'patient safety concerns', 'communication failures', 'training deficiencies'",
+        key="concern_search_query"
     )
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        concern_type = st.selectbox(
+            "Concern Category:",
+            ["All Concerns", "Patient Safety", "Communication", "Training", "Procedures", "Equipment"],
+            key="concern_type"
+        )
+    
+    with col2:
+        concern_severity = st.selectbox(
+            "Severity Level:",
+            ["All Levels", "Critical", "High", "Medium", "Low"],
+            key="concern_severity"
+        )
+    
+    if st.button("🔍 Search Concerns", key="search_concerns_btn", type="primary"):
+        if concern_query.strip():
+            search_concerns(concern_query, concern_type, concern_severity)
+        else:
+            st.warning("Please enter a concern search query")
 
-def export_combined_search_results(semantic_results: List[Dict], rag_response: Dict, search_info: Dict):
-    """Export combined search results as JSON"""
-    combined_data = {
-        'search_info': {
-            'query': search_info['query'],
-            'timestamp': search_info['timestamp'],
-            'mode': search_info['mode'],
-            'configuration': search_info.get('configuration', {})
-        },
-        'semantic_results': semantic_results,
-        'rag_response': rag_response,
-        'summary': {
-            'semantic_result_count': len(semantic_results),
-            'rag_confidence': rag_response.get('confidence', 0),
-            'rag_source_count': len(rag_response.get('sources', []))
-        }
-    }
+def search_concerns(query: str, concern_type: str, severity: str):
+    """Search specifically for coroner concerns"""
+    vector_store = st.session_state.get('vector_store_manager')
     
-    json_str = json.dumps(combined_data, indent=2, ensure_ascii=False, default=str)
+    if not vector_store:
+        st.error("Vector store not available")
+        return
     
-    st.download_button(
-        label="📥 Download Combined Results JSON",
-        data=json_str.encode('utf-8'),
-        file_name=f"combined_search_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-        mime="application/json",
-        use_container_width=True
-    )
+    with st.spinner("🔍 Searching for concerns..."):
+        try:
+            # Enhanced query for concerns
+            enhanced_queries = [
+                f"coroner concern {query}",
+                f"safety issue {query}",
+                f"problem failure {query}",
+                f"risk hazard {query}"
+            ]
+            
+            all_results = []
+            
+            # Search with multiple enhanced queries
+            for enhanced_query in enhanced_queries:
+                results = vector_store.similarity_search_with_score(
+                    enhanced_query, 
+                    k=5,
+                    filter_dict={'content_type': 'concern'} if concern_type == "All Concerns" else None
+                )
+                all_results.extend(results)
+            
+            # Remove duplicates and sort by score
+            unique_results = {}
+            for doc, score in all_results:
+                content_key = doc.page_content[:100]  # Use first 100 chars as key
+                if content_key not in unique_results or unique_results[content_key][1] < score:
+                    unique_results[content_key] = (doc, score)
+            
+            final_results = list(unique_results.values())
+            final_results.sort(key=lambda x: x[1], reverse=True)
+            
+            # Display results
+            if final_results:
+                st.success(f"✅ Found {len(final_results)} relevant concerns")
+                
+                # Group by concern type if available
+                concern_groups = {}
+                for doc, score in final_results:
+                    doc_type = doc.metadata.get('concern_type', 'General') if hasattr(doc, 'metadata') else 'General'
+                    if doc_type not in concern_groups:
+                        concern_groups[doc_type] = []
+                    concern_groups[doc_type].append((doc, score))
+                
+                for group_name, group_results in concern_groups.items():
+                    st.markdown(f"**{group_name} Concerns:**")
+                    
+                    for i, (doc, score) in enumerate(group_results):
+                        with st.expander(f"{group_name} Concern {i+1} (Relevance: {score:.3f})"):
+                            st.write(doc.page_content)
+                            
+                            # Show metadata
+                            if hasattr(doc, 'metadata') and doc.metadata:
+                                st.caption("**Details:**")
+                                for key, value in doc.metadata.items():
+                                    if key not in ['content', 'page_content'] and value:
+                                        st.caption(f"• {key.replace('_', ' ').title()}: {value}")
+                            
+                            # Action buttons for concerns
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if st.button(f"🔗 Find Related", key=f"concern_related_{i}_{group_name}"):
+                                    find_related_concerns(doc.page_content)
+                            
+                            with col2:
+                                if st.button(f"📋 Copy", key=f"concern_copy_{i}_{group_name}"):
+                                    st.session_state[f"copied_concern_{i}"] = doc.page_content
+                                    st.success("Concern copied!")
+            else:
+                st.info("No concerns found matching your query")
+                
+                # Suggest alternative searches
+                st.markdown("**Try these alternative searches:**")
+                suggestions = [
+                    "patient safety",
+                    "communication breakdown", 
+                    "training inadequate",
+                    "procedure not followed",
+                    "equipment failure"
+                ]
+                
+                for suggestion in suggestions:
+                    if st.button(f"🔍 {suggestion}", key=f"suggest_{suggestion}"):
+                        st.session_state.concern_search_query = suggestion
+                        st.rerun()
+                        
+        except Exception as e:
+            st.error(f"Concern search failed: {e}")
+            logging.error(f"Concern search error: {e}")
+
+def find_related_concerns(concern_content: str):
+    """Find concerns related to the selected concern"""
+    vector_store = st.session_state.get('vector_store_manager')
+    if not vector_store:
+        st.error("Vector store not available")
+        return
+    
+    # Extract key terms from the concern
+    key_terms = extract_key_terms(concern_content)
+    
+    with st.spinner("Finding related concerns..."):
+        try:
+            # Search for related content
+            related_query = " ".join(key_terms[:5])  # Use top 5 key terms
+            results = vector_store.similarity_search(related_query, k=3)
+            
+            if results:
+                st.subheader("🔗 Related Concerns:")
+                for i, doc in enumerate(results):
+                    with st.expander(f"Related Concern {i+1}"):
+                        st.write(doc.page_content)
+                        
+                        # Highlight common terms
+                        common_terms = find_common_terms(concern_content, doc.page_content)
+                        if common_terms:
+                            st.caption(f"**Common themes:** {', '.join(common_terms)}")
+            else:
+                st.info("No related concerns found")
+                
+        except Exception as e:
+            st.error(f"Error finding related concerns: {e}")
+
+def extract_key_terms(text: str) -> List[str]:
+    """Extract key terms from text"""
+    # Simple keyword extraction
+    words = re.findall(r'\b\w+\b', text.lower())
+    
+    # Remove common words
+    stop_words = {'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'will', 'would', 'could', 'should'}
+    
+    # Filter and count words
+    word_freq = Counter([word for word in words if word not in stop_words and len(word) > 3])
+    
+    # Return top words
+    return [word for word, count in word_freq.most_common(10)]
+
+def find_common_terms(text1: str, text2: str) -> List[str]:
+    """Find common terms between two texts"""
+    terms1 = set(extract_key_terms(text1))
+    terms2 = set(extract_key_terms(text2))
+    
+    return list(terms1.intersection(terms2))
+
+# ===============================================
+# EXPORTS
+# ===============================================
+
+__all__ = [
+    'render_smart_search_tab',
+    'render_search_tab',
+    'check_search_availability',
+    'render_search_interface',
+    'render_search_history',
+    'render_advanced_search',
+    'display_search_results',
+    'render_concern_search_section',
+    'perform_search',
+    'search_concerns',
+    'find_similar_content',
+    'analyze_content',
+    'export_search_results',
+    'find_related_concerns',
+    'extract_key_terms',
+    'find_common_terms'
+]
