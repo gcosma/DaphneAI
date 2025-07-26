@@ -1,5 +1,5 @@
 # ===============================================
-# FILE: modules/ui/extraction_components.py (COMPLETE VERSION)
+# FILE: modules/ui/extraction_components.py (COMPLETE REVISED VERSION)
 # ===============================================
 
 import streamlit as st
@@ -12,7 +12,7 @@ import json
 import re
 from pathlib import Path
 
-# Import required modules with robust error handling (FIXED VARIABLE NAMES)
+# Import required modules with robust error handling
 try:
     import sys
     sys.path.append('modules')
@@ -155,7 +155,7 @@ def render_extraction_interface():
                 "Confidence Threshold:",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.3,
+                value=0.0,  # LOWERED for Infected Blood Inquiry
                 step=0.1,
                 help="Minimum confidence score for extracted items"
             )
@@ -164,7 +164,7 @@ def render_extraction_interface():
                 "Max items per document:",
                 min_value=1,
                 max_value=500,
-                value=50,
+                value=100,  # INCREASED for Infected Blood Inquiry
                 help="Maximum number of items to extract per document"
             )
             
@@ -301,50 +301,46 @@ def process_document_extraction(
             recommendations = recommendations[:max_items_per_doc]
             responses = responses[:max_items_per_doc]
             
-            # Add document context if requested
-            if include_context:
-                for item in recommendations + responses:
-                    item['document_context'] = {
-                        'filename': doc_name,
-                        'document_type': doc_structure.get('document_structure', 'unknown'),
-                        'inquiry_type': doc_metadata.get('inquiry_type', 'unknown'),
-                        'extraction_method': method
-                    }
+            # Add document context
+            for item in recommendations + responses:
+                item['document_context'] = {
+                    'filename': doc_name,
+                    'document_type': detect_document_type(doc),
+                    'document_structure': doc_structure,
+                    'document_metadata': doc_metadata
+                }
             
             # Store results
             all_recommendations.extend(recommendations)
             all_responses.extend(responses)
             all_individual_items.extend(recommendations + responses)
             
+            # Document result summary
             doc_results.append({
                 'document': doc_name,
                 'status': '✅ Success',
                 'recommendations_found': len(recommendations),
                 'responses_found': len(responses),
-                'individual_items_found': len(recommendations) + len(responses),
-                'document_type': doc_structure.get('document_structure', 'unknown'),
-                'inquiry_type': doc_metadata.get('inquiry_type', 'unknown'),
-                'confidence_avg': sum(item.get('confidence_score', 0) for item in recommendations + responses) / max(1, len(recommendations) + len(responses)),
-                'extraction_method': method,
-                'sections_processed': len(doc.get('sections', [])),
-                'content_length': len(content)
+                'individual_items_found': len(recommendations + responses),
+                'document_type': detect_document_type(doc),
+                'extraction_method': method
             })
             
-        except Exception as extraction_error:
-            logging.error(f"Error extracting from {doc_name}: {extraction_error}")
+        except Exception as doc_error:
+            logging.error(f"Error processing {doc_name}: {doc_error}")
             doc_results.append({
                 'document': doc_name,
-                'status': f'❌ Error: {str(extraction_error)[:50]}...',
+                'status': f'❌ Error: {str(doc_error)[:50]}...',
                 'recommendations_found': 0,
                 'responses_found': 0,
                 'individual_items_found': 0,
-                'error': str(extraction_error),
-                'document_type': 'error'
+                'document_type': 'error',
+                'extraction_method': method
             })
     
-    # Complete progress
-    progress_bar.progress(1.0)
-    status_text.text("✅ Extraction completed!")
+    # Clear progress indicators
+    progress_bar.empty()
+    status_text.empty()
     
     # Store results in session state
     st.session_state.extraction_results = {
@@ -431,140 +427,44 @@ def show_extraction_summary(recommendations: List[Dict], responses: List[Dict], 
 def render_extraction_results():
     """Render detailed extraction results if available"""
     results = st.session_state.get('extraction_results', {})
+    
     if not results:
         return
     
     st.subheader("📋 Detailed Extraction Results")
     
-    # Results overview
-    with st.expander("📊 Extraction Overview", expanded=True):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("**Extraction Summary:**")
-            st.write(f"- **Method:** {results.get('extraction_method', 'Unknown')}")
-            st.write(f"- **Date:** {results.get('extraction_date', 'Unknown')}")
-            st.write(f"- **Documents:** {results.get('total_documents', 0)}")
-            st.write(f"- **Success Rate:** {results.get('successful_extractions', 0)}/{results.get('total_documents', 0)}")
-        
-        with col2:
-            st.write("**Items Extracted:**")
-            st.write(f"- **Recommendations:** {len(results.get('recommendations', []))}")
-            st.write(f"- **Responses:** {len(results.get('responses', []))}")
-            st.write(f"- **Total Items:** {len(results.get('individual_items', []))}")
+    # Results info
+    col1, col2, col3 = st.columns(3)
     
-    # Detailed item view
-    tab1, tab2, tab3 = st.tabs(["📝 All Recommendations", "📋 All Responses", "⚙️ Settings"])
+    with col1:
+        st.info(f"**Method:** {results.get('extraction_method', 'Unknown')}")
+    with col2:
+        extraction_date = results.get('extraction_date', '')
+        if extraction_date:
+            date_obj = datetime.fromisoformat(extraction_date.replace('Z', '+00:00'))
+            st.info(f"**Date:** {date_obj.strftime('%Y-%m-%d %H:%M')}")
+    with col3:
+        st.info(f"**Documents:** {results.get('successful_extractions', 0)}/{results.get('total_documents', 0)}")
+    
+    # Detailed tabs
+    tab1, tab2, tab3 = st.tabs(["📝 All Recommendations", "📋 All Responses", "📊 Export Options"])
     
     with tab1:
         recommendations = results.get('recommendations', [])
         if recommendations:
             show_detailed_items(recommendations, "recommendation")
         else:
-            st.info("No recommendations found")
+            st.info("No recommendations were extracted")
     
     with tab2:
         responses = results.get('responses', [])
         if responses:
             show_detailed_items(responses, "response")
         else:
-            st.info("No responses found")
+            st.info("No responses were extracted")
     
     with tab3:
-        settings = results.get('settings', {})
-        st.json(settings)
-    
-    # Export options
-    if results.get('individual_items'):
         render_extraction_export_options(results)
-
-# ===============================================
-# HELPER FUNCTIONS
-# ===============================================
-
-def get_document_content_for_extraction(doc: Dict[str, Any]) -> str:
-    """Get the best content from document for extraction"""
-    
-    # Priority 1: Use sections if available and relevant
-    sections = doc.get('sections', [])
-    if sections:
-        relevant_content = []
-        for section in sections:
-            section_type = section.get('type', '').lower()
-            # Include recommendation and response sections
-            if any(keyword in section_type for keyword in ['recommendation', 'response', 'finding', 'conclusion']):
-                relevant_content.append(f"=== {section.get('title', 'Section')} ===\n")
-                relevant_content.append(section.get('content', ''))
-        
-        if relevant_content:
-            return '\n\n'.join(relevant_content)
-    
-    # Priority 2: Use full text content
-    content = doc.get('text', '') or doc.get('content', '')
-    if content and len(content.strip()) > 100:
-        return content
-    
-    # Priority 3: Fallback to any available content
-    return doc.get('full_text', '') or ""
-
-def detect_document_type(doc: Dict[str, Any]) -> str:
-    """Detect the type of government document"""
-    try:
-        filename = doc.get('filename', '').lower()
-        content = doc.get('text', '') or doc.get('content', '')
-        
-        if not content:
-            return 'unknown'
-        
-        content_lower = content.lower()
-        
-        # Check filename patterns
-        if 'response' in filename:
-            return 'government_response'
-        elif any(word in filename for word in ['inquiry', 'report', 'investigation']):
-            return 'inquiry_report'
-        
-        # Check content patterns
-        if re.search(r'(?i)government\s+response', content):
-            return 'government_response'
-        elif re.search(r'(?i)(?:inquiry\s+)?report', content) and re.search(r'(?i)recommendations?', content):
-            return 'inquiry_report'
-        elif re.search(r'(?i)cabinet\s+office', content):
-            return 'cabinet_office_document'
-        
-        return 'government_document'
-        
-    except Exception as type_error:
-        logging.error(f"Error detecting document type: {type_error}")
-        return 'unknown'
-
-def validate_documents_for_extraction() -> tuple[bool, str]:
-    """Validate that documents are ready for extraction"""
-    docs = st.session_state.get('uploaded_documents', [])
-    
-    if not docs:
-        return False, "No documents uploaded"
-    
-    # Check content availability
-    content_available = 0
-    for doc in docs:
-        content = doc.get('text', '') or doc.get('content', '')
-        if content and len(content.strip()) > 50:
-            content_available += 1
-    
-    if content_available == 0:
-        return False, "No documents have readable content"
-    
-    # Analyze document types
-    doc_types = {}
-    for doc in docs:
-        doc_type = detect_document_type(doc)
-        doc_types[doc_type] = doc_types.get(doc_type, 0) + 1
-    
-    # Create validation message
-    type_summary = ", ".join([f"{count} {doc_type.replace('_', ' ')}" for doc_type, count in doc_types.items()])
-    
-    return True, f"Ready: {content_available} documents with content ({type_summary})"
 
 def show_items_preview(items: List[Dict], item_type: str, max_preview: int = 3):
     """Show a preview of extracted items"""
@@ -601,34 +501,13 @@ def show_items_preview(items: List[Dict], item_type: str, max_preview: int = 3):
 def show_detailed_items(items: List[Dict], item_type: str):
     """Show detailed view of all extracted items"""
     if not items:
-        st.info(f"No {item_type}s found")
+        st.info(f"No {item_type}s to display")
         return
     
-    st.write(f"**{len(items)} {item_type}s extracted:**")
+    st.write(f"**{len(items)} {item_type}s found:**")
     
-    # Search and filter
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        search_term = st.text_input(f"Search {item_type}s:", key=f"search_{item_type}")
-    with col2:
-        min_confidence = st.slider(
-            "Min confidence:",
-            0.0, 1.0, 0.0, 0.1,
-            key=f"confidence_{item_type}"
-        )
-    
-    # Filter items
-    filtered_items = items
-    if search_term:
-        filtered_items = [item for item in filtered_items if search_term.lower() in item.get('text', '').lower()]
-    if min_confidence > 0:
-        filtered_items = [item for item in filtered_items if item.get('confidence_score', 0) >= min_confidence]
-    
-    st.write(f"Showing {len(filtered_items)} of {len(items)} {item_type}s")
-    
-    # Display items
-    for i, item in enumerate(filtered_items):
-        with st.expander(f"{item.get('number', i+1)}. {item.get('text', '')[:80]}...", expanded=False):
+    for i, item in enumerate(items):
+        with st.expander(f"{item_type.title()} {i+1}: {item.get('text', '')[:80]}...", expanded=False):
             col1, col2 = st.columns([2, 1])
             
             with col1:
@@ -709,32 +588,40 @@ def render_extraction_export_options(results: Dict[str, Any]):
         if st.button("📄 Download as Text"):
             export_extraction_text(results)
 
+# ===============================================
+# EXPORT FUNCTIONS
+# ===============================================
+
 def export_extraction_csv(results: Dict[str, Any]):
     """Export extraction results as CSV"""
     try:
         all_items = []
         
-        for item in results.get('recommendations', []):
+        # Add recommendations
+        for rec in results.get('recommendations', []):
             all_items.append({
-                'type': 'recommendation',
-                'number': item.get('number', ''),
-                'text': item.get('text', ''),
-                'confidence': item.get('confidence_score', 0),
-                'document': item.get('document_context', {}).get('filename', 'Unknown'),
-                'length': item.get('length', 0),
-                'word_count': item.get('word_count', 0)
+                'Type': 'Recommendation',
+                'ID': rec.get('number', 'N/A'),
+                'Text': rec.get('text', ''),
+                'Confidence': rec.get('confidence_score', 0),
+                'Document': rec.get('document_context', {}).get('filename', 'Unknown'),
+                'Document_Type': rec.get('document_context', {}).get('document_type', 'Unknown'),
+                'Extraction_Method': rec.get('extraction_method', 'Unknown'),
+                'Word_Count': rec.get('word_count', 0)
             })
         
-        for item in results.get('responses', []):
+        # Add responses
+        for resp in results.get('responses', []):
             all_items.append({
-                'type': 'response',
-                'number': item.get('number', ''),
-                'text': item.get('text', ''),
-                'confidence': item.get('confidence_score', 0),
-                'response_type': item.get('response_type', 'unclear'),
-                'document': item.get('document_context', {}).get('filename', 'Unknown'),
-                'length': item.get('length', 0),
-                'word_count': item.get('word_count', 0)
+                'Type': 'Response',
+                'ID': resp.get('number', 'N/A'),
+                'Text': resp.get('text', ''),
+                'Confidence': resp.get('confidence_score', 0),
+                'Document': resp.get('document_context', {}).get('filename', 'Unknown'),
+                'Document_Type': resp.get('document_context', {}).get('document_type', 'Unknown'),
+                'Extraction_Method': resp.get('extraction_method', 'Unknown'),
+                'Response_Type': resp.get('response_type', 'Unknown'),
+                'Word_Count': resp.get('word_count', 0)
             })
         
         if all_items:
@@ -748,7 +635,7 @@ def export_extraction_csv(results: Dict[str, Any]):
                 "text/csv"
             )
         else:
-            st.error("No data to export")
+            st.warning("No data to export")
             
     except Exception as export_error:
         st.error(f"Error exporting CSV: {export_error}")
@@ -756,11 +643,13 @@ def export_extraction_csv(results: Dict[str, Any]):
 def export_extraction_json(results: Dict[str, Any]):
     """Export extraction results as JSON"""
     try:
+        # Clean up results for JSON export
         export_data = {
             'extraction_metadata': {
                 'method': results.get('extraction_method', 'Unknown'),
-                'date': results.get('extraction_date', datetime.now().isoformat()),
+                'date': results.get('extraction_date', ''),
                 'total_documents': results.get('total_documents', 0),
+                'successful_extractions': results.get('successful_extractions', 0),
                 'settings': results.get('settings', {})
             },
             'recommendations': results.get('recommendations', []),
@@ -783,57 +672,58 @@ def export_extraction_json(results: Dict[str, Any]):
 def export_extraction_text(results: Dict[str, Any]):
     """Export extraction results as formatted text"""
     try:
-        text_lines = [
-            "# Extraction Results Report",
-            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"Method: {results.get('extraction_method', 'Unknown')}",
-            f"Documents Processed: {results.get('total_documents', 0)}",
-            "",
-            "## Recommendations",
-            ""
-        ]
+        text_lines = []
         
-        recommendations = results.get('recommendations', [])
-        if recommendations:
-            for i, rec in enumerate(recommendations, 1):
-                text_lines.extend([
-                    f"### Recommendation {rec.get('number', i)}",
-                    f"**Confidence:** {rec.get('confidence_score', 0):.3f}",
-                    f"**Source:** {rec.get('document_context', {}).get('filename', 'Unknown')}",
-                    "",
-                    rec.get('text', 'No text available'),
-                    "",
-                    "---",
-                    ""
-                ])
-        else:
-            text_lines.append("No recommendations found.")
-        
+        # Header
         text_lines.extend([
+            "EXTRACTION RESULTS REPORT",
+            "=" * 50,
             "",
-            "## Government Responses",
+            f"Extraction Method: {results.get('extraction_method', 'Unknown')}",
+            f"Date: {results.get('extraction_date', 'Unknown')}",
+            f"Documents Processed: {results.get('total_documents', 0)}",
+            f"Successful Extractions: {results.get('successful_extractions', 0)}",
+            "",
+            "=" * 50,
             ""
         ])
         
-        responses = results.get('responses', [])
-        if responses:
-            for i, resp in enumerate(responses, 1):
-                response_type = resp.get('response_type', 'unclear')
-                emoji = {'accepted': '✅', 'rejected': '❌', 'partially_accepted': '⚡', 'under_consideration': '🤔'}.get(response_type, '❓')
-                
+        # Recommendations
+        recommendations = results.get('recommendations', [])
+        if recommendations:
+            text_lines.extend([
+                f"RECOMMENDATIONS ({len(recommendations)} found)",
+                "-" * 30,
+                ""
+            ])
+            
+            for i, rec in enumerate(recommendations, 1):
                 text_lines.extend([
-                    f"### Response {resp.get('number', i)} {emoji}",
-                    f"**Type:** {response_type.replace('_', ' ').title()}",
-                    f"**Confidence:** {resp.get('confidence_score', 0):.3f}",
-                    f"**Source:** {resp.get('document_context', {}).get('filename', 'Unknown')}",
-                    "",
-                    resp.get('text', 'No text available'),
-                    "",
-                    "---",
+                    f"{i}. ID: {rec.get('number', 'N/A')}",
+                    f"   Text: {rec.get('text', 'No text available')}",
+                    f"   Confidence: {rec.get('confidence_score', 0):.3f}",
+                    f"   Source: {rec.get('document_context', {}).get('filename', 'Unknown')}",
                     ""
                 ])
-        else:
-            text_lines.append("No responses found.")
+        
+        # Responses
+        responses = results.get('responses', [])
+        if responses:
+            text_lines.extend([
+                f"RESPONSES ({len(responses)} found)",
+                "-" * 30,
+                ""
+            ])
+            
+            for i, resp in enumerate(responses, 1):
+                text_lines.extend([
+                    f"{i}. ID: {resp.get('number', 'N/A')}",
+                    f"   Text: {resp.get('text', 'No text available')}",
+                    f"   Type: {resp.get('response_type', 'Unknown')}",
+                    f"   Confidence: {resp.get('confidence_score', 0):.3f}",
+                    f"   Source: {resp.get('document_context', {}).get('filename', 'Unknown')}",
+                    ""
+                ])
         
         # Add document results summary
         text_lines.extend([
@@ -868,6 +758,112 @@ def export_extraction_text(results: Dict[str, Any]):
 # UTILITY FUNCTIONS
 # ===============================================
 
+def get_document_content_for_extraction(doc: Dict[str, Any]) -> str:
+    """Get the best content from document for extraction"""
+    
+    # Priority 1: Use sections if available and relevant
+    sections = doc.get('sections', [])
+    if sections:
+        relevant_content = []
+        for section in sections:
+            section_type = section.get('type', '').lower()
+            # Include recommendation and response sections
+            if any(keyword in section_type for keyword in ['recommendation', 'response', 'finding', 'conclusion']):
+                relevant_content.append(f"=== {section.get('title', 'Section')} ===\n")
+                relevant_content.append(section.get('content', ''))
+        
+        if relevant_content:
+            return '\n\n'.join(relevant_content)
+    
+    # Priority 2: Use full text content
+    content = doc.get('text', '') or doc.get('content', '')
+    if content and len(content.strip()) > 100:
+        return content
+    
+    # Priority 3: Fallback to any available content
+    return doc.get('full_text', '') or ""
+
+def detect_document_type(doc: Dict[str, Any]) -> str:
+    """Detect the type of government document - ENHANCED for Infected Blood Inquiry"""
+    try:
+        filename = doc.get('filename', '').lower()
+        content = doc.get('text', '') or doc.get('content', '')
+        
+        if not content:
+            return 'unknown'
+        
+        content_lower = content.lower()
+        
+        # FIXED: Better detection for different volumes
+        if 'volume_1' in filename or 'overview_and_recommendations' in filename:
+            return 'inquiry_report'  # HAS RECOMMENDATIONS
+        elif 'volume_6' in filename or 'volume_7' in filename:
+            return 'mixed_document'  # HAS BOTH
+        elif 'government_response' in filename or '20250512' in filename:
+            return 'government_response'  # HAS RESPONSES
+        
+        # Check content for recommendation sections
+        if '1.5 recommendations' in content_lower:
+            return 'inquiry_report'
+        elif 'government response to' in content_lower:
+            return 'government_response'
+        elif 'i recommend:' in content_lower:
+            return 'inquiry_report'
+        elif 'recommendation 1 is accepted' in content_lower:
+            return 'government_response'
+        
+        # Existing patterns
+        if re.search(r'(?i)government\s+response', content):
+            return 'government_response'
+        elif re.search(r'(?i)(?:inquiry\s+)?report', content) and re.search(r'(?i)recommendations?', content):
+            return 'inquiry_report'
+        elif re.search(r'(?i)cabinet\s+office', content):
+            return 'cabinet_office_document'
+        
+        return 'government_document'
+        
+    except Exception as type_error:
+        logging.error(f"Error detecting document type: {type_error}")
+        return 'unknown'
+
+def validate_documents_for_extraction() -> tuple[bool, str]:
+    """Validate that documents are ready for extraction - ENHANCED"""
+    docs = st.session_state.get('uploaded_documents', [])
+    
+    if not docs:
+        return False, "No documents uploaded"
+    
+    # Check content availability
+    content_available = 0
+    inquiry_docs = 0
+    response_docs = 0
+    
+    for doc in docs:
+        content = doc.get('text', '') or doc.get('content', '')
+        if content and len(content.strip()) > 50:
+            content_available += 1
+            
+            # Check document type
+            doc_type = detect_document_type(doc)
+            if doc_type == 'inquiry_report':
+                inquiry_docs += 1
+            elif doc_type == 'government_response':
+                response_docs += 1
+    
+    if content_available == 0:
+        return False, "No documents have readable content"
+    
+    # Enhanced validation message
+    validation_parts = []
+    if inquiry_docs > 0:
+        validation_parts.append(f"{inquiry_docs} inquiry report(s)")
+    if response_docs > 0:
+        validation_parts.append(f"{response_docs} government response(s)")
+    
+    type_summary = ", ".join(validation_parts) if validation_parts else f"{content_available} documents"
+    
+    return True, f"Ready: {content_available} documents with content ({type_summary})"
+
 def log_extraction_action(action: str, details: str = ""):
     """Log extraction-related user actions"""
     timestamp = datetime.now().isoformat()
@@ -893,100 +889,117 @@ def get_extraction_statistics():
     
     if not results:
         return {
-            'total_extractions': 0,
+            'total_documents': 0,
             'total_recommendations': 0,
             'total_responses': 0,
-            'last_extraction': None
+            'extraction_method': 'None',
+            'last_extraction': 'Never'
         }
     
     return {
-        'total_extractions': 1,  # Could track multiple extraction sessions
+        'total_documents': results.get('total_documents', 0),
+        'successful_extractions': results.get('successful_extractions', 0),
         'total_recommendations': len(results.get('recommendations', [])),
         'total_responses': len(results.get('responses', [])),
-        'last_extraction': results.get('extraction_date'),
-        'last_method': results.get('extraction_method'),
-        'success_rate': results.get('successful_extractions', 0) / max(1, results.get('total_documents', 1))
+        'extraction_method': results.get('extraction_method', 'Unknown'),
+        'last_extraction': results.get('extraction_date', 'Unknown')
     }
 
 def clear_extraction_results():
     """Clear extraction results from session state"""
     if 'extraction_results' in st.session_state:
         del st.session_state.extraction_results
-    log_extraction_action("clear_results", "Extraction results cleared")
+    if 'extraction_history' in st.session_state:
+        del st.session_state.extraction_history
+    
+    st.success("✅ Extraction results cleared")
 
-def validate_extraction_settings(settings: Dict[str, Any]) -> tuple[bool, str]:
+def validate_extraction_settings(confidence_threshold: float, max_items: int) -> bool:
     """Validate extraction settings"""
-    try:
-        confidence_threshold = settings.get('confidence_threshold', 0.3)
-        max_items = settings.get('max_items_per_doc', 50)
-        
-        if not (0.0 <= confidence_threshold <= 1.0):
-            return False, "Confidence threshold must be between 0.0 and 1.0"
-        
-        if not (1 <= max_items <= 1000):
-            return False, "Max items per document must be between 1 and 1000"
-        
-        return True, "Settings are valid"
-        
-    except Exception as validation_error:
-        return False, f"Settings validation error: {validation_error}"
+    if not 0.0 <= confidence_threshold <= 1.0:
+        st.error("Confidence threshold must be between 0.0 and 1.0")
+        return False
+    
+    if not 1 <= max_items <= 1000:
+        st.error("Max items must be between 1 and 1000")
+        return False
+    
+    return True
+
+def debug_document_analysis(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Debug document analysis for troubleshooting"""
+    filename = doc.get('filename', 'Unknown')
+    content = doc.get('text', '') or doc.get('content', '')
+    
+    debug_info = {
+        'filename': filename,
+        'content_length': len(content),
+        'detected_type': detect_document_type(doc),
+        'has_i_recommend': 'i recommend:' in content.lower(),
+        'has_1_5_recommendations': '1.5 recommendations' in content.lower(),
+        'has_numbered_recs': len(re.findall(r'\d+\.\s+[A-Z]', content)),
+        'government_response_indicators': 'government response' in content.lower(),
+        'recommendation_count': content.lower().count('recommendation'),
+        'response_count': content.lower().count('response')
+    }
+    
+    return debug_info
 
 # ===============================================
 # BACKWARDS COMPATIBILITY FUNCTIONS
 # ===============================================
 
-def show_recommendations_compact(recommendations: List[Dict]):
-    """Show recommendations in compact format - updated for government documents"""
+def show_recommendations_compact(recommendations: List[Dict[str, Any]]) -> None:
+    """Show recommendations in compact format for backwards compatibility"""
     if not recommendations:
         st.info("No recommendations to display")
         return
     
-    for i, rec in enumerate(recommendations, 1):
-        # Create descriptive title
-        title = f"**{rec.get('number', i)}** - {rec.get('type', 'recommendation').replace('_', ' ').title()}"
-        preview = rec.get('text', '')[:100]
-        if len(rec.get('text', '')) > 100:
-            preview += "..."
-        
-        with st.expander(f"{title}: {preview}", expanded=False):
-            col1, col2 = st.columns([3, 1])
-            
-            with col1:
-                st.write("**Full Text:**")
-                st.write(rec.get('text', 'No text available'))
-            
-            with col2:
-                st.write("**Details:**")
-                st.write(f"- **Confidence:** {rec.get('confidence_score', 0):.3f}")
-                st.write(f"- **Source:** {rec.get('document_context', {}).get('filename', 'Unknown')}")
-                
-                if rec.get('length'):
-                    st.write(f"- **Length:** {rec.get('length')} chars")
+    for i, rec in enumerate(recommendations):
+        with st.expander(f"Recommendation {i+1}: {rec.get('text', '')[:60]}..."):
+            st.write(rec.get('text', 'No text available'))
+            if rec.get('confidence_score'):
+                st.caption(f"Confidence: {rec.get('confidence_score', 0):.2f}")
 
-def get_recommendations_for_annotation():
-    """Get extracted recommendations for annotation - updated interface"""
+def get_recommendations_for_annotation(include_responses: bool = False) -> List[Dict[str, Any]]:
+    """Get recommendations in format suitable for annotation"""
     results = st.session_state.get('extraction_results', {})
-    recommendations = results.get('recommendations', [])
     
-    if not recommendations:
-        return []
-    
-    # Convert to format expected by annotation components
     formatted_recs = []
-    for rec in recommendations:
+    
+    # Add recommendations
+    for rec in results.get('recommendations', []):
         formatted_rec = {
-            'id': rec.get('number', len(formatted_recs) + 1),
+            'id': rec.get('number', f"rec_{len(formatted_recs)+1}"),
             'text': rec.get('text', ''),
+            'type': 'recommendation',
             'source': rec.get('document_context', {}).get('filename', 'Unknown'),
-            'confidence': rec.get('confidence_score', 0.0),
+            'confidence': rec.get('confidence_score', 0),
             'metadata': {
-                'extraction_method': results.get('extraction_method', 'unknown'),
+                'extraction_method': rec.get('extraction_method', 'unknown'),
                 'document_type': rec.get('document_context', {}).get('document_type', 'unknown'),
-                'length': rec.get('length', len(rec.get('text', ''))),
                 'word_count': rec.get('word_count', len(rec.get('text', '').split()))
             }
         }
         formatted_recs.append(formatted_rec)
+    
+    # Add responses if requested
+    if include_responses:
+        for resp in results.get('responses', []):
+            formatted_rec = {
+                'id': resp.get('number', f"resp_{len(formatted_recs)+1}"),
+                'text': resp.get('text', ''),
+                'type': 'response',
+                'source': resp.get('document_context', {}).get('filename', 'Unknown'),
+                'confidence': resp.get('confidence_score', 0),
+                'response_type': resp.get('response_type', 'unknown'),
+                'metadata': {
+                    'extraction_method': resp.get('extraction_method', 'unknown'),
+                    'document_type': resp.get('document_context', {}).get('document_type', 'unknown'),
+                    'word_count': resp.get('word_count', len(resp.get('text', '').split()))
+                }
+            }
+            formatted_recs.append(formatted_rec)
     
     return formatted_recs
 
@@ -1021,6 +1034,7 @@ __all__ = [
     'get_extraction_statistics',
     'clear_extraction_results',
     'validate_extraction_settings',
+    'debug_document_analysis',
     
     # Backwards compatibility
     'show_recommendations_compact',
