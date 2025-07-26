@@ -1,67 +1,71 @@
 # ===============================================
-# FILE: modules/enhanced_section_extractor.py (COMPLETE VERSION)
+# FILE: modules/enhanced_section_extractor.py (COMPLETE REVISED VERSION)
 # ===============================================
 
 import re
 import logging
-from typing import Dict, List, Any, Optional, Tuple, Union
-import pandas as pd
-from pathlib import Path
-import io
 import hashlib
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
+import io
 
-# PDF processing imports with fallbacks
+# PDF processing libraries with fallback handling
 try:
     import pdfplumber
     PDFPLUMBER_AVAILABLE = True
+    logging.info("✅ pdfplumber imported successfully")
 except ImportError:
     PDFPLUMBER_AVAILABLE = False
-    logging.warning("pdfplumber not available - using fallback PDF processing")
+    logging.warning("⚠️ pdfplumber not available")
 
 try:
     import fitz  # PyMuPDF
     PYMUPDF_AVAILABLE = True
+    logging.info("✅ PyMuPDF imported successfully")
 except ImportError:
     PYMUPDF_AVAILABLE = False
-    logging.warning("PyMuPDF not available - using fallback PDF processing")
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+    logging.warning("⚠️ PyMuPDF not available")
 
 class EnhancedSectionExtractor:
     """
-    Enhanced section extractor for government documents and inquiry reports.
-    
-    Supports universal inquiry document processing, not limited to any specific inquiry.
-    Handles table-of-contents based documents, numbered sections, and government response formats.
+    Enhanced section extractor with multi-strategy recommendation extraction
+    Supports all UK government inquiry formats including Infected Blood Inquiry
     """
     
     def __init__(self, debug_mode: bool = False):
-        """Initialize the enhanced section extractor"""
+        """Initialize with enhanced patterns for all inquiry types"""
         self.debug_mode = debug_mode
         self.extraction_stats = {
             'documents_processed': 0,
             'sections_extracted': 0,
             'recommendations_found': 0,
             'responses_found': 0,
-            'errors_encountered': 0
+            'last_extraction_time': None,
+            'total_processing_time': 0
         }
         
-        # Government document patterns (universal for any UK inquiry)
+        # Standard government document patterns
         self.government_patterns = {
-            'inquiry_types': [
-                r'(?i)(\w+(?:\s+\w+)*)\s+inquiry',
-                r'(?i)(\w+(?:\s+\w+)*)\s+commission', 
-                r'(?i)(\w+(?:\s+\w+)*)\s+investigation',
-                r'(?i)(\w+(?:\s+\w+)*)\s+review'
-            ],
             'section_headers': [
-                r'(?i)^(?:\d+\.?\d*\s+)?(?:government\s+)?responses?\s+to\s+(?:individual\s+)?recommendations?',
-                r'(?i)^(?:\d+\.?\d*\s+)?recommendations?(?:\s+and\s+responses?)?',
-                r'(?i)^(?:\d+\.?\d*\s+)?(?:the\s+)?government\'?s?\s+response',
-                r'(?i)^(?:\d+\.?\d*\s+)?cabinet\s+office\s+response',
-                r'(?i)^(?:\d+\.?\d*\s+)?departmental\s+responses?',
+                # Standard government section headers
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:key\s+)?recommendations?\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:government\s+)?responses?\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:official\s+)?response\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:response\s+to\s+(?:the\s+)?(?:inquiry\s+)?recommendations?)\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:departmental\s+response)\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:ministry\s+response)\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:cabinet\s+office\s+response)\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:implementation\s+(?:plan|strategy))\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:action\s+plan)\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:government\s+action)\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:next\s+steps?)\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:progress\s+(?:report|update))\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:response\s+to\s+recommendation\s+\d+)\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:recommendation\s+\d+\s*[-:]?\s*response)\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:responses?\s+to\s+individual\s+recommendations?)\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:detailed\s+responses?)\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:government\s+responses?\s+to\s+recommendations?)\s*$',
+                r'(?i)^(?:\d+\.?\d*\s+)?(?:recommendation\s+\d+)\s*$',
                 r'(?i)^(?:\d+\.?\d*\s+)?implementation\s+(?:plan|strategy)',
                 r'(?i)^(?:\d+\.?\d*\s+)?(?:key\s+)?findings?\s+and\s+recommendations?',
                 r'(?i)^(?:\d+\.?\d*\s+)?executive\s+summary'
@@ -77,18 +81,442 @@ class EnhancedSectionExtractor:
                 r'(?i)(?:accepted|rejected|partially\s+accepted)[:\s]*(.+?)(?=(?:^|\n)|$)'
             ]
         }
-    
-    def extract_sections_from_pdf(self, pdf_content: bytes, filename: str = "document.pdf") -> Dict[str, Any]:
-        """
-        Main method to extract sections from PDF content
         
-        Args:
-            pdf_content: PDF file content as bytes
-            filename: Original filename for reference
+        # NEW: Infected Blood Inquiry specific patterns
+        self.infected_blood_patterns = {
+            # "I recommend:" block extraction
+            'i_recommend_block': r'(?i)I\s+recommend:\s*\n(.*?)(?=\n\s*[A-Z][a-z]+\s+\d+|$)',
             
-        Returns:
-            Dictionary containing extracted sections and metadata
-        """
+            # Section 1.5 extraction
+            'section_1_5': r'(?i)1\.5\s+recommendations?\s*\n(.*?)(?=\n\s*(?:\d+\.\d+|appendix|references|$))',
+            
+            # Numbered recommendations: "8. Finding the undiagnosed"
+            'numbered_main': r'(?i)(?:^|\n)\s*(\d+)\.\s+([^\n]+)(?:\n((?:(?!\d+\.).)*?))?',
+            
+            # Sub-recommendations: "(a) When doctors become aware..."
+            'sub_lettered': r'(?i)\(([a-z])\)\s+([^\n]+(?:\n(?!\([a-z]\)|(?:\n\s*\d+\.)).)*)',
+            
+            # Sub-sub-recommendations: "(i) clinical audit should..."
+            'sub_roman': r'(?i)\(([ivx]+)\)\s+([^\n]+(?:\n(?!\([ivx]+\)|(?:\n\s*\d+\.)).)*)',
+        }
+        
+        # Section end markers
+        self.section_end_markers = [
+            r'(?i)^(?:conclusion|summary|appendix|annex|bibliography|references|index)\s*$',
+            r'(?i)^(?:part|chapter|section)\s+[ivxlcdm]+\s*$',
+            r'(?i)^(?:part|chapter|section)\s+\d+\s*$',
+            r'(?i)^(?:next steps?|way forward|future work)\s*$',
+            r'(?i)^(?:contact details?|further information)\s*$',
+            r'(?i)^(?:glossary|abbreviations|acronyms)\s*$',
+            r'(?i)^(?:published by|crown copyright|©)\s*',
+            r'(?i)^(?:signed|dated this|chair of (?:the )?inquiry)\s*',
+            r'(?i)^(?:minister for|secretary of state)\s*',
+        ]
+
+    def _preprocess_text(self, text: str) -> str:
+        """Fix PDF extraction issues that break pattern matching"""
+        if not text:
+            return ""
+        
+        # Fix common PDF extraction issues
+        text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
+        text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)  # Fix word boundaries
+        text = re.sub(r'(\d+)\.([A-Z])', r'\1. \2', text)  # Fix numbered lists
+        text = re.sub(r'([.!?])([A-Z])', r'\1\n\2', text)  # Add line breaks after sentences
+        
+        # Fix recommendation formatting
+        text = re.sub(r'Recommendation(\d+)', r'Recommendation \1', text)
+        text = re.sub(r'I recommend(\d+)', r'I recommend:\n\1', text)
+        
+        return text.strip()
+
+    def _is_valid_recommendation(self, text: str) -> bool:
+        """Updated validation rules - more permissive for Infected Blood Inquiry"""
+        if not text or len(text.strip()) < 10:  # LOWERED from 50
+            return False
+        
+        if len(text) > 5000:  # INCREASED limit
+            return False
+        
+        text_lower = text.lower()
+        
+        # Check for exclude phrases
+        exclude_phrases = ['table of contents', 'page ', 'copyright', 'printed', 'isbn']
+        if any(phrase in text_lower for phrase in exclude_phrases):
+            return False
+        
+        # EXPANDED indicator words for Infected Blood Inquiry
+        indicators = [
+            # Action words
+            'should', 'must', 'ought', 'recommend', 'establish', 'implement', 
+            'ensure', 'develop', 'create', 'review', 'consider', 'examine',
+            
+            # Inquiry-specific terms
+            'patient', 'clinical', 'blood', 'transfusion', 'hepatitis', 
+            'haemophilia', 'care', 'voice', 'enabled', 'empowered',
+            'audit', 'satisfaction', 'concern', 'reported', 'board',
+            'safety', 'training', 'monitoring', 'framework', 'funding'
+        ]
+        
+        return any(indicator in text_lower for indicator in indicators)
+
+    def extract_all_recommendations(self, text: str, document_source: str = "") -> List[Dict[str, Any]]:
+        """Extract using multiple strategies for better coverage"""
+        all_recommendations = []
+        
+        # Preprocess text first
+        text = self._preprocess_text(text)
+        
+        # Strategy 1: Extract from "I recommend:" blocks
+        strategy1_recs = self._extract_i_recommend_blocks(text, document_source)
+        all_recommendations.extend(strategy1_recs)
+        
+        # Strategy 2: Extract from "1.5 Recommendations" section
+        strategy2_recs = self._extract_section_1_5(text, document_source)
+        all_recommendations.extend(strategy2_recs)
+        
+        # Strategy 3: Extract numbered recommendations
+        strategy3_recs = self._extract_numbered_recommendations(text, document_source)
+        all_recommendations.extend(strategy3_recs)
+        
+        # Strategy 4: Extract sub-recommendations
+        strategy4_recs = self._extract_sub_recommendations(text, document_source)
+        all_recommendations.extend(strategy4_recs)
+        
+        # Strategy 5: Final scan for missed items
+        strategy5_recs = self._scan_for_missed_recommendations(text, document_source, all_recommendations)
+        all_recommendations.extend(strategy5_recs)
+        
+        # Remove duplicates and validate
+        final_recommendations = self._deduplicate_and_validate(all_recommendations)
+        
+        if self.debug_mode:
+            logging.info(f"✅ Multi-strategy extraction found {len(final_recommendations)} unique recommendations")
+        
+        return final_recommendations
+
+    def _extract_i_recommend_blocks(self, text: str, source: str) -> List[Dict[str, Any]]:
+        """Extract from 'I recommend:' blocks"""
+        recommendations = []
+        
+        pattern = self.infected_blood_patterns['i_recommend_block']
+        matches = re.finditer(pattern, text, re.DOTALL | re.MULTILINE)
+        
+        for match in matches:
+            block_content = match.group(1).strip()
+            if len(block_content) > 50:
+                # Extract numbered items from this block
+                block_recs = self._extract_numbered_from_block(block_content, source)
+                recommendations.extend(block_recs)
+        
+        return recommendations
+
+    def _extract_section_1_5(self, text: str, source: str) -> List[Dict[str, Any]]:
+        """Extract from section 1.5 Recommendations"""
+        recommendations = []
+        
+        pattern = self.infected_blood_patterns['section_1_5']
+        matches = re.finditer(pattern, text, re.DOTALL | re.MULTILINE)
+        
+        for match in matches:
+            section_content = match.group(1).strip()
+            if len(section_content) > 100:
+                section_recs = self._extract_numbered_from_block(section_content, source)
+                recommendations.extend(section_recs)
+        
+        return recommendations
+
+    def _extract_numbered_from_block(self, block_content: str, source: str) -> List[Dict[str, Any]]:
+        """Extract numbered items from a text block"""
+        recommendations = []
+        
+        # Pattern for numbered items: "8. Finding the undiagnosed"
+        pattern = r'(?:^|\n)\s*(\d+)\.\s+([^\n]+(?:\n(?!\d+\.).)*?)'
+        matches = re.finditer(pattern, block_content, re.DOTALL | re.MULTILINE)
+        
+        for match in matches:
+            rec_id = match.group(1)
+            rec_text = match.group(2).strip()
+            
+            # Clean up the text
+            rec_text = re.sub(r'\s+', ' ', rec_text)
+            rec_text = rec_text.replace('\n', ' ')
+            
+            if self._is_valid_recommendation(rec_text):
+                recommendations.append({
+                    'id': rec_id,
+                    'text': rec_text,
+                    'type': 'numbered_recommendation',
+                    'source': 'block_extraction',
+                    'document_source': source,
+                    'confidence': 0.95
+                })
+        
+        return recommendations
+
+    def _extract_numbered_recommendations(self, text: str, source: str) -> List[Dict[str, Any]]:
+        """Extract numbered recommendations from full text"""
+        recommendations = []
+        
+        pattern = self.infected_blood_patterns['numbered_main']
+        matches = re.finditer(pattern, text, re.DOTALL | re.MULTILINE)
+        
+        for match in matches:
+            rec_id = match.group(1)
+            rec_title = match.group(2).strip()
+            rec_content = match.group(3).strip() if len(match.groups()) > 2 and match.group(3) else ""
+            
+            # Combine title and content
+            full_text = f"{rec_title}. {rec_content}".strip()
+            
+            if self._is_valid_recommendation(full_text):
+                recommendations.append({
+                    'id': rec_id,
+                    'text': full_text,
+                    'type': 'numbered_recommendation',
+                    'source': 'full_text_extraction',
+                    'document_source': source,
+                    'confidence': 0.9
+                })
+        
+        return recommendations
+
+    def _extract_sub_recommendations(self, text: str, source: str) -> List[Dict[str, Any]]:
+        """Extract sub-recommendations (lettered and roman numeral)"""
+        recommendations = []
+        
+        # Extract lettered sub-recommendations
+        pattern = self.infected_blood_patterns['sub_lettered']
+        matches = re.finditer(pattern, text, re.DOTALL | re.MULTILINE)
+        
+        for match in matches:
+            sub_id = match.group(1)
+            sub_text = match.group(2).strip()
+            
+            if self._is_valid_recommendation(sub_text):
+                recommendations.append({
+                    'id': f"sub_{sub_id}",
+                    'text': sub_text,
+                    'type': 'sub_recommendation',
+                    'source': 'lettered_extraction',
+                    'document_source': source,
+                    'confidence': 0.85
+                })
+        
+        # Extract roman numeral sub-recommendations
+        pattern = self.infected_blood_patterns['sub_roman']
+        matches = re.finditer(pattern, text, re.DOTALL | re.MULTILINE)
+        
+        for match in matches:
+            sub_id = match.group(1)
+            sub_text = match.group(2).strip()
+            
+            if self._is_valid_recommendation(sub_text):
+                recommendations.append({
+                    'id': f"sub_{sub_id}",
+                    'text': sub_text,
+                    'type': 'sub_sub_recommendation',
+                    'source': 'roman_extraction',
+                    'document_source': source,
+                    'confidence': 0.8
+                })
+        
+        return recommendations
+
+    def _scan_for_missed_recommendations(self, text: str, source: str, existing_recs: List[Dict]) -> List[Dict[str, Any]]:
+        """Final scan for any missed recommendations"""
+        recommendations = []
+        existing_texts = set(rec.get('text', '')[:50] for rec in existing_recs)
+        
+        # Look for any "recommend" statements that might have been missed
+        pattern = r'(?i)(?:i\s+)?recommend[s]?\s+(?:that\s+)?([^.]+\.)'
+        matches = re.finditer(pattern, text)
+        
+        for match in matches:
+            rec_text = match.group(1).strip()
+            rec_preview = rec_text[:50]
+            
+            if rec_preview not in existing_texts and self._is_valid_recommendation(rec_text):
+                recommendations.append({
+                    'id': f"missed_{len(recommendations)+1}",
+                    'text': rec_text,
+                    'type': 'general_recommendation',
+                    'source': 'final_scan',
+                    'document_source': source,
+                    'confidence': 0.7
+                })
+                existing_texts.add(rec_preview)
+        
+        return recommendations
+
+    def _deduplicate_and_validate(self, recommendations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Remove duplicates and validate final recommendations"""
+        seen_texts = set()
+        unique_recs = []
+        
+        for rec in recommendations:
+            # Create a normalized version for comparison
+            text_key = re.sub(r'\s+', ' ', rec.get('text', '').lower().strip())[:100]
+            
+            if text_key not in seen_texts and len(text_key) > 10:
+                seen_texts.add(text_key)
+                unique_recs.append(rec)
+        
+        # Sort by ID if numeric, otherwise by confidence
+        def sort_key(rec):
+            rec_id = rec.get('id', '')
+            if rec_id.isdigit():
+                return (0, int(rec_id))
+            elif rec_id.startswith('sub_') and rec_id[4:].isdigit():
+                return (1, int(rec_id[4:]))
+            else:
+                return (2, rec.get('confidence', 0))
+        
+        unique_recs.sort(key=sort_key)
+        return unique_recs
+
+    def extract_individual_recommendations(self, text: str) -> List[Dict[str, Any]]:
+        """Extract individual numbered recommendations from text - ENHANCED VERSION"""
+        try:
+            # Use multi-strategy extraction for better coverage
+            recommendations = self.extract_all_recommendations(text, "unknown_source")
+            
+            # Convert to the expected format
+            formatted_recommendations = []
+            for rec in recommendations:
+                formatted_rec = {
+                    'number': rec.get('id', ''),
+                    'text': rec.get('text', ''),
+                    'start_position': 0,  # Not tracked in new method
+                    'end_position': 0,    # Not tracked in new method
+                    'length': len(rec.get('text', '')),
+                    'word_count': len(rec.get('text', '').split()),
+                    'confidence_score': rec.get('confidence', 0.5),
+                    'extraction_method': rec.get('source', 'multi_strategy'),
+                    'type': rec.get('type', 'recommendation')
+                }
+                formatted_recommendations.append(formatted_rec)
+            
+            if self.debug_mode:
+                logging.info(f"✅ Extracted {len(formatted_recommendations)} recommendations using multi-strategy approach")
+            
+            return formatted_recommendations
+            
+        except Exception as rec_error:
+            logging.error(f"Error in enhanced recommendation extraction: {rec_error}")
+            return []
+
+    def extract_individual_responses(self, text: str) -> List[Dict[str, Any]]:
+        """Extract individual government responses from text"""
+        responses = []
+        
+        try:
+            # Try different response patterns
+            for pattern in self.government_patterns['response_patterns']:
+                matches = re.finditer(pattern, text, re.DOTALL | re.MULTILINE)
+                
+                for match in matches:
+                    if len(match.groups()) >= 2:
+                        number = match.group(1) if match.group(1) else str(len(responses) + 1)
+                        content = match.group(2).strip()
+                    else:
+                        number = str(len(responses) + 1)
+                        content = match.group(1).strip()
+                    
+                    if content and len(content) > 20:  # Minimum content length
+                        response = {
+                            'number': number,
+                            'text': content,
+                            'start_position': match.start(),
+                            'end_position': match.end(),
+                            'length': len(content),
+                            'word_count': len(content.split()),
+                            'confidence_score': self._calculate_item_confidence(content, 'response'),
+                            'response_type': self._classify_response_type(content)
+                        }
+                        responses.append(response)
+            
+            # Remove duplicates and sort by number
+            responses = self._deduplicate_items(responses, 'number')
+            responses.sort(key=lambda x: int(x['number']) if x['number'].isdigit() else 999)
+            
+            if self.debug_mode:
+                logging.info(f"Extracted {len(responses)} individual responses")
+            
+            return responses
+            
+        except Exception as resp_error:
+            logging.error(f"Error extracting individual responses: {resp_error}")
+            return []
+
+    def _calculate_item_confidence(self, text: str, item_type: str) -> float:
+        """Calculate confidence score for extracted item"""
+        confidence = 0.5
+        
+        # Length-based confidence
+        if len(text) > 100:
+            confidence += 0.2
+        if len(text) > 300:
+            confidence += 0.1
+        
+        # Content-based confidence
+        if item_type == 'recommendation':
+            if any(word in text.lower() for word in ['should', 'must', 'recommend']):
+                confidence += 0.2
+        elif item_type == 'response':
+            if any(word in text.lower() for word in ['accepted', 'implemented', 'government']):
+                confidence += 0.2
+        
+        return min(confidence, 1.0)
+
+    def _classify_response_type(self, text: str) -> str:
+        """Classify the type of government response"""
+        text_lower = text.lower()
+        
+        if 'accepted in full' in text_lower or 'fully accepted' in text_lower:
+            return 'accepted'
+        elif 'accepted in principle' in text_lower or 'partially accepted' in text_lower:
+            return 'partially_accepted'
+        elif 'not accepted' in text_lower or 'rejected' in text_lower:
+            return 'rejected'
+        elif 'under consideration' in text_lower or 'being reviewed' in text_lower:
+            return 'under_consideration'
+        else:
+            return 'unclear'
+
+    def _deduplicate_items(self, items: List[Dict], key_field: str) -> List[Dict]:
+        """Remove duplicate items based on content similarity"""
+        seen_content = set()
+        unique_items = []
+        
+        for item in items:
+            # Create a normalized content hash
+            content = item.get('text', '')
+            normalized_content = re.sub(r'\s+', ' ', content.lower().strip())[:100]
+            
+            if normalized_content not in seen_content:
+                seen_content.add(normalized_content)
+                unique_items.append(item)
+        
+        return unique_items
+
+    def debug_extraction(self, text: str):
+        """Debug helper for troubleshooting extraction issues"""
+        print(f"✅ Text length: {len(text):,} characters")
+        print(f"✅ Contains 'I recommend': {'i recommend' in text.lower()}")
+        print(f"✅ Contains '1.5 Recommendations': {'1.5 recommendations' in text.lower()}")
+        print(f"✅ Contains numbered items: {len(re.findall(r'\\d+\\. ', text))}")
+        
+        # Test each pattern
+        for name, pattern in self.infected_blood_patterns.items():
+            try:
+                matches = len(re.findall(pattern, text, re.IGNORECASE))
+                print(f"✅ Pattern {name}: {matches} matches")
+            except:
+                print(f"❌ Pattern {name}: ERROR")
+
+    def extract_sections_from_pdf(self, pdf_content: bytes, filename: str = "document.pdf") -> Dict[str, Any]:
+        """Main method to extract sections from PDF content"""
         try:
             self.extraction_stats['documents_processed'] += 1
             
@@ -119,28 +547,25 @@ class EnhancedSectionExtractor:
                 self.extraction_stats['recommendations_found'] += len(recommendations)
                 self.extraction_stats['responses_found'] += len(responses)
                 
-                # Add document analysis
-                result['document_analysis'] = self._analyze_government_document_structure(result['full_text'])
+                result['extraction_method'] = 'enhanced_multi_strategy'
+                result['success'] = True
                 
                 if self.debug_mode:
-                    logging.info(f"Extracted {len(sections)} sections, {len(recommendations)} recommendations, {len(responses)} responses from {filename}")
+                    logging.info(f"✅ Successfully processed {filename}: {len(recommendations)} recommendations, {len(responses)} responses")
             
             return result
             
         except Exception as extraction_error:
-            self.extraction_stats['errors_encountered'] += 1
             logging.error(f"Error extracting sections from {filename}: {extraction_error}")
             return {
                 'success': False,
                 'error': str(extraction_error),
                 'filename': filename,
-                'sections': [],
-                'full_text': "",
-                'page_count': 0
+                'extraction_method': 'failed'
             }
-    
+
     def _extract_pages_with_pdfplumber(self, pdf_content: bytes, filename: str) -> Dict[str, Any]:
-        """Extract text using pdfplumber (primary method)"""
+        """Extract text using pdfplumber with enhanced error handling"""
         try:
             with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
                 pages_text = []
@@ -148,26 +573,19 @@ class EnhancedSectionExtractor:
                 
                 for page_num, page in enumerate(pdf.pages, 1):
                     try:
-                        # Extract text with layout preservation
-                        text = page.extract_text(layout=True)
-                        if text:
-                            pages_text.append(text)
-                            
-                            # Extract page metadata
-                            page_metadata = {
-                                'page_number': page_num,
-                                'bbox': page.bbox,
-                                'width': page.width,
-                                'height': page.height,
-                                'rotation': getattr(page, 'rotation', 0),
-                                'char_count': len(text),
-                                'word_count': len(text.split())
-                            }
-                            pages_metadata.append(page_metadata)
-                        
+                        page_text = page.extract_text() or ""
+                        pages_text.append(page_text)
+                        pages_metadata.append({
+                            'page_number': page_num,
+                            'char_count': len(page_text),
+                            'bbox': page.bbox if hasattr(page, 'bbox') else None
+                        })
                     except Exception as page_error:
-                        logging.warning(f"Error extracting page {page_num} from {filename}: {page_error}")
-                        continue
+                        logging.warning(f"Error extracting page {page_num}: {page_error}")
+                        pages_text.append("")
+                        pages_metadata.append({'page_number': page_num, 'char_count': 0})
+                
+                full_text = '\n\n'.join(pages_text)
                 
                 return {
                     'success': True,
@@ -176,52 +594,43 @@ class EnhancedSectionExtractor:
                     'extracted_pages': len(pages_text),
                     'pages_text': pages_text,
                     'pages_metadata': pages_metadata,
-                    'full_text': '\n\n'.join(pages_text),
+                    'full_text': full_text,
                     'extraction_method': 'pdfplumber',
                     'file_hash': hashlib.md5(pdf_content).hexdigest()
                 }
                 
-        except Exception as pdfplumber_error:
-            logging.error(f"pdfplumber extraction failed for {filename}: {pdfplumber_error}")
-            # Fall back to PyMuPDF if available
+        except Exception as plumber_error:
+            logging.error(f"pdfplumber extraction failed for {filename}: {plumber_error}")
+            # Try PyMuPDF as fallback
             if PYMUPDF_AVAILABLE:
                 return self._extract_pages_with_pymupdf(pdf_content, filename)
             else:
-                raise pdfplumber_error
-    
+                return self._extract_with_fallback(pdf_content, filename)
+
     def _extract_pages_with_pymupdf(self, pdf_content: bytes, filename: str) -> Dict[str, Any]:
-        """Extract text using PyMuPDF (fallback method)"""
+        """Extract text using PyMuPDF as fallback"""
         try:
-            pdf_document = fitz.open(stream=pdf_content, filetype="pdf")
+            pdf_document = fitz.open("pdf", pdf_content)
             pages_text = []
             pages_metadata = []
             
             for page_num in range(pdf_document.page_count):
                 try:
                     page = pdf_document[page_num]
-                    
-                    # Extract text with layout hints
-                    text = page.get_text(sort=True)
-                    if text:
-                        pages_text.append(text)
-                        
-                        # Extract page metadata
-                        page_metadata = {
-                            'page_number': page_num + 1,
-                            'bbox': page.rect,
-                            'width': page.rect.width,
-                            'height': page.rect.height,
-                            'rotation': page.rotation,
-                            'char_count': len(text),
-                            'word_count': len(text.split())
-                        }
-                        pages_metadata.append(page_metadata)
-                    
+                    page_text = page.get_text()
+                    pages_text.append(page_text)
+                    pages_metadata.append({
+                        'page_number': page_num + 1,
+                        'char_count': len(page_text),
+                        'rect': page.rect
+                    })
                 except Exception as page_error:
-                    logging.warning(f"Error extracting page {page_num + 1} from {filename}: {page_error}")
-                    continue
+                    logging.warning(f"Error extracting page {page_num + 1}: {page_error}")
+                    pages_text.append("")
+                    pages_metadata.append({'page_number': page_num + 1, 'char_count': 0})
             
             pdf_document.close()
+            full_text = '\n\n'.join(pages_text)
             
             return {
                 'success': True,
@@ -230,26 +639,21 @@ class EnhancedSectionExtractor:
                 'extracted_pages': len(pages_text),
                 'pages_text': pages_text,
                 'pages_metadata': pages_metadata,
-                'full_text': '\n\n'.join(pages_text),
+                'full_text': full_text,
                 'extraction_method': 'pymupdf',
                 'file_hash': hashlib.md5(pdf_content).hexdigest()
             }
             
         except Exception as pymupdf_error:
             logging.error(f"PyMuPDF extraction failed for {filename}: {pymupdf_error}")
-            raise pymupdf_error
-    
+            return self._extract_with_fallback(pdf_content, filename)
+
     def _extract_with_fallback(self, pdf_content: bytes, filename: str) -> Dict[str, Any]:
-        """Fallback extraction method when no PDF libraries available"""
-        logging.warning(f"Using fallback extraction for {filename} - PDF libraries not available")
-        
-        # Try to extract some basic info
+        """Basic fallback extraction when PDF libraries fail"""
         try:
-            # Look for PDF text markers
-            content_str = pdf_content.decode('latin-1', errors='ignore')
-            
-            # Very basic text extraction from PDF streams
-            text_matches = re.findall(r'(?<=\n)\s*([A-Za-z].{10,})\s*(?=\n)', content_str)
+            # Try to extract basic text content
+            content_str = pdf_content.decode('utf-8', errors='ignore')
+            text_matches = re.findall(r'[A-Za-z].*?[.!?]', content_str)
             extracted_text = '\n'.join(text_matches[:100])  # Limit to prevent noise
             
             return {
@@ -273,7 +677,7 @@ class EnhancedSectionExtractor:
                 'filename': filename,
                 'extraction_method': 'fallback_failed'
             }
-    
+
     def _find_recommendation_response_sections(self, text: str) -> List[Dict[str, Any]]:
         """Find and extract recommendation/response sections from document text"""
         sections = []
@@ -301,507 +705,136 @@ class EnhancedSectionExtractor:
                         }
                         sections.append(section)
             
-            # If no clear sections found, try to extract based on content patterns
-            if not sections:
-                sections = self._extract_sections_by_content_patterns(text)
+            if self.debug_mode:
+                logging.info(f"Found {len(sections)} sections using pattern matching")
             
             return sections
             
         except Exception as section_error:
             logging.error(f"Error finding sections: {section_error}")
-            return sections
-    
+            return []
+
     def _find_section_starts(self, text: str) -> List[Tuple[str, int]]:
-        """Find the start positions of major sections in the document"""
+        """Find section start positions"""
         section_starts = []
         
-        try:
-            # Use government document patterns
-            for pattern in self.government_patterns['section_headers']:
-                matches = re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE)
-                for match in matches:
-                    header = match.group(0)
-                    position = match.start()
-                    section_starts.append((header, position))
-            
-            # Also look for table of contents patterns
-            toc_patterns = [
-                r'(?i)(?:^|\n)\s*(\d+\.?\d*)\s+([A-Z][^.\n]{10,})\s*\.{2,}\s*\d+',  # TOC with dots
-                r'(?i)(?:^|\n)\s*(\d+\.?\d*)\s+([A-Z][^.\n]{10,})\s*\d+',  # TOC without dots
-                r'(?i)(?:^|\n)\s*((?:Chapter|Section)\s+\d+[:\s]+[A-Z][^.\n]{5,})'  # Chapter/Section headers
-            ]
-            
-            for pattern in toc_patterns:
-                matches = re.finditer(pattern, text, re.MULTILINE)
-                for match in matches:
-                    if len(match.groups()) >= 2:
-                        header = f"{match.group(1)} {match.group(2)}"
-                    else:
-                        header = match.group(1)
-                    position = match.start()
-                    section_starts.append((header, position))
-            
-            # Sort by position and remove duplicates
-            section_starts = sorted(list(set(section_starts)), key=lambda x: x[1])
-            
-            if self.debug_mode:
-                logging.info(f"Found {len(section_starts)} section headers")
-            
-            return section_starts
-            
-        except Exception as start_error:
-            logging.error(f"Error finding section starts: {start_error}")
-            return []
-    
-    def _extract_sections_by_content_patterns(self, text: str) -> List[Dict[str, Any]]:
-        """Extract sections based on content patterns when headers aren't clear"""
-        sections = []
+        for pattern in self.government_patterns['section_headers']:
+            matches = re.finditer(pattern, text, re.MULTILINE)
+            for match in matches:
+                header = match.group(0)
+                position = match.start()
+                section_starts.append((header, position))
         
-        try:
-            # Look for recommendation blocks
-            rec_pattern = r'(?i)((?:recommendations?|we\s+recommend|it\s+is\s+recommended).*?)(?=(?:recommendations?|conclusions?|next\s+steps|$))'
-            rec_matches = re.finditer(rec_pattern, text, re.DOTALL | re.MULTILINE)
-            
-            for match in rec_matches:
-                content = match.group(1).strip()
-                if len(content) > 100:  # Minimum content length
-                    section = {
-                        'header': 'Recommendations (Content-based)',
-                        'content': content,
-                        'start_position': match.start(),
-                        'end_position': match.end(),
-                        'length': len(content),
-                        'word_count': len(content.split()),
-                        'section_type': 'recommendations',
-                        'confidence_score': 0.7,  # Lower confidence for content-based extraction
-                        'extraction_method': 'content_pattern'
-                    }
-                    sections.append(section)
-            
-            # Look for response blocks
-            resp_pattern = r'(?i)((?:government\s+)?response.*?)(?=(?:recommendations?|conclusions?|next\s+steps|$))'
-            resp_matches = re.finditer(resp_pattern, text, re.DOTALL | re.MULTILINE)
-            
-            for match in resp_matches:
-                content = match.group(1).strip()
-                if len(content) > 100:
-                    section = {
-                        'header': 'Government Response (Content-based)',
-                        'content': content,
-                        'start_position': match.start(),
-                        'end_position': match.end(),
-                        'length': len(content),
-                        'word_count': len(content.split()),
-                        'section_type': 'response',
-                        'confidence_score': 0.7,
-                        'extraction_method': 'content_pattern'
-                    }
-                    sections.append(section)
-            
-            return sections
-            
-        except Exception as pattern_error:
-            logging.error(f"Error extracting sections by content patterns: {pattern_error}")
-            return []
-    
+        # Sort by position
+        section_starts.sort(key=lambda x: x[1])
+        return section_starts
+
     def _classify_section_type(self, header: str) -> str:
-        """Classify the type of section based on header text"""
+        """Classify section type based on header"""
         header_lower = header.lower()
         
-        if any(word in header_lower for word in ['recommendation', 'recommend']):
-            return 'recommendations'
-        elif any(word in header_lower for word in ['response', 'government', 'cabinet']):
+        if any(word in header_lower for word in ['recommendation', 'finding']):
+            return 'recommendation'
+        elif any(word in header_lower for word in ['response', 'government', 'implementation']):
             return 'response'
-        elif any(word in header_lower for word in ['finding', 'conclusion']):
-            return 'findings'
-        elif any(word in header_lower for word in ['executive', 'summary']):
+        elif any(word in header_lower for word in ['summary', 'conclusion']):
             return 'summary'
-        elif any(word in header_lower for word in ['implementation', 'action']):
-            return 'implementation'
         else:
             return 'other'
-    
+
     def _calculate_section_confidence(self, header: str, content: str) -> float:
-        """Calculate confidence score for section extraction"""
-        confidence = 0.5  # Base confidence
+        """Calculate confidence score for section"""
+        confidence = 0.5
         
-        # Header quality indicators
-        header_lower = header.lower()
-        if any(word in header_lower for word in ['recommendation', 'response', 'government']):
-            confidence += 0.2
+        # Header-based confidence
+        if any(word in header.lower() for word in ['recommendation', 'response']):
+            confidence += 0.3
         
-        # Content quality indicators
-        content_lower = content.lower()
-        if any(word in content_lower for word in ['should', 'must', 'recommend', 'ensure']):
-            confidence += 0.1
-        
-        # Length indicators
+        # Content-based confidence
         if len(content) > 500:
             confidence += 0.1
         if len(content) > 1000:
             confidence += 0.1
         
-        # Structure indicators
-        if re.search(r'\d+\.', content):  # Numbered points
-            confidence += 0.1
-        
         return min(confidence, 1.0)
-    
-    def _analyze_government_document_structure(self, text: str) -> Dict[str, Any]:
-        """Analyze the structure of a government document"""
-        analysis = {
-            'document_type': 'unknown',
-            'has_table_of_contents': False,
-            'has_numbered_sections': False,
-            'has_recommendations': False,
-            'has_responses': False,
-            'estimated_page_count': 1,
-            'content_sections': [],
-            'inquiry_type': None
+
+    def get_extraction_statistics(self) -> Dict[str, Any]:
+        """Get extraction statistics"""
+        return {
+            'documents_processed': self.extraction_stats['documents_processed'],
+            'sections_extracted': self.extraction_stats['sections_extracted'],
+            'recommendations_found': self.extraction_stats['recommendations_found'],
+            'responses_found': self.extraction_stats['responses_found'],
+            'last_extraction_time': self.extraction_stats['last_extraction_time'],
+            'total_processing_time': self.extraction_stats['total_processing_time']
         }
-        
-        try:
-            text_lower = text.lower()
-            
-            # Detect document type
-            if re.search(r'(?i)government\s+response', text):
-                analysis['document_type'] = 'government_response'
-            elif re.search(r'(?i)inquiry\s+report', text):
-                analysis['document_type'] = 'inquiry_report'
-            elif re.search(r'(?i)(?:interim|progress)\s+report', text):
-                analysis['document_type'] = 'interim_report'
-            
-            # Detect inquiry type (universal patterns)
-            for pattern in self.government_patterns['inquiry_types']:
-                match = re.search(pattern, text)
-                if match:
-                    inquiry_name = match.group(1).strip()
-                    # Clean up common prefixes
-                    inquiry_name = re.sub(r'(?i)^(?:the\s+|public\s+|independent\s+)', '', inquiry_name)
-                    analysis['inquiry_type'] = inquiry_name
-                    break
-            
-            # Check for table of contents
-            toc_indicators = [
-                r'(?i)(?:table\s+of\s+)?contents',
-                r'(?i)\d+\.\d+\s+[A-Z]',
-                r'(?i)list\s+of\s+(?:chapters|sections)'
-            ]
-            
-            for pattern in toc_indicators:
-                if re.search(pattern, text):
-                    analysis['has_table_of_contents'] = True
-                    break
-            
-            # Check for numbered sections
-            numbered_sections = len(re.findall(r'(?:^|\n)\s*\d+\.\d+\s+[A-Z]', text))
-            if numbered_sections >= 3:
-                analysis['has_numbered_sections'] = True
-            
-            # Check for recommendations
-            rec_count = len(re.findall(r'(?i)\brecommendation\b', text))
-            if rec_count >= 3:
-                analysis['has_recommendations'] = True
-            
-            # Check for responses
-            resp_count = len(re.findall(r'(?i)\bresponse\b', text))
-            if resp_count >= 3:
-                analysis['has_responses'] = True
-            
-            # Estimate page count (rough approximation)
-            char_count = len(text)
-            analysis['estimated_page_count'] = max(1, char_count // 2000)  # ~2000 chars per page
-            
-            return analysis
-            
-        except Exception as analysis_error:
-            logging.error(f"Error analyzing document structure: {analysis_error}")
-            return analysis
-    
-    def extract_individual_recommendations(self, text: str) -> List[Dict[str, Any]]:
-        """Extract individual numbered recommendations from text"""
-        recommendations = []
-        
-        try:
-            # Try different recommendation patterns
-            for pattern in self.government_patterns['recommendation_patterns']:
-                matches = re.finditer(pattern, text, re.DOTALL | re.MULTILINE)
-                
-                for match in matches:
-                    if len(match.groups()) >= 2:
-                        number = match.group(1)
-                        content = match.group(2).strip()
-                    else:
-                        number = str(len(recommendations) + 1)
-                        content = match.group(1).strip()
-                    
-                    if content and len(content) > 20:  # Minimum content length
-                        recommendation = {
-                            'number': number,
-                            'text': content,
-                            'start_position': match.start(),
-                            'end_position': match.end(),
-                            'length': len(content),
-                            'word_count': len(content.split()),
-                            'confidence_score': self._calculate_item_confidence(content, 'recommendation')
-                        }
-                        recommendations.append(recommendation)
-            
-            # Remove duplicates and sort by number
-            recommendations = self._deduplicate_items(recommendations, 'number')
-            recommendations.sort(key=lambda x: int(x['number']) if x['number'].isdigit() else 999)
-            
-            if self.debug_mode:
-                logging.info(f"Extracted {len(recommendations)} individual recommendations")
-            
-            return recommendations
-            
-        except Exception as rec_error:
-            logging.error(f"Error extracting individual recommendations: {rec_error}")
-            return []
-    
-    def extract_individual_responses(self, text: str) -> List[Dict[str, Any]]:
-        """Extract individual government responses from text"""
-        responses = []
-        
-        try:
-            # Try different response patterns
-            for pattern in self.government_patterns['response_patterns']:
-                matches = re.finditer(pattern, text, re.DOTALL | re.MULTILINE)
-                
-                for match in matches:
-                    if len(match.groups()) >= 2 and match.group(1):
-                        number = match.group(1)
-                        content = match.group(2).strip()
-                    else:
-                        number = str(len(responses) + 1)
-                        content = match.group(1).strip() if match.group(1) else match.group(0).strip()
-                    
-                    if content and len(content) > 20:
-                        response = {
-                            'number': number,
-                            'text': content,
-                            'start_position': match.start(),
-                            'end_position': match.end(),
-                            'length': len(content),
-                            'word_count': len(content.split()),
-                            'response_type': self._classify_response_type(content),
-                            'confidence_score': self._calculate_item_confidence(content, 'response')
-                        }
-                        responses.append(response)
-            
-            # Remove duplicates and sort by number
-            responses = self._deduplicate_items(responses, 'number')
-            responses.sort(key=lambda x: int(x['number']) if x['number'].isdigit() else 999)
-            
-            if self.debug_mode:
-                logging.info(f"Extracted {len(responses)} individual responses")
-            
-            return responses
-            
-        except Exception as resp_error:
-            logging.error(f"Error extracting individual responses: {resp_error}")
-            return []
-    
-    def _classify_response_type(self, response_text: str) -> str:
-        """Classify the type of government response"""
-        text_lower = response_text.lower()
-        
-        if any(word in text_lower for word in ['accept', 'agree', 'implement', 'will']):
-            return 'accepted'
-        elif any(word in text_lower for word in ['reject', 'disagree', 'decline', 'cannot']):
-            return 'rejected'
-        elif any(word in text_lower for word in ['partially', 'in part', 'some aspects']):
-            return 'partially_accepted'
-        elif any(word in text_lower for word in ['consider', 'review', 'examine']):
-            return 'under_consideration'
-        else:
-            return 'unclear'
-    
-    def _calculate_item_confidence(self, content: str, item_type: str) -> float:
-        """Calculate confidence score for individual items"""
-        confidence = 0.5  # Base confidence
-        
-        # Length bonus
-        if len(content) > 100:
-            confidence += 0.1
-        if len(content) > 300:
-            confidence += 0.1
-        
-        # Content quality for recommendations
-        if item_type == 'recommendation':
-            if any(word in content.lower() for word in ['should', 'must', 'recommend', 'ensure']):
-                confidence += 0.2
-        
-        # Content quality for responses
-        elif item_type == 'response':
-            if any(word in content.lower() for word in ['accept', 'reject', 'implement', 'government']):
-                confidence += 0.2
-        
-        # Structure indicators
-        if re.search(r'[.!?]', content):  # Has proper punctuation
-            confidence += 0.1
-        
-        return min(confidence, 1.0)
-    
-    def _deduplicate_items(self, items: List[Dict[str, Any]], key_field: str) -> List[Dict[str, Any]]:
-        """Remove duplicate items based on key field"""
-        seen_keys = set()
-        deduplicated = []
-        
-        for item in items:
-            key = item.get(key_field, '')
-            if key not in seen_keys:
-                seen_keys.add(key)
-                deduplicated.append(item)
-        
-        return deduplicated
-    
-    def validate_sections(self, sections: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Validate extracted sections and return quality metrics"""
-        validation = {
-            'is_valid': True,
-            'section_count': len(sections),
-            'total_content_length': 0,
-            'average_confidence': 0.0,
-            'issues': [],
-            'warnings': []
-        }
-        
-        try:
-            if not sections:
-                validation['is_valid'] = False
-                validation['issues'].append("No sections extracted")
-                return validation
-            
-            # Calculate metrics
-            total_length = sum(section.get('length', 0) for section in sections)
-            total_confidence = sum(section.get('confidence_score', 0) for section in sections)
-            
-            validation['total_content_length'] = total_length
-            validation['average_confidence'] = total_confidence / len(sections) if sections else 0
-            
-            # Check for issues
-            for i, section in enumerate(sections):
-                if section.get('length', 0) < 50:
-                    validation['warnings'].append(f"Section {i+1} is very short ({section.get('length', 0)} chars)")
-                
-                if section.get('confidence_score', 0) < 0.5:
-                    validation['warnings'].append(f"Section {i+1} has low confidence ({section.get('confidence_score', 0):.2f})")
-            
-            # Overall quality check
-            if validation['average_confidence'] < 0.6:
-                validation['warnings'].append(f"Overall extraction confidence is low ({validation['average_confidence']:.2f})")
-            
-            return validation
-            
-        except Exception as validation_error:
-            logging.error(f"Error validating sections: {validation_error}")
-            validation['is_valid'] = False
-            validation['issues'].append(f"Validation error: {validation_error}")
-            return validation
-    
+
     def compare_inquiry_and_response_documents(self, inquiry_text: str, response_text: str) -> Dict[str, Any]:
-        """Compare inquiry and response documents to find matches"""
-        comparison = {
-            'inquiry_recommendations': [],
-            'response_items': [],
-            'matched_pairs': [],
-            'unmatched_recommendations': [],
-            'unmatched_responses': [],
-            'match_confidence': 0.0
-        }
-        
+        """Compare inquiry recommendations with government responses"""
         try:
-            # Extract recommendations from inquiry
             inquiry_recs = self.extract_individual_recommendations(inquiry_text)
             response_items = self.extract_individual_responses(response_text)
             
-            comparison['inquiry_recommendations'] = inquiry_recs
-            comparison['response_items'] = response_items
-            
-            # Match recommendations to responses by number
             matched_pairs = []
-            unmatched_recs = []
-            unmatched_resps = list(response_items)  # Start with all responses
+            unmatched_recommendations = inquiry_recs[:]
+            unmatched_responses = response_items[:]
             
+            # Try to match recommendations to responses
             for rec in inquiry_recs:
-                rec_number = rec.get('number', '')
-                matched = False
-                
-                # Look for corresponding response
+                rec_num = rec.get('number', '')
                 for resp in response_items:
-                    resp_number = resp.get('number', '')
-                    if rec_number == resp_number:
+                    resp_num = resp.get('number', '')
+                    if rec_num == resp_num:
                         matched_pairs.append({
                             'recommendation': rec,
                             'response': resp,
-                            'match_type': 'exact_number',
-                            'confidence': 0.9
+                            'match_confidence': 1.0
                         })
-                        if resp in unmatched_resps:
-                            unmatched_resps.remove(resp)
-                        matched = True
+                        if rec in unmatched_recommendations:
+                            unmatched_recommendations.remove(rec)
+                        if resp in unmatched_responses:
+                            unmatched_responses.remove(resp)
                         break
-                
-                if not matched:
-                    unmatched_recs.append(rec)
             
-            comparison['matched_pairs'] = matched_pairs
-            comparison['unmatched_recommendations'] = unmatched_recs
-            comparison['unmatched_responses'] = unmatched_resps
+            return {
+                'matched_pairs': matched_pairs,
+                'unmatched_recommendations': unmatched_recommendations,
+                'unmatched_responses': unmatched_responses,
+                'match_statistics': {
+                    'total_recommendations': len(inquiry_recs),
+                    'total_responses': len(response_items),
+                    'matched_pairs': len(matched_pairs),
+                    'match_rate': len(matched_pairs) / max(len(inquiry_recs), 1)
+                }
+            }
             
-            # Calculate overall match confidence
-            if inquiry_recs:
-                match_rate = len(matched_pairs) / len(inquiry_recs)
-                comparison['match_confidence'] = match_rate
-            
-            if self.debug_mode:
-                logging.info(f"Matched {len(matched_pairs)}/{len(inquiry_recs)} recommendations to responses")
-            
-            return comparison
-            
-        except Exception as comparison_error:
-            logging.error(f"Error comparing documents: {comparison_error}")
-            return comparison
-    
-    def get_extraction_statistics(self) -> Dict[str, Any]:
-        """Get current extraction statistics"""
-        return {
-            **self.extraction_stats,
-            'success_rate': (self.extraction_stats['documents_processed'] - self.extraction_stats['errors_encountered']) / max(1, self.extraction_stats['documents_processed']),
-            'average_sections_per_document': self.extraction_stats['sections_extracted'] / max(1, self.extraction_stats['documents_processed']),
-            'average_recommendations_per_document': self.extraction_stats['recommendations_found'] / max(1, self.extraction_stats['documents_processed'])
-        }
+        except Exception as compare_error:
+            logging.error(f"Error comparing documents: {compare_error}")
+            return {
+                'matched_pairs': [],
+                'unmatched_recommendations': [],
+                'unmatched_responses': [],
+                'error': str(compare_error)
+            }
+
 
 # ===============================================
-# STANDALONE UTILITY FUNCTIONS
+# STANDALONE FUNCTIONS
 # ===============================================
 
-def extract_sections_from_pdf(pdf_content: bytes, filename: str = "document.pdf", debug: bool = False) -> Dict[str, Any]:
-    """
-    Standalone function to extract sections from PDF content
-    
-    Args:
-        pdf_content: PDF file content as bytes
-        filename: Original filename for reference
-        debug: Enable debug logging
-        
-    Returns:
-        Dictionary containing extracted sections and metadata
-    """
-    extractor = EnhancedSectionExtractor(debug_mode=debug)
+def extract_sections_from_pdf(pdf_content: bytes, filename: str = "document.pdf") -> Dict[str, Any]:
+    """Standalone function for PDF section extraction"""
+    extractor = EnhancedSectionExtractor()
     return extractor.extract_sections_from_pdf(pdf_content, filename)
 
 def get_section_summary(sections: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Get a summary of extracted sections"""
+    """Get summary statistics for extracted sections"""
     if not sections:
-        return {'total_sections': 0, 'total_length': 0, 'section_types': {}}
+        return {'total_sections': 0}
     
     summary = {
         'total_sections': len(sections),
         'total_length': sum(section.get('length', 0) for section in sections),
-        'total_words': sum(section.get('word_count', 0) for section in sections),
         'average_confidence': sum(section.get('confidence_score', 0) for section in sections) / len(sections),
         'section_types': {}
     }
@@ -841,45 +874,6 @@ def extract_government_responses(text: str) -> List[Dict[str, Any]]:
     """Extract individual responses from government document text"""
     extractor = EnhancedSectionExtractor()
     return extractor.extract_individual_responses(text)
-
-# ===============================================
-# TESTING AND DEBUGGING FUNCTIONS
-# ===============================================
-
-def test_extraction(pdf_path: str = None, pdf_content: bytes = None) -> Dict[str, Any]:
-    """Test the extraction functionality"""
-    if pdf_path and Path(pdf_path).exists():
-        with open(pdf_path, 'rb') as f:
-            pdf_content = f.read()
-        filename = Path(pdf_path).name
-    elif pdf_content:
-        filename = "test_document.pdf"
-    else:
-        return {'error': 'No PDF provided for testing'}
-    
-    try:
-        extractor = EnhancedSectionExtractor(debug_mode=True)
-        result = extractor.extract_sections_from_pdf(pdf_content, filename)
-        
-        # Add test summary
-        test_summary = {
-            'test_passed': result.get('success', False),
-            'sections_found': len(result.get('sections', [])),
-            'recommendations_found': len(result.get('individual_recommendations', [])),
-            'responses_found': len(result.get('individual_responses', [])),
-            'extraction_method': result.get('extraction_method', 'unknown'),
-            'document_analysis': result.get('document_analysis', {}),
-            'statistics': extractor.get_extraction_statistics()
-        }
-        
-        result['test_summary'] = test_summary
-        return result
-        
-    except Exception as test_error:
-        return {
-            'error': str(test_error),
-            'test_passed': False
-        }
 
 def debug_section_detection(text: str, max_length: int = 2000) -> Dict[str, Any]:
     """Debug section detection by showing step-by-step process"""
@@ -952,6 +946,44 @@ def test_individual_extraction(text: str) -> Dict[str, Any]:
             'recommendations': [],
             'responses': []
         }
+
+def test_extraction(pdf_path: str = None, pdf_content: bytes = None) -> Dict[str, Any]:
+    """Test the extraction functionality"""
+    from pathlib import Path
+    
+    if pdf_path and Path(pdf_path).exists():
+        with open(pdf_path, 'rb') as f:
+            pdf_content = f.read()
+        filename = Path(pdf_path).name
+    elif pdf_content:
+        filename = "test_document.pdf"
+    else:
+        return {'error': 'No PDF provided for testing'}
+    
+    try:
+        extractor = EnhancedSectionExtractor(debug_mode=True)
+        result = extractor.extract_sections_from_pdf(pdf_content, filename)
+        
+        # Add test summary
+        test_summary = {
+            'test_passed': result.get('success', False),
+            'sections_found': len(result.get('sections', [])),
+            'recommendations_found': len(result.get('individual_recommendations', [])),
+            'responses_found': len(result.get('individual_responses', [])),
+            'extraction_method': result.get('extraction_method', 'unknown'),
+            'document_analysis': result.get('document_analysis', {}),
+            'statistics': extractor.get_extraction_statistics()
+        }
+        
+        result['test_summary'] = test_summary
+        return result
+        
+    except Exception as test_error:
+        return {
+            'error': str(test_error),
+            'test_passed': False
+        }
+
 
 # ===============================================
 # MODULE EXPORTS
