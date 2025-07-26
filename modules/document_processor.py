@@ -1,14 +1,19 @@
-# ===============================================
-# UPDATED DOCUMENT PROCESSOR - INFECTED BLOOD INQUIRY OPTIMIZED
 # modules/document_processor.py
-# ===============================================
+# COMPLETE ENHANCED FILE - 900MB Document Support with Government Response Optimization
 
 import logging
 import re
+import io
+import gc
+import sys
+import traceback
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Iterator
 import hashlib
+import tempfile
+import mmap
+from contextlib import contextmanager
 
 # PDF processing imports with fallback
 try:
@@ -25,517 +30,570 @@ except ImportError:
     PYMUPDF_AVAILABLE = False
     logging.warning("PyMuPDF not available")
 
-class DocumentProcessor:
+try:
+    import streamlit as st
+    STREAMLIT_AVAILABLE = True
+except ImportError:
+    STREAMLIT_AVAILABLE = False
+
+class LargeDocumentProcessor:
     """
-    Enhanced document processor specifically optimized for Infected Blood Inquiry documents.
+    Enhanced document processor for very large files (up to 900MB)
+    Optimized for UK Government Response documents with memory-efficient processing
     """
     
-    def __init__(self, debug_mode: bool = False):
-        """Initialize the document processor"""
+    def __init__(self, debug_mode: bool = False, max_memory_mb: int = 2048):
+        """Initialize the large document processor"""
         self.debug_mode = debug_mode
+        self.max_memory_mb = max_memory_mb
         self.logger = logging.getLogger(__name__)
+        
+        # Memory management settings
+        self.chunk_size_mb = min(50, max_memory_mb // 4)  # Process in 50MB chunks max
+        self.page_batch_size = 10  # Process 10 pages at a time
         
         # Processing statistics
         self.processing_stats = {
             'documents_processed': 0,
             'total_pages_processed': 0,
             'extraction_errors': 0,
-            'average_processing_time': 0.0
+            'total_processing_time': 0.0,
+            'memory_peak_mb': 0.0
         }
         
-        # Initialize patterns specifically for Infected Blood Inquiry
-        self._initialize_infected_blood_patterns()
+        # Initialize patterns for Government Response documents
+        self._initialize_government_response_patterns()
         
-        self.logger.info("DocumentProcessor initialized for Infected Blood Inquiry extraction")
+        self.logger.info(f"LargeDocumentProcessor initialized - Max memory: {max_memory_mb}MB")
 
-    def _initialize_infected_blood_patterns(self):
-        """Initialize patterns specifically for Infected Blood Inquiry documents"""
+    def _initialize_government_response_patterns(self):
+        """Initialize patterns specifically for Government Response documents"""
         
-        # Patterns for narrative/historical style recommendations
-        self.narrative_recommendation_patterns = [
-            # "it was agreed that..." patterns
-            r'(?i)it\s+was\s+agreed\s+that\s+(?:officials?\s+)?(?:would\s+)?([^.!?]{20,200})[.!?]',
+        # Recommendation patterns from actual Government Response documents
+        self.recommendation_patterns = [
+            # Numbered recommendations: "Recommendation 6a) iii)"
+            r'(?i)(Recommendation\s+\d+[a-z]*(?:\s*[)\]])*(?:\s*[iv]+)*)\s*[:\.)]\s*([^.!?]*(?:[.!?]|(?=Recommendation)|$))',
             
-            # "option favoured" patterns  
-            r'(?i)(?:the\s+)?option\s+(?:favoured|preferred|recommended)\s+(?:by\s+[^.!?]{1,50}\s+)?(?:was\s+)?([^.!?]{20,200})[.!?]',
+            # Sub-recommendations with complex numbering
+            r'(?i)Recommendation\s+(\d+[a-z]*\s*\)\s*[iv]+\s*\))\s*([^.!?]*(?:[.!?]|(?=Recommendation)|$))',
             
-            # "officials recommended" patterns
-            r'(?i)officials?\s+(?:thought\s+that\s+[^.!?]{1,100}\s+and\s+)?recommended\s+([^.!?]{20,200})[.!?]',
+            # Progress/review recommendations
+            r'(?i)(Progress\s+(?:in\s+)?implementation|Review\s+of\s+progress)\s+(?:towards\s+|of\s+)?([^.!?]{20,400}[.!?])',
             
-            # General agreement/recommendation patterns
-            r'(?i)(?:officials?\s+|ministers?\s+|government\s+)?(?:agreed|recommended|suggested|proposed)\s+(?:that\s+)?([^.!?]{20,200})[.!?]',
+            # Framework/system establishment
+            r'(?i)(?:framework|system|process|mechanism)\s+(?:should|must|be)\s+(?:established|created|implemented)\s+([^.!?]{20,400}[.!?])',
             
-            # Seeking agreement patterns
-            r'(?i)seeking\s+agreement\s+(?:to\s+)?(?:officials?\s+)?([^.!?]{20,200})[.!?]',
+            # Training and education requirements
+            r'(?i)(?:training|education|guidance)\s+(?:should|must)\s+be\s+(?:provided|delivered|enhanced)\s+([^.!?]{20,400}[.!?])',
             
-            # Minute/memo patterns
-            r'(?i)(?:draft\s+)?minute\s+(?:for\s+[^.!?]{1,50}\s+)?(?:to\s+)?(?:send\s+to\s+[^.!?]{1,50}\s+)?seeking\s+([^.!?]{20,200})[.!?]'
+            # Action requirements
+            r'(?i)(?:action|steps|measures)\s+(?:should|must)\s+be\s+taken\s+([^.!?]{20,400}[.!?])',
         ]
         
-        # Patterns for narrative/historical style responses
-        self.narrative_response_patterns = [
-            # Direct response patterns
-            r'(?i)(?:John\s+Moore|Moore)\s+(?:was\s+)?(?:unconvinced|responded|replied|stated|wrote|said)(?:\s+that)?(?:\s+he\s+felt)?(?:\s+that)?\s+([^.!?]{20,200})[.!?]',
+        # Response patterns from actual Government Response documents
+        self.response_patterns = [
+            # Core acceptance patterns - most important
+            r'(?i)(?:This\s+recommendation|Recommendation\s+\d+[a-z]*(?:\s*[)\]])*(?:\s*[iv]+)*)\s+is\s+(accepted\s+in\s+(?:full|principle)|not\s+accepted|partially\s+accepted|rejected)\s*(?:by\s+(?:the\s+)?(?:UK\s+Government|Scottish\s+Government|Welsh\s+Government|Northern\s+Ireland\s+Executive|Government))?\.?\s*([^.!?]*(?:[.!?]|(?=Recommendation)|$))',
             
-            # Written response patterns
-            r'(?i)(?:he\s+)?wrote\s+(?:to\s+[^.!?]{1,50}\s+)?(?:on\s+[^.!?]{1,20}\s+)?(?:that\s+)?([^.!?]{20,200})[.!?]',
+            # "Accepting in principle" patterns
+            r'(?i)(Accepting\s+in\s+principle)\s*([^.!?]*(?:[.!?]|(?=Recommendation)|$))',
             
-            # Response/responding patterns
-            r'(?i)responding\s+that\s+([^.!?]{20,200})[.!?]',
+            # Implementation will begin patterns
+            r'(?i)(Implementation\s+will\s+begin|Implementation\s+is\s+underway|Work\s+is\s+ongoing)\s*([^.!?]{20,500}[.!?])',
             
-            # Position/view patterns
-            r'(?i)(?:remained\s+firm\s+in\s+his\s+view\s+that|his\s+position\s+was\s+that|his\s+view\s+that)\s+([^.!?]{20,200})[.!?]',
+            # Government will establish patterns
+            r'(?i)(?:The\s+(?:UK\s+)?Government|We|The\s+(?:Department|Ministry))\s+will\s+(establish|implement|develop|create)\s+([^.!?]{20,500}[.!?])',
             
-            # Advocated/recommended response patterns
-            r'(?i)(?:John\s+Major|Major)\s+(?:who\s+was\s+[^.!?]{1,50}\s+)?advocated\s+([^.!?]{20,200})[.!?]',
+            # Cross-nation acceptance patterns
+            r'(?i)(?:UK\s+Government|Scottish\s+Government|Welsh\s+Government|Northern\s+Ireland\s+Executive)\s+(?:accepts?|agrees?|will)\s+([^.!?]{20,500}[.!?])',
             
-            # General response patterns
-            r'(?i)(?:government\s+|minister\s+|secretary\s+)?(?:response|reply)\s+(?:was\s+)?(?:that\s+)?([^.!?]{20,200})[.!?]'
-        ]
-        
-        # Quote extraction patterns for direct statements
-        self.quote_patterns = [
-            # Direct quotes - these often contain key responses
-            r'(?i)"([^"]{50,500})"',
+            # Parts of these recommendations pattern
+            r'(?i)(?:These\s+recommendations|Parts\s+of\s+these\s+recommendations)\s+are\s+(?:accepted|being\s+taken\s+forward)\s*([^.!?]{20,500}[.!?])',
             
-            # Attributed quotes
-            r'(?i)(?:he\s+|she\s+|they\s+)?(?:wrote|said|stated|declared):\s*"([^"]{50,500})"',
+            # Review and assessment patterns
+            r'(?i)(?:review|assessment|evaluation)\s+(?:has\s+been|is\s+being|will\s+be)\s+(?:conducted|undertaken|scheduled)\s*([^.!?]{20,500}[.!?])',
             
-            # Quote with attribution
-            r'(?i)"([^"]{50,500})"\s*(?:wrote|said|stated)\s+[A-Z][a-z]+\s+[A-Z][a-z]+'
-        ]
-        
-        # Meeting/decision patterns
-        self.decision_patterns = [
-            # Meeting decisions
-            r'(?i)following\s+(?:a\s+)?meeting\s+(?:between\s+[^.!?]{1,100}\s+)?(?:it\s+was\s+agreed\s+that\s+)?([^.!?]{20,200})[.!?]',
+            # Funding and resource commitments
+            r'(?i)(?:funding|resources?|investment)\s+(?:will\s+be|has\s+been)\s+(?:provided|allocated|committed)\s*([^.!?]{20,500}[.!?])',
             
-            # Background context that might contain recommendations
-            r'(?i)it\s+was\s+against\s+this\s+background\s+(?:that\s+)?([^.!?]{20,200})[.!?]',
+            # Timeline commitments
+            r'(?i)(?:within\s+\d+\s+(?:months?|years?)|by\s+\d+|during\s+the\s+(?:first|next))\s+([^.!?]{20,500}[.!?])',
             
-            # Campaign/pressure patterns
-            r'(?i)(?:campaign|pressure|lobby)\s+(?:for\s+|to\s+)?([^.!?]{20,200})[.!?]'
+            # Quality and safety responses
+            r'(?i)(?:quality\s+and\s+safety|patient\s+safety|safety\s+management)\s+(?:system|framework|approach)\s*([^.!?]{20,500}[.!?])',
         ]
 
-    def extract_text_from_pdf(self, pdf_path: str, extract_sections_only: bool = True) -> Optional[Dict[str, Any]]:
+    @contextmanager
+    def memory_monitor(self, operation_name: str):
+        """Monitor memory usage during operations"""
+        import psutil
+        import os
+        
+        process = psutil.Process(os.getpid())
+        start_memory = process.memory_info().rss / 1024 / 1024  # MB
+        
+        try:
+            yield
+        finally:
+            end_memory = process.memory_info().rss / 1024 / 1024  # MB
+            peak_memory = max(start_memory, end_memory)
+            
+            self.processing_stats['memory_peak_mb'] = max(
+                self.processing_stats['memory_peak_mb'], 
+                peak_memory
+            )
+            
+            if self.debug_mode:
+                self.logger.info(f"Memory usage for {operation_name}: {start_memory:.1f}MB -> {end_memory:.1f}MB")
+
+    def process_large_pdf(self, file_path_or_bytes, filename: str = None) -> Dict[str, Any]:
         """
-        Main extraction function optimized for Infected Blood Inquiry documents.
+        Process large PDF files (up to 900MB) with memory optimization
+        
+        Args:
+            file_path_or_bytes: File path string or bytes object
+            filename: Optional filename for metadata
+            
+        Returns:
+            Dict with extracted content and metadata
         """
         start_time = datetime.now()
         
         try:
-            self.logger.info(f"Starting Infected Blood Inquiry extraction for: {pdf_path}")
+            with self.memory_monitor("large_pdf_processing"):
+                # Determine if input is file path or bytes
+                if isinstance(file_path_or_bytes, (str, Path)):
+                    file_path = Path(file_path_or_bytes)
+                    file_size = file_path.stat().st_size
+                    filename = filename or file_path.name
+                    
+                    # Memory-mapped file reading for very large files
+                    result = self._process_pdf_file_path(file_path)
+                    
+                else:
+                    # Bytes input (from Streamlit uploads)
+                    file_size = len(file_path_or_bytes)
+                    filename = filename or "uploaded_document.pdf"
+                    
+                    # Save to temporary file for memory-mapped processing
+                    result = self._process_pdf_bytes(file_path_or_bytes, filename)
+                
+                # Add metadata
+                result.update({
+                    'filename': filename,
+                    'file_size_mb': round(file_size / 1024 / 1024, 2),
+                    'processing_time_seconds': (datetime.now() - start_time).total_seconds(),
+                    'processed_at': datetime.now().isoformat(),
+                    'processor_version': 'large_document_v2.0',
+                    'memory_optimized': True
+                })
+                
+                self.processing_stats['documents_processed'] += 1
+                self.processing_stats['total_processing_time'] += result['processing_time_seconds']
+                
+                return result
+                
+        except Exception as e:
+            self.logger.error(f"Error processing large PDF {filename}: {e}")
+            self.processing_stats['extraction_errors'] += 1
             
-            # Step 1: Extract basic text from all pages
-            text_result = self._extract_basic_text(pdf_path)
-            if not text_result:
-                self.logger.error(f"Failed to extract basic text from {pdf_path}")
-                return self._create_error_result(pdf_path, "Failed to extract basic text")
+            return {
+                'filename': filename or 'unknown',
+                'error': str(e),
+                'processing_status': 'error',
+                'processed_at': datetime.now().isoformat()
+            }
+
+    def _process_pdf_file_path(self, file_path: Path) -> Dict[str, Any]:
+        """Process PDF from file path using memory mapping"""
+        
+        if PYMUPDF_AVAILABLE:
+            return self._process_with_pymupdf_mmap(file_path)
+        elif PDFPLUMBER_AVAILABLE:
+            return self._process_with_pdfplumber_chunked(file_path)
+        else:
+            raise ImportError("No PDF processing library available")
+
+    def _process_pdf_bytes(self, pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
+        """Process PDF from bytes using temporary file"""
+        
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+            try:
+                # Write bytes to temporary file in chunks
+                chunk_size = 8192
+                for i in range(0, len(pdf_bytes), chunk_size):
+                    chunk = pdf_bytes[i:i + chunk_size]
+                    temp_file.write(chunk)
+                
+                temp_file.flush()
+                temp_path = Path(temp_file.name)
+                
+                # Process the temporary file
+                result = self._process_pdf_file_path(temp_path)
+                
+                return result
+                
+            finally:
+                # Clean up temporary file
+                try:
+                    temp_path.unlink()
+                except:
+                    pass
+
+    def _process_with_pymupdf_mmap(self, file_path: Path) -> Dict[str, Any]:
+        """Process PDF using PyMuPDF with memory mapping for large files"""
+        
+        full_text = []
+        total_pages = 0
+        processing_errors = []
+        
+        try:
+            # Open document with memory mapping
+            doc = fitz.open(str(file_path))
+            total_pages = doc.page_count
             
-            full_text = text_result['text']
-            pages_data = text_result['pages']
+            self.logger.info(f"Processing {total_pages} pages with PyMuPDF (memory mapped)")
             
-            # Step 2: Extract narrative recommendations and responses
-            recommendations = self._extract_narrative_recommendations(full_text)
-            responses = self._extract_narrative_responses(full_text)
+            # Process pages in batches to manage memory
+            for page_start in range(0, total_pages, self.page_batch_size):
+                page_end = min(page_start + self.page_batch_size, total_pages)
+                
+                try:
+                    batch_text = self._process_page_batch_pymupdf(doc, page_start, page_end)
+                    full_text.extend(batch_text)
+                    
+                    # Update progress if Streamlit is available
+                    if STREAMLIT_AVAILABLE and hasattr(st, 'session_state'):
+                        progress = page_end / total_pages
+                        if 'pdf_progress_bar' in st.session_state:
+                            st.session_state.pdf_progress_bar.progress(progress)
+                    
+                    # Force garbage collection every batch
+                    if page_start % (self.page_batch_size * 4) == 0:
+                        gc.collect()
+                        
+                except Exception as e:
+                    error_msg = f"Error processing pages {page_start}-{page_end}: {e}"
+                    self.logger.warning(error_msg)
+                    processing_errors.append(error_msg)
             
-            # Step 3: Extract quotes (often contain key content)
-            quote_content = self._extract_quotes(full_text)
+            doc.close()
             
-            # Step 4: Extract metadata
-            metadata = self._extract_metadata_with_pymupdf(pdf_path) if PYMUPDF_AVAILABLE else {}
+            # Combine all text
+            combined_text = '\n\n'.join(full_text)
             
-            # Step 5: Analyze document structure
-            document_analysis = self._analyze_infected_blood_document(full_text)
+            # Extract recommendations and responses using government patterns
+            extraction_results = self._extract_government_content(combined_text)
             
-            # Step 6: Create comprehensive result
-            processing_time = (datetime.now() - start_time).total_seconds()
-            
-            result = {
-                'filename': Path(pdf_path).name,
-                'text': full_text,
-                'content': full_text,  # Alias for compatibility
-                'sections': [],  # Will be populated by section analysis
-                'recommendations': recommendations,
-                'responses': responses,
-                'quotes': quote_content,
-                'metadata': {
-                    **metadata,
-                    'processing_mode': 'infected_blood_narrative',
-                    'processing_time_seconds': processing_time,
-                    'extraction_method': 'narrative_pattern_based',
-                    'document_analysis': document_analysis,
-                    'filename': Path(pdf_path).name,
-                    'file_path': str(pdf_path)
-                },
-                'processed_at': datetime.now().isoformat(),
-                'success': True,
-                'extractor_version': 'InfectedBlood_v1.0',
-                'statistics': {
-                    'total_text_length': len(full_text),
-                    'recommendations_found': len(recommendations),
-                    'responses_found': len(responses),
-                    'quotes_found': len(quote_content),
-                    'pages_processed': len(pages_data)
-                }
+            return {
+                'content': combined_text,
+                'page_count': total_pages,
+                'content_length': len(combined_text),
+                'extraction_method': 'pymupdf_mmap',
+                'processing_errors': processing_errors,
+                'processing_status': 'completed',
+                'recommendations_found': len(extraction_results.get('recommendations', [])),
+                'responses_found': len(extraction_results.get('responses', [])),
+                'extraction_results': extraction_results
             }
             
-            # Update processing statistics
-            self.processing_stats['documents_processed'] += 1
-            self.processing_stats['total_pages_processed'] += len(pages_data)
-            
-            self.logger.info(f"Successfully processed {Path(pdf_path).name} - Found {len(recommendations)} recommendations, {len(responses)} responses")
-            return result
-            
         except Exception as e:
-            self.logger.error(f"Error processing {pdf_path}: {e}")
-            self.processing_stats['extraction_errors'] += 1
-            return self._create_error_result(pdf_path, str(e))
+            self.logger.error(f"PyMuPDF processing failed: {e}")
+            raise
 
-    def _extract_narrative_recommendations(self, text: str) -> List[Dict[str, Any]]:
-        """Extract recommendations from narrative text"""
-        recommendations = []
-        seen_content = set()
+    def _process_page_batch_pymupdf(self, doc, start_page: int, end_page: int) -> List[str]:
+        """Process a batch of pages with PyMuPDF"""
+        batch_text = []
         
-        for pattern in self.narrative_recommendation_patterns:
-            matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-            
-            for match in matches:
-                if len(match.groups()) > 0:
-                    rec_text = match.group(1).strip()
-                else:
-                    rec_text = match.group(0).strip()
+        for page_num in range(start_page, end_page):
+            try:
+                page = doc[page_num]
+                text = page.get_text()
                 
-                # Clean up the text
-                rec_text = self._clean_extracted_text(rec_text)
+                # Clean and optimize text
+                cleaned_text = self._clean_extracted_text(text)
                 
-                # Filter by length and content quality
-                if len(rec_text) < 30 or len(rec_text) > 500:
-                    continue
+                if cleaned_text.strip():
+                    batch_text.append(cleaned_text)
+                    
+                # Update page processing count
+                self.processing_stats['total_pages_processed'] += 1
                 
-                # Check for duplicates
-                text_hash = hashlib.md5(rec_text.lower().encode()).hexdigest()
-                if text_hash in seen_content:
-                    continue
-                seen_content.add(text_hash)
-                
-                # Calculate confidence based on pattern match and content
-                confidence = self._calculate_confidence(rec_text, pattern, 'recommendation')
-                
-                if confidence > 0.3:  # Lower threshold for narrative content
-                    recommendations.append({
-                        'id': f"narrative_rec_{len(recommendations) + 1}",
-                        'content': rec_text,
-                        'text': rec_text,  # Alias for compatibility
-                        'type': 'narrative_recommendation',
-                        'confidence': confidence,
-                        'extraction_method': 'narrative_pattern',
-                        'pattern_used': pattern[:50] + "..." if len(pattern) > 50 else pattern,
-                        'context': self._get_context(text, match.start(), match.end())
-                    })
+            except Exception as e:
+                self.logger.warning(f"Error processing page {page_num}: {e}")
+                continue
         
-        # Also check decision patterns
-        for pattern in self.decision_patterns:
-            matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-            
-            for match in matches:
-                if len(match.groups()) > 0:
-                    rec_text = match.group(1).strip()
-                else:
-                    rec_text = match.group(0).strip()
+        return batch_text
+
+    def _process_with_pdfplumber_chunked(self, file_path: Path) -> Dict[str, Any]:
+        """Process PDF using pdfplumber with chunked reading"""
+        
+        full_text = []
+        total_pages = 0
+        processing_errors = []
+        
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                total_pages = len(pdf.pages)
                 
-                rec_text = self._clean_extracted_text(rec_text)
+                self.logger.info(f"Processing {total_pages} pages with pdfplumber (chunked)")
                 
-                if 30 <= len(rec_text) <= 500:
-                    text_hash = hashlib.md5(rec_text.lower().encode()).hexdigest()
-                    if text_hash not in seen_content:
-                        seen_content.add(text_hash)
+                # Process pages in batches
+                for page_start in range(0, total_pages, self.page_batch_size):
+                    page_end = min(page_start + self.page_batch_size, total_pages)
+                    
+                    try:
+                        batch_text = self._process_page_batch_pdfplumber(pdf, page_start, page_end)
+                        full_text.extend(batch_text)
                         
-                        confidence = self._calculate_confidence(rec_text, pattern, 'recommendation')
-                        
-                        if confidence > 0.3:
-                            recommendations.append({
-                                'id': f"decision_rec_{len(recommendations) + 1}",
-                                'content': rec_text,
-                                'text': rec_text,
-                                'type': 'decision_recommendation',
-                                'confidence': confidence,
-                                'extraction_method': 'decision_pattern',
-                                'pattern_used': pattern[:50] + "...",
-                                'context': self._get_context(text, match.start(), match.end())
-                            })
-        
-        return recommendations
+                        # Force garbage collection
+                        if page_start % (self.page_batch_size * 4) == 0:
+                            gc.collect()
+                            
+                    except Exception as e:
+                        error_msg = f"Error processing pages {page_start}-{page_end}: {e}"
+                        self.logger.warning(error_msg)
+                        processing_errors.append(error_msg)
+                
+                # Combine all text
+                combined_text = '\n\n'.join(full_text)
+                
+                # Extract government content
+                extraction_results = self._extract_government_content(combined_text)
+                
+                return {
+                    'content': combined_text,
+                    'page_count': total_pages,
+                    'content_length': len(combined_text),
+                    'extraction_method': 'pdfplumber_chunked',
+                    'processing_errors': processing_errors,
+                    'processing_status': 'completed',
+                    'recommendations_found': len(extraction_results.get('recommendations', [])),
+                    'responses_found': len(extraction_results.get('responses', [])),
+                    'extraction_results': extraction_results
+                }
+                
+        except Exception as e:
+            self.logger.error(f"PDFplumber processing failed: {e}")
+            raise
 
-    def _extract_narrative_responses(self, text: str) -> List[Dict[str, Any]]:
-        """Extract responses from narrative text"""
-        responses = []
-        seen_content = set()
+    def _process_page_batch_pdfplumber(self, pdf, start_page: int, end_page: int) -> List[str]:
+        """Process a batch of pages with pdfplumber"""
+        batch_text = []
         
-        for pattern in self.narrative_response_patterns:
-            matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-            
-            for match in matches:
-                if len(match.groups()) > 0:
-                    resp_text = match.group(1).strip()
-                else:
-                    resp_text = match.group(0).strip()
+        for page_num in range(start_page, end_page):
+            try:
+                page = pdf.pages[page_num]
+                text = page.extract_text()
                 
-                # Clean up the text
-                resp_text = self._clean_extracted_text(resp_text)
+                if text:
+                    # Clean and optimize text
+                    cleaned_text = self._clean_extracted_text(text)
+                    
+                    if cleaned_text.strip():
+                        batch_text.append(cleaned_text)
                 
-                # Filter by length and content quality
-                if len(resp_text) < 30 or len(resp_text) > 500:
-                    continue
+                # Update page processing count
+                self.processing_stats['total_pages_processed'] += 1
                 
-                # Check for duplicates
-                text_hash = hashlib.md5(resp_text.lower().encode()).hexdigest()
-                if text_hash in seen_content:
-                    continue
-                seen_content.add(text_hash)
-                
-                # Calculate confidence
-                confidence = self._calculate_confidence(resp_text, pattern, 'response')
-                
-                if confidence > 0.3:
-                    responses.append({
-                        'id': f"narrative_resp_{len(responses) + 1}",
-                        'content': resp_text,
-                        'text': resp_text,  # Alias for compatibility
-                        'type': 'narrative_response',
-                        'confidence': confidence,
-                        'extraction_method': 'narrative_pattern',
-                        'pattern_used': pattern[:50] + "..." if len(pattern) > 50 else pattern,
-                        'context': self._get_context(text, match.start(), match.end())
-                    })
+            except Exception as e:
+                self.logger.warning(f"Error processing page {page_num}: {e}")
+                continue
         
-        return responses
-
-    def _extract_quotes(self, text: str) -> List[Dict[str, Any]]:
-        """Extract quoted content which often contains key statements"""
-        quotes = []
-        seen_content = set()
-        
-        for pattern in self.quote_patterns:
-            matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-            
-            for match in matches:
-                quote_text = match.group(1).strip() if len(match.groups()) > 0 else match.group(0).strip()
-                
-                # Clean up the text
-                quote_text = self._clean_extracted_text(quote_text)
-                
-                # Filter by length
-                if len(quote_text) < 50 or len(quote_text) > 500:
-                    continue
-                
-                # Check for duplicates
-                text_hash = hashlib.md5(quote_text.lower().encode()).hexdigest()
-                if text_hash in seen_content:
-                    continue
-                seen_content.add(text_hash)
-                
-                # Quotes often contain important responses or policy statements
-                confidence = 0.8  # High confidence for quoted material
-                
-                quotes.append({
-                    'id': f"quote_{len(quotes) + 1}",
-                    'content': quote_text,
-                    'text': quote_text,
-                    'type': 'quoted_statement',
-                    'confidence': confidence,
-                    'extraction_method': 'quote_pattern',
-                    'context': self._get_context(text, match.start(), match.end())
-                })
-        
-        return quotes
+        return batch_text
 
     def _clean_extracted_text(self, text: str) -> str:
-        """Clean and normalize extracted text"""
+        """Clean and optimize extracted text for government documents"""
         if not text:
             return ""
         
         # Remove excessive whitespace
         text = re.sub(r'\s+', ' ', text)
         
-        # Remove common artifacts
-        text = re.sub(r'\d+\s*$', '', text)  # Remove trailing page numbers
-        text = re.sub(r'^[^\w]+', '', text)  # Remove leading non-word characters
-        text = re.sub(r'[^\w\s.!?,:;()-]+$', '', text)  # Remove trailing special chars
+        # Remove page numbers and footers
+        text = re.sub(r'\b(?:page|p\.)\s*\d+\b', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\b\d+\s*(?:of|/)\s*\d+\b', '', text)
         
-        # Ensure proper sentence ending
-        if text and not text.endswith(('.', '!', '?', ':')):
-            text += '.'
+        # Remove common PDF artifacts
+        text = re.sub(r'©\s*Crown\s*copyright\s*\d{4}', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'E\d{8}\s+\d{2}/\d{2}', '', text)  # E-numbers
+        
+        # Remove URLs but keep government domains
+        text = re.sub(r'https?://(?!.*\.gov\.uk)[^\s]+', '', text)
+        
+        # Clean up multiple spaces and newlines
+        text = re.sub(r'\n\s*\n', '\n\n', text)
+        text = re.sub(r' {2,}', ' ', text)
         
         return text.strip()
 
-    def _calculate_confidence(self, text: str, pattern: str, extraction_type: str) -> float:
-        """Calculate confidence score for extracted content"""
-        confidence = 0.5  # Base confidence
+    def _extract_government_content(self, text: str) -> Dict[str, List[Dict]]:
+        """Extract recommendations and responses using government-specific patterns"""
         
-        text_lower = text.lower()
+        recommendations = []
+        responses = []
         
-        # Length factor
-        if 50 <= len(text) <= 200:
-            confidence += 0.2
-        elif len(text) > 200:
-            confidence += 0.1
-        
-        # Content quality factors
-        if extraction_type == 'recommendation':
-            # Look for recommendation indicators
-            rec_indicators = ['agree', 'recommend', 'should', 'propose', 'suggest', 'option', 'work', 'provide']
-            matches = sum(1 for indicator in rec_indicators if indicator in text_lower)
-            confidence += min(matches * 0.05, 0.2)
-            
-        elif extraction_type == 'response':
-            # Look for response indicators
-            resp_indicators = ['respond', 'wrote', 'said', 'view', 'feel', 'position', 'unconvinced', 'maintain']
-            matches = sum(1 for indicator in resp_indicators if indicator in text_lower)
-            confidence += min(matches * 0.05, 0.2)
-        
-        # Government/official language
-        if any(term in text_lower for term in ['government', 'minister', 'secretary', 'official', 'department']):
-            confidence += 0.1
-        
-        # Proper sentence structure
-        if text.strip().endswith(('.', '!', '?')):
-            confidence += 0.05
-        
-        return min(confidence, 1.0)
-
-    def _get_context(self, full_text: str, start_pos: int, end_pos: int, window: int = 150) -> str:
-        """Get surrounding context for extracted content"""
-        context_start = max(0, start_pos - window)
-        context_end = min(len(full_text), end_pos + window)
-        return full_text[context_start:context_end].strip()
-
-    def _analyze_infected_blood_document(self, text: str) -> Dict[str, Any]:
-        """Analyze document structure specifically for Infected Blood Inquiry"""
-        analysis = {
-            'document_type': 'infected_blood_inquiry',
-            'is_government_response': 'government response' in text.lower(),
-            'contains_recommendations': len(re.findall(r'\brecommend', text, re.IGNORECASE)) > 0,
-            'contains_responses': len(re.findall(r'\brespond', text, re.IGNORECASE)) > 0,
-            'has_quotes': len(re.findall(r'"[^"]{50,}"', text)) > 0,
-            'mentions_compensation': 'compensation' in text.lower(),
-            'mentions_haemophilia': 'haemophilia' in text.lower() or 'haemophiliacs' in text.lower(),
-            'has_dates': len(re.findall(r'\b\d{1,2}\s+\w+\s+\d{4}\b', text)) > 0,
-            'word_count': len(text.split()),
-            'narrative_style': True  # This is narrative historical text
-        }
-        
-        return analysis
-
-    def _extract_basic_text(self, pdf_path: str) -> Optional[Dict[str, Any]]:
-        """Extract basic text from PDF using available libraries"""
-        try:
-            if PDFPLUMBER_AVAILABLE:
-                return self._extract_with_pdfplumber(pdf_path)
-            elif PYMUPDF_AVAILABLE:
-                return self._extract_with_pymupdf(pdf_path)
-            else:
-                self.logger.error("No PDF processing libraries available")
-                return None
-        except Exception as e:
-            self.logger.error(f"Text extraction failed: {e}")
-            return None
-
-    def _extract_with_pdfplumber(self, pdf_path: str) -> Dict[str, Any]:
-        """Extract text using pdfplumber"""
-        all_text = []
-        pages_data = []
-        
-        with pdfplumber.open(pdf_path) as pdf:
-            for page_num, page in enumerate(pdf.pages, 1):
-                try:
-                    page_text = page.extract_text()
-                    if page_text:
-                        # Clean page text
-                        page_text = re.sub(r'\s+', ' ', page_text)
-                        all_text.append(page_text)
-                        pages_data.append({
-                            'page_number': page_num,
-                            'text': page_text,
-                            'char_count': len(page_text)
-                        })
-                except Exception as e:
-                    self.logger.warning(f"Error extracting page {page_num}: {e}")
-        
-        return {
-            'text': '\n'.join(all_text),
-            'pages': pages_data,
-            'total_pages': len(pages_data)
-        }
-
-    def _extract_with_pymupdf(self, pdf_path: str) -> Dict[str, Any]:
-        """Extract text using PyMuPDF"""
-        all_text = []
-        pages_data = []
-        
-        doc = fitz.open(pdf_path)
-        for page_num in range(len(doc)):
+        # Extract recommendations
+        for i, pattern in enumerate(self.recommendation_patterns):
             try:
-                page = doc.load_page(page_num)
-                page_text = page.get_text()
-                if page_text:
-                    page_text = re.sub(r'\s+', ' ', page_text)
-                    all_text.append(page_text)
-                    pages_data.append({
-                        'page_number': page_num + 1,
-                        'text': page_text,
-                        'char_count': len(page_text)
-                    })
-            except Exception as e:
-                self.logger.warning(f"Error extracting page {page_num + 1}: {e}")
+                matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+                
+                for match in matches:
+                    if len(match.groups()) >= 2:
+                        rec_id = match.group(1).strip()
+                        rec_content = match.group(2).strip()
+                    else:
+                        rec_id = f"rec_{len(recommendations)}"
+                        rec_content = match.group().strip()
+                    
+                    if len(rec_content) > 20:  # Filter short matches
+                        recommendations.append({
+                            'id': rec_id,
+                            'content': rec_content,
+                            'pattern_index': i,
+                            'confidence': 0.85,
+                            'extraction_method': 'government_pattern',
+                            'start_position': match.start(),
+                            'end_position': match.end()
+                        })
+                        
+            except re.error as e:
+                self.logger.warning(f"Regex error in recommendation pattern {i}: {e}")
         
-        doc.close()
+        # Extract responses
+        for i, pattern in enumerate(self.response_patterns):
+            try:
+                matches = re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+                
+                for match in matches:
+                    if len(match.groups()) >= 2:
+                        response_type = match.group(1).strip()
+                        response_content = match.group(2).strip()
+                        full_content = f"{response_type} {response_content}".strip()
+                    else:
+                        full_content = match.group().strip()
+                        response_type = "general_response"
+                    
+                    if len(full_content) > 20:  # Filter short matches
+                        responses.append({
+                            'id': f"resp_{len(responses)}",
+                            'content': full_content,
+                            'response_type': response_type,
+                            'pattern_index': i,
+                            'confidence': 0.85,
+                            'extraction_method': 'government_pattern',
+                            'start_position': match.start(),
+                            'end_position': match.end()
+                        })
+                        
+            except re.error as e:
+                self.logger.warning(f"Regex error in response pattern {i}: {e}")
+        
+        # Remove duplicates
+        recommendations = self._remove_duplicate_extractions(recommendations)
+        responses = self._remove_duplicate_extractions(responses)
         
         return {
-            'text': '\n'.join(all_text),
-            'pages': pages_data,
-            'total_pages': len(pages_data)
+            'recommendations': recommendations,
+            'responses': responses
         }
 
-    def _extract_metadata_with_pymupdf(self, pdf_path: str) -> Dict[str, Any]:
-        """Extract metadata using PyMuPDF"""
-        metadata = {}
-        try:
-            doc = fitz.open(pdf_path)
-            pdf_metadata = doc.metadata
-            metadata.update({
-                'title': pdf_metadata.get('title', ''),
-                'author': pdf_metadata.get('author', ''),
-                'subject': pdf_metadata.get('subject', ''),
-                'creator': pdf_metadata.get('creator', ''),
-                'producer': pdf_metadata.get('producer', ''),
-                'creation_date': pdf_metadata.get('creationDate', ''),
-                'modification_date': pdf_metadata.get('modDate', ''),
-                'page_count': len(doc)
-            })
-            doc.close()
-        except Exception as e:
-            self.logger.warning(f"Error extracting metadata: {e}")
+    def _remove_duplicate_extractions(self, extractions: List[Dict]) -> List[Dict]:
+        """Remove duplicate extractions based on content similarity"""
+        if not extractions:
+            return []
         
-        return metadata
+        unique_extractions = []
+        seen_content = set()
+        
+        for extraction in extractions:
+            content = extraction.get('content', '')
+            # Normalize content for comparison
+            normalized = re.sub(r'\s+', ' ', content.lower().strip())
+            
+            # Skip if we've seen very similar content
+            is_duplicate = False
+            for seen in seen_content:
+                if len(seen) > 0 and len(normalized) > 0:
+                    # Calculate simple similarity
+                    shorter = min(len(seen), len(normalized))
+                    longer = max(len(seen), len(normalized))
+                    if shorter / longer > 0.85:
+                        is_duplicate = True
+                        break
+            
+            if not is_duplicate:
+                seen_content.add(normalized)
+                unique_extractions.append(extraction)
+        
+        # Sort by confidence and position
+        unique_extractions.sort(
+            key=lambda x: (x.get('confidence', 0), -x.get('start_position', 0)), 
+            reverse=True
+        )
+        
+        return unique_extractions
 
-    def _create_error_result(self, pdf_path: str, error_message: str) -> Dict[str, Any]:
-        """Create standardized error result"""
+    def get_processing_stats(self) -> Dict[str, Any]:
+        """Get processing statistics"""
+        avg_time = (
+            self.processing_stats['total_processing_time'] / 
+            max(self.processing_stats['documents_processed'], 1)
+        )
+        
         return {
-            'filename': Path(pdf_path).name,
-            'text': '',
-            'content': '',
-            'sections': [],
-            'recommendations': [],
-            'responses': [],
-            'quotes': [],
-            'metadata': {
-                'error': error_message,
-                'filename': Path(pdf_path).name,
-                'file_path': str(pdf_path)
-            },
-            'processed_at': datetime.now().isoformat(),
-            'success': False,
-            'error': error_message,
-            'extractor_version': 'InfectedBlood_v1.0'
+            'documents_processed': self.processing_stats['documents_processed'],
+            'total_pages_processed': self.processing_stats['total_pages_processed'],
+            'extraction_errors': self.processing_stats['extraction_errors'],
+            'average_processing_time_seconds': round(avg_time, 2),
+            'memory_peak_mb': round(self.processing_stats['memory_peak_mb'], 2),
+            'processor_version': 'large_document_v2.0'
         }
+
+    def test_patterns(self, sample_text: str = None) -> Dict[str, Any]:
+        """Test extraction patterns on sample text"""
+        
+        if not sample_text:
+            sample_text = """
+            Recommendation 6a) iii) (accepted in principle by NI Executive)
+            
+            This recommendation is accepted in principle by the UK Government, 
+            the Scottish Government, the Welsh Government, and the Northern Ireland Executive.
+            
+            Implementation will begin immediately through existing NHS structures.
+            
+            Recommendation 7b) Progress in implementation of the Transfusion 2024 recommendations be 
+            reviewed, and next steps be determined and promulgated.
+            
+            This recommendation is accepted in full by the Scottish Government.
+            
+            The Government will establish a review process within 12 months.
+            
+            Accepting in principle
+            Recommendation 4a) iv)
+            Recommendation 4a) v)
+            """
+        
+        results = self._extract_government_content(sample_text)
+        
+        return {
+            'test_text_length': len(sample_text),
+            'recommendations_found': len(results['recommendations']),
+            'responses_found': len(results['responses']),
+            'extraction_results': results,
+            'pattern_coverage': {
+                'recommendation_patterns': len(self.recommendation_patterns),
+                'response_patterns': len(self.response_patterns)
+            }
+        }
+
+# Backward compatibility
+DocumentProcessor = LargeDocumentProcessor
+
+# Export all classes and functions
+__all__ = [
+    'LargeDocumentProcessor',
+    'DocumentProcessor',
+    'PDFPLUMBER_AVAILABLE',
+    'PYMUPDF_AVAILABLE'
+]
