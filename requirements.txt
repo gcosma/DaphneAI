@@ -1,20 +1,54 @@
+# Enhanced requirements.txt for DaphneAI Document Search System
+
 # Core dependencies
 streamlit>=1.28.0
 pandas>=1.5.0
 numpy>=1.24.0
 
-# AI and machine learning
+# AI and machine learning - ENHANCED
 sentence-transformers>=2.2.0
 scikit-learn>=1.3.0
 torch>=2.0.0
+transformers>=4.30.0
+huggingface-hub>=0.16.0
 
-# Document processing
+# Document processing - ENHANCED
 PyPDF2>=3.0.0
 pdfplumber>=0.9.0
 python-docx>=0.8.11
+openpyxl>=3.1.0
+xlrd>=2.0.1
 
-# Text processing
+# Text processing and utilities - ENHANCED
 chardet>=5.0.0
+python-Levenshtein>=0.21.0
+fuzzywuzzy>=0.18.0
+regex>=2023.6.3
+nltk>=3.8.1
 
-# Optional: For better performance
-transformers>=4.30.0
+# Additional ML/AI libraries for better performance
+faiss-cpu>=1.7.4
+tokenizers>=0.13.0
+
+# Date and time handling
+python-dateutil>=2.8.2
+
+# File handling and compression
+zipfile36>=0.1.3
+rarfile>=4.0
+
+# Optional: Enhanced text extraction
+python-magic>=0.4.27
+textract>=1.6.5
+
+# Optional: For charts and visualizations in analytics
+plotly>=5.15.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Optional: For advanced document analysis
+spacy>=3.6.0
+
+# Development and debugging (optional)
+streamlit-debug>=1.0.0
+streamlit-option-menu>=0.3.6
