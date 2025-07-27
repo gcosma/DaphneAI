@@ -393,15 +393,18 @@ def render_search_section():
                     # Score details
                     score_cols = st.columns(3)
                     with score_cols[0]:
-                        st.metric("Semantic", f"{result.semantic_score:.3f}" if result.semantic_score > 0 else "N/A")
+                        semantic = getattr(result, 'semantic_score', 0)
+                        st.metric("Semantic", f"{semantic:.3f}" if semantic > 0 else "N/A")
                     with score_cols[1]:
-                        st.metric("Keyword", f"{result.keyword_score:.3f}" if result.keyword_score > 0 else "N/A")
+                        keyword = getattr(result, 'keyword_score', 0)
+                        st.metric("Keyword", f"{keyword:.3f}" if keyword > 0 else "N/A")
                     with score_cols[2]:
                         st.metric("Combined", f"{result.score:.3f}")
                     
                     # Explanation
-                    if result.explanation:
-                        st.info(f"💡 **Match details:** {result.explanation}")
+                    explanation = getattr(result, 'explanation', 'Match found')
+                    if explanation:
+                        st.info(f"💡 **Match details:** {explanation}")
                     
                     # Content
                     st.markdown("**Preview:**")
