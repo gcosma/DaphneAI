@@ -1,14 +1,64 @@
-# Enhanced app.py with Recommendation-Response Alignment
+# Enhanced app.py with Recommendation-Response Alignment - FIXED
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from modules.integration_helper import (
-    setup_search_tab, 
-    prepare_documents_for_search, 
-    extract_text_from_file,
-    get_document_statistics,
-    render_analytics_tab
-)
+import re
+from typing import Dict, List, Any
+
+# Try to import from modules, but provide fallbacks if they don't exist
+try:
+    from modules.integration_helper import (
+        setup_search_tab, 
+        prepare_documents_for_search, 
+        extract_text_from_file,
+        render_analytics_tab
+    )
+except ImportError:
+    # Provide fallback implementations
+    def setup_search_tab():
+        from modules.ui.search_components import render_search_interface
+        documents = st.session_state.get('documents', [])
+        render_search_interface(documents)
+    
+    def prepare_documents_for_search(uploaded_files, extract_function):
+        return enhanced_prepare_documents_for_search(uploaded_files, extract_function)
+    
+    def extract_text_from_file(uploaded_file):
+        # Basic text extraction
+        try:
+            if uploaded_file.type == "text/plain":
+                return str(uploaded_file.read(), "utf-8")
+            elif uploaded_file.type == "application/pdf":
+                import PyPDF2
+                pdf_reader = PyPDF2.PdfReader(uploaded_file)
+                text = ""
+                for page in pdf_reader.pages:
+                    text += page.extract_text()
+                return text
+            else:
+                return str(uploaded_file.read(), "utf-8")
+        except Exception as e:
+            st.error(f"Error extracting text from {uploaded_file.name}: {str(e)}")
+            return ""
+    
+    def render_analytics_tab():
+        st.header("📊 Document Analytics")
+        if 'documents' not in st.session_state or not st.session_state.documents:
+            st.warning("📁 Please upload documents first")
+            return
+        
+        documents = st.session_state.documents
+        
+        # Basic analytics
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Documents", len(documents))
+        with col2:
+            total_words = sum(len(doc.get('text', '').split()) for doc in documents)
+            st.metric("Total Words", f"{total_words:,}")
+        with col3:
+            avg_words = total_words // len(documents) if documents else 0
+            st.metric("Avg Words per Doc", f"{avg_words:,}")
 
 def main():
     """Main application with enhanced government analysis features"""
@@ -48,7 +98,11 @@ def render_alignment_tab():
     """Render the new recommendation-response alignment tab"""
     
     # Import the alignment system
-    from modules.ui.search_components import render_recommendation_alignment_interface
+    try:
+        from modules.ui.search_components import render_recommendation_alignment_interface
+    except ImportError:
+        st.error("Search components module not found. Please check your file structure.")
+        return
     
     # Check if documents are available
     if 'documents' not in st.session_state or not st.session_state.documents:
@@ -181,7 +235,7 @@ def render_extract_tab():
             # Document information
             st.markdown(f"**📄 Document:** {doc['filename']}")
             
-            # Document statistics
+            # Document statistics - FIXED FUNCTION
             text = doc.get('text', '')
             stats = get_document_statistics(text)
             
@@ -225,7 +279,48 @@ def render_extract_tab():
                 mime="text/plain"
             )
 
-# Document type classification helper
+def get_document_statistics(text: str) -> Dict[str, Any]:
+    """Calculate document statistics - FIXED IMPLEMENTATION"""
+    
+    if not text:
+        return {
+            'char_count': 0,
+            'word_count': 0,
+            'sentence_count': 0,
+            'estimated_pages': 0,
+            'line_count': 0,
+            'paragraph_count': 0
+        }
+    
+    # Basic counts
+    char_count = len(text)
+    words = text.split()
+    word_count = len(words)
+    
+    # Sentence count (improved)
+    sentences = re.split(r'[.!?]+', text)
+    sentence_count = len([s for s in sentences if s.strip()])
+    
+    # Line count
+    lines = text.split('\n')
+    line_count = len(lines)
+    
+    # Paragraph count (empty lines separate paragraphs)
+    paragraphs = re.split(r'\n\s*\n', text)
+    paragraph_count = len([p for p in paragraphs if p.strip()])
+    
+    # Estimated pages (2000 characters per page)
+    estimated_pages = max(1, char_count // 2000)
+    
+    return {
+        'char_count': char_count,
+        'word_count': word_count,
+        'sentence_count': sentence_count,
+        'estimated_pages': estimated_pages,
+        'line_count': line_count,
+        'paragraph_count': paragraph_count
+    }
+
 def classify_document_type(filename: str, text: str) -> str:
     """Classify document type based on filename and content"""
     
@@ -266,7 +361,6 @@ def classify_document_type(filename: str, text: str) -> str:
     
     return 'general'
 
-# Enhanced document preparation
 def enhanced_prepare_documents_for_search(uploaded_files, extract_function):
     """Enhanced document preparation with type classification"""
     
@@ -303,5 +397,80 @@ def enhanced_prepare_documents_for_search(uploaded_files, extract_function):
     
     return documents
 
+# Additional utility functions for better error handling
+def safe_import_search_components():
+    """Safely import search components with error handling"""
+    try:
+        from modules.ui.search_components import render_search_interface, render_recommendation_alignment_interface
+        return True, render_search_interface, render_recommendation_alignment_interface
+    except ImportError as e:
+        st.error(f"Could not import search components: {str(e)}")
+        st.markdown("""
+        **Missing Files:**
+        Please ensure you have the following file structure:
+        ```
+        modules/
+        ├── ui/
+        │   └── search_components.py
+        └── integration_helper.py
+        ```
+        """)
+        return False, None, None
+
+def create_sample_document():
+    """Create a sample document for testing"""
+    sample_text = """
+    Sample Government Report
+    
+    This is a sample document for testing the DaphneAI system.
+    
+    Recommendations:
+    1. We recommend implementing new security protocols immediately.
+    2. The committee suggests reviewing the current budget allocation.
+    3. We advise conducting a comprehensive audit of all systems.
+    
+    Responses:
+    1. The department agrees to implement the security protocols by Q4.
+    2. Budget review has been scheduled for next month.
+    3. Audit will be conducted by external firm starting January.
+    
+    This demonstrates how the system can find and align recommendations with their responses.
+    """
+    
+    return {
+        'filename': 'sample_report.txt',
+        'text': sample_text,
+        'document_type': 'report',
+        'upload_time': datetime.now(),
+        'file_size': len(sample_text),
+        'word_count': len(sample_text.split()),
+        'contains_recommendations': True,
+        'contains_responses': True
+    }
+
+# Error recovery function
+def handle_app_error():
+    """Handle application errors gracefully"""
+    st.error("⚠️ Application Error Detected")
+    
+    st.markdown("""
+    **Troubleshooting Steps:**
+    
+    1. **Check File Structure:** Ensure all required files are present
+    2. **Restart Application:** Refresh the page to reset session state
+    3. **Use Sample Data:** Click below to load sample data for testing
+    4. **Check Dependencies:** Ensure all required packages are installed
+    """)
+    
+    if st.button("🧪 Load Sample Data for Testing"):
+        sample_doc = create_sample_document()
+        st.session_state.documents = [sample_doc]
+        st.success("✅ Sample document loaded! Go to Search or Align Rec-Resp tabs to test.")
+        st.rerun()
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        st.error(f"Application error: {str(e)}")
+        handle_app_error()
