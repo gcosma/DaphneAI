@@ -2,6 +2,7 @@
 import streamlit as st
 import pandas as pd
 import re
+import time  # ADDED: Missing import
 from datetime import datetime
 from typing import Dict, List, Any
 from .search_utils import STOP_WORDS, check_rag_availability
