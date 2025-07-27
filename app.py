@@ -1,5 +1,5 @@
 # app.py
-# Advanced Document Search Engine with RAG + Smart Search (No Charts)
+# Complete Document Search Application
 
 import streamlit as st
 import sys
@@ -9,20 +9,23 @@ from datetime import datetime
 # Add modules to path
 sys.path.append(str(Path(__file__).parent))
 
-# Import modules
-from modules.core_utils import setup_logging, log_action
-from modules.document_processor import process_uploaded_files
-from modules.ui.search_components import render_search_interface
+# Import modules with error handling
+try:
+    from modules.core_utils import setup_logging, log_action
+    from modules.document_processor import process_uploaded_files
+    from modules.ui.search_components import render_search_interface
+    MODULES_AVAILABLE = True
+except ImportError as e:
+    st.error(f"Module import error: {e}")
+    MODULES_AVAILABLE = False
 
 # Setup
 st.set_page_config(
-    page_title="Advanced Document Search",
+    page_title="Document Search",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-logger = setup_logging()
 
 def initialize_session_state():
     """Initialize session state"""
@@ -31,16 +34,18 @@ def initialize_session_state():
         st.session_state.documents = []
         st.session_state.search_results = {}
         st.session_state.search_history = []
-        st.session_state.rag_index_built = False
-        logger.info("Session state initialized")
+        
+        if MODULES_AVAILABLE:
+            logger = setup_logging()
+            logger.info("Session state initialized")
 
 def render_header():
     """Application header"""
-    st.title("🔍 Advanced Document Search Engine")
+    st.title("🔍 Document Search Engine")
     st.markdown("""
-    **Intelligent Search with RAG + Smart Pattern Matching**
+    **Upload documents and search with intelligent pattern matching**
     
-    Upload documents and search with AI-powered semantic understanding or traditional keyword matching.
+    Supports PDF, TXT, and DOCX files with smart relevance scoring.
     """)
     
     # Status indicators in sidebar
@@ -48,13 +53,6 @@ def render_header():
         st.markdown("### 🔧 System Status")
         
         # Check dependencies
-        try:
-            import sentence_transformers
-            st.success("✅ RAG Available")
-        except ImportError:
-            st.error("❌ RAG Unavailable")
-            st.caption("Install: `pip install sentence-transformers torch`")
-        
         try:
             import pdfplumber
             st.success("✅ PDF Processing Available")
@@ -64,7 +62,7 @@ def render_header():
         
         try:
             import docx
-            st.success("✅ DOCX Processing Available")
+            st.success("✅ DOCX Processing Available") 
         except ImportError:
             st.warning("⚠️ DOCX Processing Unavailable")
             st.caption("Install: `pip install python-docx`")
@@ -87,37 +85,122 @@ def render_upload_section():
     )
     
     if uploaded_files:
-        # Process documents with progress bar
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        processed_docs = []
-        for i, file in enumerate(uploaded_files):
-            status_text.text(f"Processing {file.name}...")
-            progress_bar.progress((i + 1) / len(uploaded_files))
+        if st.button("📤 Process Files", type="primary"):
+            # Process documents with progress bar
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             
-            doc = process_uploaded_files([file])[0]  # Process one at a time
-            processed_docs.append(doc)
+            try:
+                if MODULES_AVAILABLE:
+                    # Use proper document processor
+                    processed_docs = []
+                    for i, file in enumerate(uploaded_files):
+                        status_text.text(f"Processing {file.name}...")
+                        progress_bar.progress((i + 1) / len(uploaded_files))
+                        
+                        doc_result = process_uploaded_files([file])
+                        if doc_result:
+                            processed_docs.extend(doc_result)
+                else:
+                    # Fallback simple processing
+                    processed_docs = []
+                    for i, file in enumerate(uploaded_files):
+                        status_text.text(f"Processing {file.name}...")
+                        progress_bar.progress((i + 1) / len(uploaded_files))
+                        
+                        if file.name.endswith('.txt'):
+                            text = file.getvalue().decode('utf-8')
+                            processed_docs.append({
+                                'filename': file.name,
+                                'text': text,
+                                'word_count': len(text.split()),
+                                'file_type': 'txt'
+                            })
+                        else:
+                            processed_docs.append({
+                                'filename': file.name,
+                                'error': 'File type not supported in fallback mode',
+                                'file_type': file.name.split('.')[-1] if '.' in file.name else 'unknown'
+                            })
+                
+                st.session_state.documents = processed_docs
+                
+                progress_bar.progress(1.0)
+                status_text.text("✅ All documents processed!")
+                
+                # Log the upload action
+                if MODULES_AVAILABLE:
+                    log_action("documents_uploaded", {
+                        "count": len(processed_docs),
+                        "total_words": sum(doc.get('word_count', 0) for doc in processed_docs)
+                    })
+                
+                st.success(f"Successfully processed {len(processed_docs)} documents")
+                
+                # Show document summary
+                if processed_docs:
+                    with st.expander("📊 Document Summary", expanded=False):
+                        for doc in processed_docs:
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.write(f"**{doc['filename']}**")
+                            with col2:
+                                if 'error' in doc:
+                                    st.error(f"Error: {doc['error']}")
+                                else:
+                                    st.write(f"{doc.get('word_count', 0):,} words")
+                            with col3:
+                                st.write(f"{doc.get('file_type', 'unknown').upper()}")
+                                
+            except Exception as e:
+                st.error(f"Error processing files: {str(e)}")
+                st.write("Error details:", str(e))
+
+def render_basic_search(documents):
+    """Basic search interface if advanced search is not available"""
+    st.header("🔍 Basic Search")
+    
+    query = st.text_input("Search documents:", placeholder="Enter your search terms...")
+    
+    if query and documents:
+        results = []
         
-        st.session_state.documents = processed_docs
-        st.session_state.rag_index_built = False  # Reset RAG index
+        for doc in documents:
+            if 'text' in doc and query.lower() in doc['text'].lower():
+                # Simple relevance scoring
+                text_lower = doc['text'].lower()
+                query_lower = query.lower()
+                
+                # Count occurrences
+                count = text_lower.count(query_lower)
+                
+                # Extract snippet
+                index = text_lower.find(query_lower)
+                start = max(0, index - 100)
+                end = min(len(doc['text']), index + len(query) + 100)
+                snippet = doc['text'][start:end]
+                
+                results.append({
+                    'document': doc,
+                    'count': count,
+                    'snippet': snippet
+                })
         
-        progress_bar.progress(1.0)
-        status_text.text("✅ All documents processed!")
+        # Sort by relevance
+        results.sort(key=lambda x: x['count'], reverse=True)
         
-        st.success(f"Successfully processed {len(processed_docs)} documents")
-        
-        # Show document summary
-        if processed_docs:
-            with st.expander("📊 Document Summary", expanded=False):
-                for doc in processed_docs:
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.write(f"**{doc['filename']}**")
-                    with col2:
-                        st.write(f"{doc.get('word_count', 0):,} words")
-                    with col3:
-                        st.write(f"{doc.get('file_type', 'unknown').upper()}")
+        if results:
+            st.write(f"Found {len(results)} results:")
+            
+            for result in results:
+                doc = result['document']
+                with st.expander(f"📄 {doc['filename']} ({result['count']} matches)"):
+                    st.write(f"**File type:** {doc.get('file_type', 'unknown').upper()}")
+                    st.write(f"**Word count:** {doc.get('word_count', 0):,}")
+                    st.write("**Preview:**")
+                    st.write(result['snippet'])
+        else:
+            st.info("No results found.")
 
 def main():
     """Main application"""
@@ -133,7 +216,16 @@ def main():
         
         with tab2:
             if st.session_state.documents:
-                render_search_interface(st.session_state.documents)
+                # Check if we have advanced search available
+                if MODULES_AVAILABLE:
+                    try:
+                        render_search_interface(st.session_state.documents)
+                    except Exception as e:
+                        st.error(f"Advanced search error: {e}")
+                        st.info("Falling back to basic search...")
+                        render_basic_search(st.session_state.documents)
+                else:
+                    render_basic_search(st.session_state.documents)
             else:
                 st.info("👆 Please upload documents first in the Upload tab")
                 
@@ -157,19 +249,29 @@ def main():
                     st.rerun()
         
         # Log app usage
-        log_action("app_loaded", {
-            "documents": len(st.session_state.documents),
-            "has_documents": bool(st.session_state.documents)
-        })
+        if MODULES_AVAILABLE:
+            log_action("app_loaded", {
+                "documents": len(st.session_state.documents),
+                "has_documents": bool(st.session_state.documents),
+                "modules_available": MODULES_AVAILABLE
+            })
         
     except Exception as e:
-        logger.error(f"Application error: {e}")
         st.error(f"❌ Application error: {str(e)}")
         
-        if st.button("🔄 Restart Application"):
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
-            st.rerun()
+        # Error recovery
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Restart Application"):
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                st.rerun()
+        
+        with col2:
+            if st.button("🐛 Show Debug Info"):
+                st.code(str(e))
+                import traceback
+                st.code(traceback.format_exc())
 
 if __name__ == "__main__":
     main()
