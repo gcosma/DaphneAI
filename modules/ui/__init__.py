@@ -144,320 +144,238 @@ def render_navigation_tabs():
         "📊 Analytics Dashboard"
     ])
     
-    # Store current tab index for state management
-    if 'current_tab' not in st.session_state:
-        st.session_state.current_tab = 0
+    # Store current tab in session state
+    tab_names = ["upload", "extraction", "annotation", "matching", "search", "dashboard"]
     
-    # Render each tab with proper error handling
-    with tabs[0]:  # Upload Documents
-        try:
-            render_upload_tab()
-        except Exception as e:
-            st.error(f"❌ Error in Upload tab: {str(e)}")
-            logger.error(f"Upload tab error: {e}")
+    with tabs[0]:
+        st.session_state.current_tab = "upload"
+        render_upload_tab()
     
-    with tabs[1]:  # Extract Content
-        try:
-            render_extraction_tab()
-        except Exception as e:
-            st.error(f"❌ Error in Extraction tab: {str(e)}")
-            logger.error(f"Extraction tab error: {e}")
+    with tabs[1]:
+        st.session_state.current_tab = "extraction"
+        render_extraction_tab()
     
-    with tabs[2]:  # Concept Annotation
-        try:
-            render_annotation_tab()
-        except Exception as e:
-            st.error(f"❌ Error in Annotation tab: {str(e)}")
-            logger.error(f"Annotation tab error: {e}")
+    with tabs[2]:
+        st.session_state.current_tab = "annotation"
+        render_annotation_tab()
     
-    with tabs[3]:  # Find Responses
-        try:
-            render_matching_tab()
-        except Exception as e:
-            st.error(f"❌ Error in Matching tab: {str(e)}")
-            logger.error(f"Matching tab error: {e}")
+    with tabs[3]:
+        st.session_state.current_tab = "matching"
+        render_matching_tab()
     
-    with tabs[4]:  # Smart Search
-        try:
-            render_search_tab()
-        except Exception as e:
-            st.error(f"❌ Error in Search tab: {str(e)}")
-            logger.error(f"Search tab error: {e}")
+    with tabs[4]:
+        st.session_state.current_tab = "search"
+        render_search_tab()
     
-    with tabs[5]:  # Analytics Dashboard
-        try:
-            render_dashboard_tab()
-        except Exception as e:
-            st.error(f"❌ Error in Dashboard tab: {str(e)}")
-            logger.error(f"Dashboard tab error: {e}")
+    with tabs[5]:
+        st.session_state.current_tab = "dashboard"
+        render_dashboard_tab()
 
-def render_sidebar():
-    """Render the application sidebar with settings and status"""
-    with st.sidebar:
-        st.header("⚙️ Settings")
-        
-        # System status
-        st.subheader("📊 System Status")
-        
-        # Component availability status
-        components_status = {
-            "Upload": UPLOAD_COMPONENTS_AVAILABLE,
-            "Extraction": EXTRACTION_COMPONENTS_AVAILABLE,
-            "Annotation": ANNOTATION_COMPONENTS_AVAILABLE,
-            "Matching": MATCHING_COMPONENTS_AVAILABLE,
-            "Search": SEARCH_COMPONENTS_AVAILABLE,
-            "Dashboard": DASHBOARD_COMPONENTS_AVAILABLE
-        }
-        
-        for component, available in components_status.items():
-            status_emoji = "✅" if available else "❌"
-            st.write(f"{status_emoji} {component}")
-        
-        st.divider()
-        
-        # Processing settings
-        st.subheader("🔧 Processing Settings")
-        
-        # API Configuration
-        with st.expander("🔑 API Configuration"):
-            api_key = st.text_input(
-                "OpenAI API Key",
-                type="password",
-                help="Enter your OpenAI API key for AI processing"
-            )
-            if api_key:
-                st.session_state['openai_api_key'] = api_key
-                st.success("✅ API Key configured")
-        
-        # Processing parameters
-        with st.expander("⚙️ Processing Parameters"):
-            st.session_state['chunk_size'] = st.slider(
-                "Text Chunk Size",
-                min_value=500,
-                max_value=4000,
-                value=st.session_state.get('chunk_size', 2000),
-                help="Size of text chunks for processing"
-            )
-            
-            st.session_state['overlap_size'] = st.slider(
-                "Chunk Overlap",
-                min_value=50,
-                max_value=500,
-                value=st.session_state.get('overlap_size', 200),
-                help="Overlap between consecutive chunks"
-            )
-            
-            st.session_state['similarity_threshold'] = st.slider(
-                "Similarity Threshold",
-                min_value=0.1,
-                max_value=1.0,
-                value=st.session_state.get('similarity_threshold', 0.7),
-                step=0.05,
-                help="Minimum similarity for matching"
-            )
-        
-        # Export options
-        st.divider()
-        st.subheader("📤 Export Options")
-        
-        if st.button("📋 Export Recommendations"):
-            export_recommendations()
-        
-        if st.button("💬 Export Responses"):
-            export_responses()
-        
-        if st.button("📊 Export Full Report"):
-            export_full_report()
-        
-        # Debug information
-        if st.checkbox("🐛 Debug Mode"):
-            st.subheader("🔍 Debug Information")
-            st.json({
-                "session_keys": list(st.session_state.keys()),
-                "uploaded_docs": len(st.session_state.get('uploaded_documents', [])),
-                "extracted_recs": len(st.session_state.get('extracted_recommendations', [])),
-                "extracted_responses": len(st.session_state.get('extracted_responses', [])),
-                "components_available": components_status
-            })
-
-def initialize_session_state():
-    """Initialize session state variables"""
-    defaults = {
-        'uploaded_documents': [],
-        'extracted_recommendations': [],
-        'extracted_responses': [],
-        'processing_status': 'idle',
-        'chunk_size': 2000,
-        'overlap_size': 200,
-        'similarity_threshold': 0.7,
-        'current_tab': 0,
-        'openai_api_key': None
+def check_component_health():
+    """Check the health of all UI components"""
+    health_status = {
+        'upload_components': UPLOAD_COMPONENTS_AVAILABLE,
+        'extraction_components': EXTRACTION_COMPONENTS_AVAILABLE,
+        'annotation_components': ANNOTATION_COMPONENTS_AVAILABLE,
+        'matching_components': MATCHING_COMPONENTS_AVAILABLE,
+        'search_components': SEARCH_COMPONENTS_AVAILABLE,
+        'dashboard_components': DASHBOARD_COMPONENTS_AVAILABLE,
+        'overall_health': 'healthy'
     }
     
-    for key, default_value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = default_value
-
-def export_recommendations():
-    """Export recommendations to CSV"""
-    try:
-        import pandas as pd
-        from io import StringIO
-        
-        recommendations = st.session_state.get('extracted_recommendations', [])
-        if not recommendations:
-            st.warning("⚠️ No recommendations to export")
-            return
-        
-        df = pd.DataFrame(recommendations)
-        csv_buffer = StringIO()
-        df.to_csv(csv_buffer, index=False)
-        
-        st.download_button(
-            label="📥 Download Recommendations CSV",
-            data=csv_buffer.getvalue(),
-            file_name=f"recommendations_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
-        )
-        
-    except Exception as e:
-        st.error(f"❌ Export failed: {str(e)}")
-
-def export_responses():
-    """Export responses to CSV"""
-    try:
-        import pandas as pd
-        from io import StringIO
-        
-        responses = st.session_state.get('extracted_responses', [])
-        if not responses:
-            st.warning("⚠️ No responses to export")
-            return
-        
-        df = pd.DataFrame(responses)
-        csv_buffer = StringIO()
-        df.to_csv(csv_buffer, index=False)
-        
-        st.download_button(
-            label="📥 Download Responses CSV",
-            data=csv_buffer.getvalue(),
-            file_name=f"responses_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
-        )
-        
-    except Exception as e:
-        st.error(f"❌ Export failed: {str(e)}")
-
-def export_full_report():
-    """Export full analysis report"""
-    try:
-        from io import StringIO
-        
-        report = StringIO()
-        report.write("# DaphneAI Analysis Report\n\n")
-        report.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-        
-        # Summary statistics
-        report.write("## Summary Statistics\n\n")
-        report.write(f"- Documents processed: {len(st.session_state.get('uploaded_documents', []))}\n")
-        report.write(f"- Recommendations extracted: {len(st.session_state.get('extracted_recommendations', []))}\n")
-        report.write(f"- Responses extracted: {len(st.session_state.get('extracted_responses', []))}\n\n")
-        
-        # Recommendations section
-        recommendations = st.session_state.get('extracted_recommendations', [])
-        if recommendations:
-            report.write("## Extracted Recommendations\n\n")
-            for i, rec in enumerate(recommendations, 1):
-                report.write(f"### Recommendation {i}\n")
-                report.write(f"**Text:** {rec.get('text', 'N/A')}\n")
-                report.write(f"**Source:** {rec.get('source', 'N/A')}\n")
-                report.write(f"**Confidence:** {rec.get('confidence', 'N/A')}\n\n")
-        
-        # Responses section
-        responses = st.session_state.get('extracted_responses', [])
-        if responses:
-            report.write("## Extracted Responses\n\n")
-            for i, resp in enumerate(responses, 1):
-                report.write(f"### Response {i}\n")
-                report.write(f"**Text:** {resp.get('text', 'N/A')}\n")
-                report.write(f"**Source:** {resp.get('source', 'N/A')}\n")
-                report.write(f"**Confidence:** {resp.get('confidence', 'N/A')}\n\n")
-        
-        st.download_button(
-            label="📥 Download Full Report",
-            data=report.getvalue(),
-            file_name=f"daphne_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
-            mime="text/markdown"
-        )
-        
-    except Exception as e:
-        st.error(f"❌ Report generation failed: {str(e)}")
-
-def render_footer():
-    """Render application footer"""
-    st.divider()
+    # Calculate overall health
+    available_count = sum(1 for status in health_status.values() if isinstance(status, bool) and status)
+    total_count = sum(1 for status in health_status.values() if isinstance(status, bool))
     
-    col1, col2, col3 = st.columns(3)
+    if available_count == total_count:
+        health_status['overall_health'] = 'healthy'
+    elif available_count >= total_count * 0.7:
+        health_status['overall_health'] = 'warning'
+    else:
+        health_status['overall_health'] = 'critical'
     
-    with col1:
-        st.markdown("**🏛️ DaphneAI**")
-        st.markdown("Government Document Analysis Platform")
-    
-    with col2:
-        st.markdown("**📊 Statistics**")
-        st.markdown(f"Session started: {datetime.now().strftime('%H:%M:%S')}")
-    
-    with col3:
-        st.markdown("**ℹ️ Help**")
-        if st.button("📚 View Documentation"):
-            st.info("📖 Documentation coming soon!")
+    return health_status
 
 # ===============================================
-# MAIN APPLICATION FUNCTION
+# SESSION STATE INITIALIZATION
 # ===============================================
 
-def main():
-    """Main application entry point"""
-    try:
-        # Initialize session state
-        initialize_session_state()
+def initialize_session_state():
+    """Initialize all session state variables"""
+    if "initialized" not in st.session_state:
+        st.session_state.initialized = True
         
-        # Render header
-        render_header()
+        # Document management
+        st.session_state.uploaded_documents = []
         
-        # Render sidebar
-        render_sidebar()
+        # Extraction results
+        st.session_state.extracted_recommendations = []
+        st.session_state.extracted_responses = []
+        st.session_state.extraction_results = {}
         
-        # Render main navigation
-        render_navigation_tabs()
+        # Analysis results
+        st.session_state.annotation_results = {}
+        st.session_state.matching_results = {}
+        st.session_state.search_history = []
+        st.session_state.search_results = {}
         
-        # Render footer
-        render_footer()
+        # Processing states
+        st.session_state.processing_status = "idle"
+        st.session_state.last_processing_time = None
+        st.session_state.error_messages = []
         
-    except Exception as e:
-        st.error(f"❌ Application error: {str(e)}")
-        logger.error(f"Main application error: {e}")
+        # UI states
+        st.session_state.selected_frameworks = []
+        st.session_state.current_tab = "upload"
+        st.session_state.export_ready = False
         
-        if st.button("🔄 Restart Application"):
-            st.rerun()
+        # Vector store and AI components
+        st.session_state.vector_store_manager = None
+        st.session_state.rag_engine = None
+        st.session_state.bert_annotator = None
+        
+        logger.info("✅ Session state initialized")
 
 # ===============================================
-# MODULE EXPORTS
+# SYSTEM STATUS RENDERING
+# ===============================================
+
+def render_system_status():
+    """Render system status information"""
+    if st.checkbox("🔧 Show System Status", key="show_system_status"):
+        st.markdown("### 🔧 System Status")
+        
+        # Component availability
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Component Status")
+            components = [
+                ("Upload Components", UPLOAD_COMPONENTS_AVAILABLE),
+                ("Extraction Components", EXTRACTION_COMPONENTS_AVAILABLE),
+                ("Annotation Components", ANNOTATION_COMPONENTS_AVAILABLE),
+                ("Matching Components", MATCHING_COMPONENTS_AVAILABLE),
+                ("Search Components", SEARCH_COMPONENTS_AVAILABLE),
+                ("Dashboard Components", DASHBOARD_COMPONENTS_AVAILABLE)
+            ]
+            
+            for name, available in components:
+                status = "✅" if available else "❌"
+                st.markdown(f"{status} {name}")
+        
+        with col2:
+            st.markdown("#### Session Data")
+            data_items = [
+                ("Documents", len(st.session_state.get('uploaded_documents', []))),
+                ("Recommendations", len(st.session_state.get('extracted_recommendations', []))),
+                ("Responses", len(st.session_state.get('extracted_responses', []))),
+                ("Annotations", sum(len(v) for v in st.session_state.get('annotation_results', {}).values())),
+                ("Search History", len(st.session_state.get('search_history', [])))
+            ]
+            
+            for name, count in data_items:
+                st.markdown(f"📊 {name}: {count}")
+        
+        # Health check
+        health = check_component_health()
+        overall_health = health['overall_health']
+        
+        if overall_health == 'healthy':
+            st.success("✅ All systems operational")
+        elif overall_health == 'warning':
+            st.warning("⚠️ Some components unavailable")
+        else:
+            st.error("❌ Critical components missing")
+
+# ===============================================
+# FALLBACK FUNCTIONS FOR MISSING COMPONENTS
+# ===============================================
+
+def render_fallback_header():
+    """Fallback header when UI components are not available"""
+    st.set_page_config(
+        page_title="DaphneAI - Government Document Analyzer",
+        page_icon="🏛️",
+        layout="wide"
+    )
+    
+    st.title("🏛️ DaphneAI")
+    st.markdown("### Government Document Analysis Platform")
+    st.error("❌ Some UI components are not available. Please check the logs for details.")
+
+def render_fallback_navigation():
+    """Fallback navigation when components are missing"""
+    st.markdown("### 🚧 Limited Mode")
+    st.info("""
+    The application is running in limited mode due to missing components.
+    Available components will be shown below.
+    """)
+    
+    # Show only available components
+    available_tabs = []
+    if UPLOAD_COMPONENTS_AVAILABLE:
+        available_tabs.append(("📁 Upload", render_upload_tab))
+    if EXTRACTION_COMPONENTS_AVAILABLE:
+        available_tabs.append(("🔍 Extract", render_extraction_tab))
+    if ANNOTATION_COMPONENTS_AVAILABLE:
+        available_tabs.append(("🏷️ Annotate", render_annotation_tab))
+    if MATCHING_COMPONENTS_AVAILABLE:
+        available_tabs.append(("🔗 Match", render_matching_tab))
+    if SEARCH_COMPONENTS_AVAILABLE:
+        available_tabs.append(("🔎 Search", render_search_tab))
+    if DASHBOARD_COMPONENTS_AVAILABLE:
+        available_tabs.append(("📊 Dashboard", render_dashboard_tab))
+    
+    if available_tabs:
+        tab_names = [tab[0] for tab in available_tabs]
+        tab_functions = [tab[1] for tab in available_tabs]
+        
+        tabs = st.tabs(tab_names)
+        
+        for i, (tab, func) in enumerate(zip(tabs, tab_functions)):
+            with tab:
+                func()
+    else:
+        st.error("❌ No UI components are available. Please check the installation.")
+
+# ===============================================
+# EXPORTS - ALL REQUIRED FUNCTIONS
 # ===============================================
 
 __all__ = [
-    'main',
+    # Core UI functions
     'render_header',
-    'render_navigation_tabs',
-    'render_sidebar',
+    'render_navigation_tabs', 
     'initialize_session_state',
+    'check_component_health',
+    'render_system_status',
+    'render_fallback_header',
+    'render_fallback_navigation',
+    
+    # Tab rendering functions
     'render_upload_tab',
-    'render_extraction_tab',
+    'render_extraction_tab', 
     'render_annotation_tab',
     'render_matching_tab',
     'render_search_tab',
-    'render_dashboard_tab'
+    'render_dashboard_tab',
+    
+    # Component availability flags
+    'UPLOAD_COMPONENTS_AVAILABLE',
+    'EXTRACTION_COMPONENTS_AVAILABLE',
+    'ANNOTATION_COMPONENTS_AVAILABLE',
+    'MATCHING_COMPONENTS_AVAILABLE',
+    'SEARCH_COMPONENTS_AVAILABLE',
+    'DASHBOARD_COMPONENTS_AVAILABLE'
 ]
 
-if __name__ == "__main__":
-    main()
+# Log component initialization status
+logger.info("🚀 UI module initialized")
+logger.info(f"📊 Available components: {sum([
+    UPLOAD_COMPONENTS_AVAILABLE,
+    EXTRACTION_COMPONENTS_AVAILABLE, 
+    ANNOTATION_COMPONENTS_AVAILABLE,
+    MATCHING_COMPONENTS_AVAILABLE,
+    SEARCH_COMPONENTS_AVAILABLE,
+    DASHBOARD_COMPONENTS_AVAILABLE
+])}/6")
