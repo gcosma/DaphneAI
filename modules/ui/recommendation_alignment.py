@@ -16,6 +16,21 @@ def render_recommendation_alignment_interface(documents: List[Dict[str, Any]]):
         st.warning("📁 Please upload documents first")
         return
     
+    # Add tabs for different modes
+    tab1, tab2 = st.tabs(["🔄 Auto Alignment", "🔍 Manual Search"])
+    
+    with tab1:
+        render_auto_alignment_tab(documents)
+    
+    with tab2:
+        render_manual_search_tab(documents)
+
+def render_auto_alignment_tab(documents: List[Dict[str, Any]]):
+    """Render the automatic alignment functionality"""
+    
+    st.markdown("### 🔄 Automatic Recommendation-Response Alignment")
+    st.markdown("*Automatically find and align all recommendations with their responses*")
+    
     # Configuration options
     col1, col2 = st.columns(2)
     
@@ -57,7 +72,7 @@ def render_recommendation_alignment_interface(documents: List[Dict[str, Any]]):
         )
     
     # Start analysis button
-    if st.button("🔍 Find & Align Recommendations", type="primary"):
+    if st.button("🔍 Find & Align All Recommendations", type="primary"):
         with st.spinner("🔍 Analyzing documents for recommendations and responses..."):
             
             # Step 1: Find recommendations
@@ -75,6 +90,407 @@ def render_recommendation_alignment_interface(documents: List[Dict[str, Any]]):
             
             # Step 5: Display results
             display_alignment_results(alignments, use_ai_summary)
+
+def render_manual_search_tab(documents: List[Dict[str, Any]]):
+    """Render the manual search functionality"""
+    
+    st.markdown("### 🔍 Manual Sentence Search")
+    st.markdown("*Paste a sentence to find matching recommendations or responses*")
+    
+    # Text input for manual search
+    search_sentence = st.text_area(
+        "📝 Paste your sentence here:",
+        placeholder="e.g., 'We recommend implementing new security protocols immediately' or 'The department agrees to consider this proposal'",
+        help="Paste any sentence and we'll find similar recommendations or responses in your documents",
+        height=100
+    )
+    
+    # Search configuration
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        search_type = st.radio(
+            "What are you looking for?",
+            ["🔍 Find Similar (Any Type)", "🎯 Find Recommendations", "↩️ Find Responses"],
+            help="Choose what type of content to search for"
+        )
+        
+        similarity_threshold = st.slider(
+            "Similarity Threshold",
+            min_value=0.1,
+            max_value=1.0,
+            value=0.3,
+            step=0.1,
+            help="Lower values find more matches but may be less relevant"
+        )
+    
+    with col2:
+        max_matches = st.selectbox(
+            "Max matches to show",
+            [5, 10, 20, 50, "All"],
+            index=1,
+            help="Maximum number of matches to display"
+        )
+        
+        show_scores = st.checkbox("Show similarity scores", value=True)
+    
+    # Search execution
+    if st.button("🔎 Find Matches", type="primary") and search_sentence.strip():
+        
+        start_time = time.time()
+        
+        with st.spinner("🔍 Searching for similar content..."):
+            
+            # Determine search patterns based on type
+            if search_type == "🎯 Find Recommendations":
+                patterns = ["recommend", "suggest", "advise", "propose", "urge", "should", "must"]
+                search_mode = "recommendations"
+            elif search_type == "↩️ Find Responses":
+                patterns = ["accept", "reject", "agree", "disagree", "implement", "consider", "response", "reply", "approved", "declined"]
+                search_mode = "responses"
+            else:
+                patterns = []  # Search all content
+                search_mode = "all"
+            
+            # Find matches
+            matches = find_similar_sentences(
+                documents=documents,
+                target_sentence=search_sentence,
+                search_mode=search_mode,
+                patterns=patterns,
+                similarity_threshold=similarity_threshold,
+                max_matches=max_matches
+            )
+            
+            search_time = time.time() - start_time
+            
+            # Display results
+            display_manual_search_results(
+                matches=matches,
+                target_sentence=search_sentence,
+                search_time=search_time,
+                show_scores=show_scores,
+                search_mode=search_mode
+            )
+
+def find_similar_sentences(documents: List[Dict], target_sentence: str, search_mode: str, 
+                          patterns: List[str], similarity_threshold: float, max_matches) -> List[Dict]:
+    """Find sentences similar to the target sentence"""
+    
+    matches = []
+    
+    for doc in documents:
+        text = doc.get('text', '')
+        if not text:
+            continue
+        
+        # Split into sentences
+        sentences = split_into_sentences(text)
+        
+        for i, sentence in enumerate(sentences):
+            sentence_lower = sentence.lower()
+            
+            # Filter by search mode if specified
+            if search_mode == "recommendations" and not any(pattern in sentence_lower for pattern in patterns):
+                continue
+            elif search_mode == "responses" and not any(pattern in sentence_lower for pattern in patterns):
+                continue
+            
+            # Calculate similarity
+            similarity_score = calculate_sentence_similarity(target_sentence, sentence)
+            
+            if similarity_score >= similarity_threshold:
+                
+                # Extract context
+                context_start = max(0, i - 1)
+                context_end = min(len(sentences), i + 2)
+                context = ' '.join(sentences[context_start:context_end])
+                
+                # Calculate position
+                char_position = text.find(sentence)
+                
+                match = {
+                    'sentence': sentence,
+                    'context': context,
+                    'similarity_score': similarity_score,
+                    'document': doc,
+                    'sentence_index': i,
+                    'char_position': char_position,
+                    'page_number': estimate_page_number(char_position, text),
+                    'content_type': classify_sentence_type(sentence),
+                    'matched_patterns': [p for p in patterns if p in sentence_lower] if patterns else []
+                }
+                
+                matches.append(match)
+    
+    # Sort by similarity score
+    matches.sort(key=lambda x: x['similarity_score'], reverse=True)
+    
+    # Limit results
+    if max_matches != "All":
+        matches = matches[:max_matches]
+    
+    return matches
+
+def calculate_sentence_similarity(sentence1: str, sentence2: str) -> float:
+    """Calculate similarity between two sentences using multiple methods"""
+    
+    # Method 1: Word overlap similarity (enhanced)
+    words1 = set(w.lower() for w in sentence1.split() if len(w) > 2 and w.lower() not in STOP_WORDS)
+    words2 = set(w.lower() for w in sentence2.split() if len(w) > 2 and w.lower() not in STOP_WORDS)
+    
+    if not words1 or not words2:
+        return 0.0
+    
+    intersection = len(words1 & words2)
+    union = len(words1 | words2)
+    word_overlap = intersection / union if union > 0 else 0.0
+    
+    # Method 2: Semantic similarity (using key terms)
+    semantic_score = calculate_semantic_sentence_similarity(sentence1, sentence2)
+    
+    # Method 3: Structural similarity (length and punctuation)
+    len1, len2 = len(sentence1), len(sentence2)
+    length_similarity = 1 - abs(len1 - len2) / max(len1, len2, 1)
+    
+    # Combine scores with weights
+    combined_score = (
+        word_overlap * 0.5 +
+        semantic_score * 0.4 +
+        length_similarity * 0.1
+    )
+    
+    return combined_score
+
+def calculate_semantic_sentence_similarity(sentence1: str, sentence2: str) -> float:
+    """Calculate semantic similarity using domain-specific terms"""
+    
+    # Enhanced semantic groups for government documents
+    semantic_groups = {
+        'recommendation': ['recommend', 'suggest', 'advise', 'propose', 'recommendation', 'proposal'],
+        'response': ['respond', 'response', 'reply', 'answer', 'feedback', 'reaction'],
+        'agreement': ['agree', 'accept', 'approve', 'endorse', 'support', 'adopt'],
+        'disagreement': ['reject', 'decline', 'oppose', 'disagree', 'refuse', 'deny'],
+        'action': ['implement', 'execute', 'carry out', 'perform', 'conduct', 'undertake'],
+        'review': ['review', 'examine', 'assess', 'evaluate', 'analyze', 'consider'],
+        'policy': ['policy', 'procedure', 'guideline', 'framework', 'protocol', 'strategy'],
+        'urgent': ['urgent', 'immediate', 'critical', 'priority', 'emergency', 'pressing'],
+        'financial': ['budget', 'cost', 'funding', 'financial', 'money', 'expense'],
+        'government': ['government', 'department', 'ministry', 'authority', 'agency', 'administration']
+    }
+    
+    # Extract semantic categories from both sentences
+    categories1 = extract_semantic_categories(sentence1, semantic_groups)
+    categories2 = extract_semantic_categories(sentence2, semantic_groups)
+    
+    if not categories1 or not categories2:
+        return 0.0
+    
+    # Calculate category overlap
+    common_categories = len(set(categories1) & set(categories2))
+    total_categories = len(set(categories1) | set(categories2))
+    
+    return common_categories / total_categories if total_categories > 0 else 0.0
+
+def extract_semantic_categories(sentence: str, semantic_groups: Dict) -> List[str]:
+    """Extract semantic categories from a sentence"""
+    
+    sentence_lower = sentence.lower()
+    categories = []
+    
+    for category, terms in semantic_groups.items():
+        if any(term in sentence_lower for term in terms):
+            categories.append(category)
+    
+    return categories
+
+def classify_sentence_type(sentence: str) -> str:
+    """Classify whether a sentence is a recommendation, response, or other"""
+    
+    sentence_lower = sentence.lower()
+    
+    # Check for recommendation indicators
+    if any(word in sentence_lower for word in ['recommend', 'suggest', 'advise', 'propose', 'should', 'must', 'ought']):
+        return 'Recommendation'
+    
+    # Check for response indicators
+    elif any(word in sentence_lower for word in ['accept', 'reject', 'agree', 'disagree', 'implement', 'consider', 'response', 'reply']):
+        return 'Response'
+    
+    # Check for policy/procedural content
+    elif any(word in sentence_lower for word in ['policy', 'procedure', 'guideline', 'framework', 'protocol']):
+        return 'Policy'
+    
+    # Check for analysis/review content
+    elif any(word in sentence_lower for word in ['review', 'analyze', 'assess', 'evaluate', 'examine']):
+        return 'Analysis'
+    
+    else:
+        return 'General'
+
+def display_manual_search_results(matches: List[Dict], target_sentence: str, search_time: float, 
+                                show_scores: bool, search_mode: str):
+    """Display manual search results"""
+    
+    if not matches:
+        st.warning(f"No matches found for your sentence.")
+        st.info("💡 Try lowering the similarity threshold or changing the search type.")
+        return
+    
+    # Summary
+    mode_text = {
+        "recommendations": "recommendations",
+        "responses": "responses", 
+        "all": "sentences"
+    }.get(search_mode, "items")
+    
+    st.success(f"🎯 Found **{len(matches)}** similar {mode_text} in {search_time:.3f} seconds")
+    
+    # Show original sentence
+    st.markdown("### 📝 Your Original Sentence:")
+    st.info(f"*{target_sentence}*")
+    
+    # Export options
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📋 Copy Results"):
+            copy_manual_search_results(matches, target_sentence)
+    with col2:
+        if st.button("📊 Export to CSV"):
+            export_manual_search_csv(matches, target_sentence)
+    
+    # Display matches
+    st.markdown("### 🔍 Similar Matches Found:")
+    
+    for i, match in enumerate(matches, 1):
+        
+        # Confidence indicator
+        similarity = match['similarity_score']
+        if similarity > 0.8:
+            confidence_color = "🟢"
+            confidence_text = "Very High"
+        elif similarity > 0.6:
+            confidence_color = "🟡"
+            confidence_text = "High"
+        elif similarity > 0.4:
+            confidence_color = "🟠"
+            confidence_text = "Medium"
+        else:
+            confidence_color = "🔴"
+            confidence_text = "Low"
+        
+        # Score display
+        score_text = f" (Score: {similarity:.3f})" if show_scores else ""
+        
+        with st.expander(f"{confidence_color} Match {i} - {match['content_type']} - {confidence_text} Similarity{score_text}", 
+                        expanded=i <= 3):
+            
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                # Main content
+                st.markdown("**📄 Found Sentence:**")
+                
+                # Highlight similar words
+                highlighted_sentence = highlight_similar_words(match['sentence'], target_sentence)
+                st.markdown(highlighted_sentence, unsafe_allow_html=True)
+                
+                # Context
+                st.markdown("**📖 Context:**")
+                st.caption(match['context'])
+                
+                # Matched patterns if any
+                if match['matched_patterns']:
+                    st.markdown(f"**🎯 Matched Keywords:** {', '.join(match['matched_patterns'])}")
+            
+            with col2:
+                # Document info
+                st.markdown("**📋 Document Info:**")
+                st.markdown(f"**File:** {match['document']['filename']}")
+                st.markdown(f"**Page:** {match['page_number']}")
+                st.markdown(f"**Type:** {match['content_type']}")
+                
+                if show_scores:
+                    st.markdown(f"**Similarity:** {similarity:.3f}")
+                
+                # Quick action button
+                if st.button(f"🔗 Find Related Content", key=f"related_{i}"):
+                    # Find content related to this match
+                    find_related_content(match, target_sentence)
+
+def highlight_similar_words(sentence: str, target_sentence: str) -> str:
+    """Highlight words in sentence that are similar to target sentence"""
+    
+    target_words = set(w.lower() for w in target_sentence.split() if len(w) > 2 and w.lower() not in STOP_WORDS)
+    
+    highlighted = sentence
+    words = sentence.split()
+    
+    for word in words:
+        clean_word = re.sub(r'[^\w]', '', word.lower())
+        if clean_word in target_words:
+            highlighted = highlighted.replace(word, f"<mark style='background-color: #FFEB3B; padding: 2px; border-radius: 2px;'>{word}</mark>")
+    
+    return highlighted
+
+def find_related_content(match: Dict, target_sentence: str):
+    """Find content related to the selected match"""
+    
+    # This could trigger a new search for content related to this match
+    st.info(f"🔍 Searching for content related to: '{match['sentence'][:100]}...'")
+    
+    # You could implement additional logic here to find related recommendations/responses
+    # For now, show basic info
+    st.markdown(f"**Document:** {match['document']['filename']}")
+    st.markdown(f"**Page:** {match['page_number']}")
+    st.markdown(f"**Content Type:** {match['content_type']}")
+
+def copy_manual_search_results(matches: List[Dict], target_sentence: str):
+    """Copy manual search results"""
+    
+    output = f"Manual Search Results\n"
+    output += f"Original Sentence: {target_sentence}\n"
+    output += "=" * 50 + "\n\n"
+    
+    for i, match in enumerate(matches, 1):
+        output += f"Match {i} ({match['content_type']}):\n"
+        output += f"Similarity: {match['similarity_score']:.3f}\n"
+        output += f"Document: {match['document']['filename']} (Page {match['page_number']})\n"
+        output += f"Sentence: {match['sentence']}\n"
+        output += f"Context: {match['context']}\n\n"
+        output += "-" * 30 + "\n\n"
+    
+    st.code(output)
+    st.success("Results copied to display! Use Ctrl+A, Ctrl+C to copy to clipboard")
+
+def export_manual_search_csv(matches: List[Dict], target_sentence: str):
+    """Export manual search results to CSV"""
+    
+    csv_data = []
+    
+    for i, match in enumerate(matches, 1):
+        row = {
+            'Match_Number': i,
+            'Original_Sentence': target_sentence,
+            'Found_Sentence': match['sentence'],
+            'Similarity_Score': match['similarity_score'],
+            'Content_Type': match['content_type'],
+            'Document': match['document']['filename'],
+            'Page_Number': match['page_number'],
+            'Context': match['context'],
+            'Matched_Patterns': ', '.join(match['matched_patterns']) if match['matched_patterns'] else ''
+        }
+        csv_data.append(row)
+    
+    df = pd.DataFrame(csv_data)
+    csv = df.to_csv(index=False)
+    
+    st.download_button(
+        label="📥 Download CSV",
+        data=csv,
+        file_name=f"manual_search_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv"
+    )
 
 def find_recommendations(documents: List[Dict], patterns: List[str]) -> List[Dict]:
     """Find all recommendations in documents"""
