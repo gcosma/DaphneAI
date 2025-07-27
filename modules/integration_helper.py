@@ -1,6 +1,6 @@
-# integration_helper.py
+# modules/integration_helper.py
 """
-Helper functions to integrate the government search engine with your existing DaphneAI app
+Complete integration helper for DaphneAI document search
 """
 
 import streamlit as st
@@ -13,7 +13,7 @@ def prepare_documents_for_search(uploaded_files, text_extraction_function) -> Li
     
     Args:
         uploaded_files: List of uploaded files from Streamlit
-        text_extraction_function: Your existing function that extracts text from files
+        text_extraction_function: Function that extracts text from files
     
     Returns:
         List of documents formatted for the search engine
@@ -22,7 +22,7 @@ def prepare_documents_for_search(uploaded_files, text_extraction_function) -> Li
     
     for i, file in enumerate(uploaded_files):
         try:
-            # Use your existing text extraction function
+            # Use the text extraction function
             extracted_text = text_extraction_function(file)
             
             # Format for search engine
@@ -30,63 +30,54 @@ def prepare_documents_for_search(uploaded_files, text_extraction_function) -> Li
                 'id': f'doc_{i}_{file.name}',        # Unique ID
                 'filename': file.name,               # Display name
                 'text': extracted_text,              # Searchable content
+                'word_count': len(extracted_text.split()) if extracted_text else 0,
+                'file_type': file.name.split('.')[-1].lower() if '.' in file.name else 'unknown',
+                'file_size_mb': round(len(file.getvalue()) / 1024 / 1024, 2),
                 'document_type': classify_document_type(extracted_text),
                 'metadata': {
-                    'file_size': file.size,
+                    'file_size': len(file.getvalue()),
                     'upload_date': datetime.now().isoformat(),
                     'file_type': file.type
                 }
             }
             documents.append(doc_data)
             
+            # Store in session state
+            if 'documents' not in st.session_state:
+                st.session_state.documents = []
+            
         except Exception as e:
             st.error(f"Error processing {file.name}: {str(e)}")
             continue
     
-    # Store in session state for search engine
-    st.session_state.documents = documents
+    # Store all documents in session state
+    if documents:
+        st.session_state.documents = documents
     
     return documents
 
 def classify_document_type(text: str) -> str:
     """
     Classify document type based on content
-    
-    Args:
-        text: Document text content
-    
-    Returns:
-        Document type: 'recommendation', 'response', 'policy', or 'general'
     """
+    if not text:
+        return 'general'
+    
     text_lower = text.lower()
     
-    # Government recommendation indicators
-    recommendation_keywords = [
-        'recommend', 'recommendation', 'suggests', 'proposes', 
-        'advises', 'committee recommends', 'we recommend'
-    ]
+    # Count keywords for different document types
+    recommendation_keywords = ['recommend', 'propose', 'suggest', 'advise', 'should']
+    response_keywords = ['accept', 'reject', 'agree', 'disagree', 'response', 'reply']
+    policy_keywords = ['policy', 'framework', 'strategy', 'guidelines', 'procedures']
     
-    # Government response indicators  
-    response_keywords = [
-        'government response', 'accept', 'reject', 'government accepts',
-        'government rejects', 'minister responds', 'department response'
-    ]
+    rec_count = sum(1 for word in recommendation_keywords if word in text_lower)
+    resp_count = sum(1 for word in response_keywords if word in text_lower)
+    policy_count = sum(1 for word in policy_keywords if word in text_lower)
     
-    # Policy document indicators
-    policy_keywords = [
-        'policy', 'regulation', 'guideline', 'framework', 
-        'strategy', 'directive', 'government policy'
-    ]
-    
-    # Count occurrences
-    recommendation_count = sum(1 for keyword in recommendation_keywords if keyword in text_lower)
-    response_count = sum(1 for keyword in response_keywords if keyword in text_lower)
-    policy_count = sum(1 for keyword in policy_keywords if keyword in text_lower)
-    
-    # Classify based on highest count
-    if recommendation_count > response_count and recommendation_count > policy_count:
+    # Return the type with the highest count
+    if rec_count > resp_count and rec_count > policy_count:
         return 'recommendation'
-    elif response_count > recommendation_count and response_count > policy_count:
+    elif resp_count > policy_count:
         return 'response'
     elif policy_count > 0:
         return 'policy'
@@ -96,9 +87,6 @@ def classify_document_type(text: str) -> str:
 def get_document_statistics() -> Dict[str, Any]:
     """
     Get statistics about loaded documents
-    
-    Returns:
-        Dictionary with document statistics
     """
     if 'documents' not in st.session_state or not st.session_state.documents:
         return {
@@ -128,15 +116,14 @@ def get_document_statistics() -> Dict[str, Any]:
 
 def setup_search_tab():
     """
-    Complete setup function for the search tab
-    Call this function in your search tab
+    Setup function for the search tab - uses the working search components
     """
-    from .government_search_ui import render_government_search
+    from modules.ui.search_components import render_search_interface
     
     # Check if documents are available
     if 'documents' not in st.session_state or not st.session_state.documents:
         st.warning("📁 No documents available for search")
-        st.info("Please upload and process documents first in the Upload/Extract tabs.")
+        st.info("Please upload and process documents first in the Upload tab.")
         
         # Show what format is expected
         with st.expander("📋 Expected Document Format"):
@@ -147,6 +134,8 @@ def setup_search_tab():
                     'id': 'unique_id',
                     'filename': 'document.txt', 
                     'text': 'full document content...',
+                    'word_count': 100,
+                    'file_type': 'txt',
                     'document_type': 'recommendation'  # optional
                 }
             ]
@@ -173,15 +162,12 @@ def setup_search_tab():
             for doc_type, count in stats['document_types'].items():
                 st.write(f"- {doc_type.title()}: {count}")
     
-    # Render the main search interface
-    render_government_search()
+    # Render the search interface using the working components
+    render_search_interface(st.session_state.documents)
 
-# Sample integration functions for common file types
+# Text extraction functions for different file types
 def extract_text_from_pdf(file):
-    """
-    Sample PDF text extraction function
-    Replace this with your existing PDF extraction logic
-    """
+    """Extract text from PDF file"""
     try:
         import PyPDF2
         from io import BytesIO
@@ -195,10 +181,7 @@ def extract_text_from_pdf(file):
         return f"Error extracting PDF: {str(e)}"
 
 def extract_text_from_docx(file):
-    """
-    Sample DOCX text extraction function  
-    Replace this with your existing DOCX extraction logic
-    """
+    """Extract text from DOCX file"""
     try:
         import docx
         from io import BytesIO
@@ -212,10 +195,7 @@ def extract_text_from_docx(file):
         return f"Error extracting DOCX: {str(e)}"
 
 def extract_text_from_txt(file):
-    """
-    Sample TXT text extraction function
-    Replace this with your existing TXT extraction logic
-    """
+    """Extract text from TXT file"""
     try:
         return file.read().decode('utf-8')
     except Exception as e:
@@ -224,7 +204,6 @@ def extract_text_from_txt(file):
 def extract_text_from_file(file):
     """
     Universal file text extraction function
-    Add this to your existing code or replace with your extraction function
     """
     if file.type == "application/pdf":
         return extract_text_from_pdf(file)
@@ -235,11 +214,100 @@ def extract_text_from_file(file):
     else:
         return f"Unsupported file type: {file.type}"
 
+def render_extract_tab():
+    """Content extraction and viewing"""
+    st.header("🔍 Content Extraction")
+    
+    if 'documents' not in st.session_state or not st.session_state.documents:
+        st.warning("📁 Please upload documents first.")
+        return
+    
+    documents = st.session_state.documents
+    
+    st.success(f"✅ {len(documents)} documents available for extraction")
+    
+    # Document selector
+    doc_names = [doc['filename'] for doc in documents]
+    selected_doc_name = st.selectbox("Select document to view:", doc_names)
+    
+    # Find selected document
+    selected_doc = next((doc for doc in documents if doc['filename'] == selected_doc_name), None)
+    
+    if selected_doc:
+        # Document info
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Word Count", selected_doc.get('word_count', 0))
+        with col2:
+            st.metric("File Type", selected_doc.get('file_type', 'unknown').upper())
+        with col3:
+            st.metric("Document Type", selected_doc.get('document_type', 'general').title())
+        
+        # Show content
+        st.markdown("### 📄 Document Content")
+        content = selected_doc.get('text', 'No content available')
+        st.text_area("Content", content, height=400, disabled=True)
+
+def render_analytics_tab():
+    """Analytics and statistics"""
+    st.header("📊 Analytics Dashboard")
+    
+    if 'documents' not in st.session_state or not st.session_state.documents:
+        st.warning("📁 No documents to analyze.")
+        return
+    
+    documents = st.session_state.documents
+    stats = get_document_statistics()
+    
+    # Overview metrics
+    st.markdown("### 📈 Overview")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Documents", stats['total_documents'])
+    
+    with col2:
+        total_words = sum(doc.get('word_count', 0) for doc in documents)
+        st.metric("Total Words", f"{total_words:,}")
+    
+    with col3:
+        avg_words = total_words // len(documents) if documents else 0
+        st.metric("Avg Words/Doc", f"{avg_words:,}")
+    
+    with col4:
+        total_size = sum(doc.get('file_size_mb', 0) for doc in documents)
+        st.metric("Total Size", f"{total_size:.1f} MB")
+    
+    # Document types chart
+    if stats['document_types']:
+        st.markdown("### 📋 Document Types")
+        import pandas as pd
+        
+        df = pd.DataFrame(list(stats['document_types'].items()), columns=['Type', 'Count'])
+        st.bar_chart(df.set_index('Type'))
+    
+    # Document list
+    st.markdown("### 📚 Document Details")
+    doc_data = []
+    for doc in documents:
+        doc_data.append({
+            'Filename': doc['filename'],
+            'Type': doc.get('document_type', 'general').title(),
+            'Words': doc.get('word_count', 0),
+            'Size (MB)': doc.get('file_size_mb', 0),
+            'File Type': doc.get('file_type', 'unknown').upper()
+        })
+    
+    df = pd.DataFrame(doc_data)
+    st.dataframe(df, use_container_width=True)
+
 # Export functions
 __all__ = [
     'prepare_documents_for_search',
     'classify_document_type', 
     'get_document_statistics',
     'setup_search_tab',
-    'extract_text_from_file'
+    'extract_text_from_file',
+    'render_extract_tab',
+    'render_analytics_tab'
 ]
