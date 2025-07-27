@@ -92,7 +92,7 @@ def exact_search(text: str, query: str, case_sensitive: bool = False) -> List[Di
     return matches
 
 def smart_search_filtered(text: str, query: str, case_sensitive: bool = False) -> List[Dict]:
-    """Smart search with stop word filtering - ENHANCED for word variations"""
+    """Enhanced smart search with alignment-quality techniques"""
     
     if not query.strip():
         return []
@@ -108,88 +108,199 @@ def smart_search_filtered(text: str, query: str, case_sensitive: bool = False) -
     if not query_words:
         return []
     
-    # Find each meaningful word with better pattern matching
-    for word in query_words:
-        # ENHANCED: Create root word for better matching
-        root_word = word
-        if word.endswith(('ing', 'ed', 'er', 's', 'ly', 'tion', 'ment')):
-            # Try to find root word
-            if word.endswith('ing'):
-                root_word = word[:-3]
-            elif word.endswith('ed'):
-                root_word = word[:-2]
-            elif word.endswith(('er', 'ly')):
-                root_word = word[:-2]
-            elif word.endswith('tion'):
-                root_word = word[:-4]
-            elif word.endswith('ment'):
-                root_word = word[:-4]
-            elif word.endswith('s'):
-                root_word = word[:-1]
-        
-        # ENHANCED: More flexible pattern to catch variations
-        # This will match: recommend, recommending, recommended, recommendation, etc.
-        patterns = [
-            rf'\b{re.escape(word)}\w*',           # Original word + endings
-            rf'\b{re.escape(root_word)}\w*',      # Root word + endings
-        ]
-        
-        # Remove duplicates
-        patterns = list(set(patterns))
-        
-        for pattern in patterns:
-            try:
-                for match in re.finditer(pattern, search_text):
-                    pos = match.start()
-                    matched_text = text[match.start():match.end()]
-                    
-                    # Calculate score based on match quality
-                    matched_lower = match.group().lower()
-                    word_lower = word.lower()
-                    
-                    if matched_lower == word_lower:
-                        score = 100.0  # Exact word match
-                    elif matched_lower.startswith(word_lower):
-                        score = 95.0   # Word starts with query (recommend -> recommending)
-                    elif matched_lower.startswith(root_word.lower()):
-                        score = 90.0   # Root word match (recommendation -> recommend)
-                    elif word_lower in matched_lower:
-                        score = 85.0   # Query word contained in match
-                    else:
-                        score = 70.0   # Partial match
-                    
-                    # Bonus for common word variations
-                    if any(matched_lower.endswith(suffix) for suffix in ['ing', 'ed', 'tion', 'ment']):
-                        score += 5.0
-                    
-                    # Extract context
-                    context_start = max(0, pos - 150)
-                    context_end = min(len(text), pos + len(matched_text) + 150)
-                    context = text[context_start:context_end]
-                    
-                    match_info = {
-                        'position': pos,
-                        'matched_text': matched_text,
-                        'context': context,
-                        'score': score,
-                        'match_type': 'smart',
-                        'page_number': estimate_page_number(pos, text),
-                        'word_position': len(text[:pos].split()),
-                        'percentage_through': (pos / len(text)) * 100 if text else 0,
-                        'query_word': word,
-                        'pattern_used': pattern
-                    }
-                    
-                    matches.append(match_info)
-            except re.error:
-                # Skip invalid regex patterns
-                continue
+    # ENHANCED: Split text into sentences for better context
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
     
-    # Remove overlapping matches and sort by score
+    # Find matches in sentences (much better than word-by-word)
+    for i, sentence in enumerate(sentences):
+        sentence_lower = sentence.lower()
+        
+        # Calculate multiple similarity scores
+        word_matches = 0
+        semantic_score = 0
+        total_query_words = len(query_words)
+        
+        for word in query_words:
+            # ENHANCED: Better pattern matching with variations
+            root_word = get_root_word(word)
+            patterns = [
+                rf'\b{re.escape(word)}\w*',
+                rf'\b{re.escape(root_word)}\w*',
+            ]
+            
+            word_found = False
+            for pattern in patterns:
+                try:
+                    if re.search(pattern, sentence_lower):
+                        word_matches += 1
+                        word_found = True
+                        break
+                except re.error:
+                    continue
+            
+            # ENHANCED: Semantic matching using government groups
+            if not word_found:
+                semantic_match = find_semantic_match(word, sentence_lower)
+                if semantic_match:
+                    semantic_score += 1
+        
+        # Calculate combined similarity score
+        word_similarity = word_matches / total_query_words if total_query_words > 0 else 0
+        semantic_similarity = semantic_score / total_query_words if total_query_words > 0 else 0
+        
+        # ENHANCED: Combined scoring like alignment system
+        combined_score = (word_similarity * 0.7) + (semantic_similarity * 0.3)
+        
+        if combined_score > 0.2:  # Lower threshold for more results
+            
+            # Calculate position in original text
+            char_position = text.find(sentence)
+            if char_position == -1:
+                char_position = 0
+            
+            # ENHANCED: Content classification
+            content_type = classify_sentence_content_type(sentence)
+            content_relevance = calculate_content_relevance(sentence, query)
+            
+            # ENHANCED: Better scoring system
+            base_score = combined_score * 100
+            content_bonus = content_relevance * 20  # Bonus for relevant content types
+            final_score = min(base_score + content_bonus, 100)
+            
+            # Extract enhanced context (previous and next sentence)
+            context_start = max(0, i - 1)
+            context_end = min(len(sentences), i + 2)
+            context = ' '.join(sentences[context_start:context_end])
+            
+            match_info = {
+                'position': char_position,
+                'matched_text': sentence,
+                'context': context,
+                'score': final_score,
+                'match_type': 'smart_enhanced',
+                'page_number': estimate_page_number(char_position, text),
+                'word_position': len(text[:char_position].split()),
+                'percentage_through': (char_position / len(text)) * 100 if text else 0,
+                'content_type': content_type,
+                'content_relevance': content_relevance,
+                'word_similarity': word_similarity,
+                'semantic_similarity': semantic_similarity,
+                'query_coverage': f"{word_matches + semantic_score}/{total_query_words}"
+            }
+            
+            matches.append(match_info)
+    
+    # ENHANCED: Smart deduplication and ranking
     matches = remove_overlapping_matches(matches)
-    matches.sort(key=lambda x: x['score'], reverse=True)
+    
+    # ENHANCED: Multi-factor sorting
+    matches.sort(key=lambda x: (
+        x['score'],  # Primary: Overall score
+        x['content_relevance'],  # Secondary: Content relevance
+        -x['position']  # Tertiary: Earlier in document
+    ), reverse=True)
     
     return matches
+
+def get_root_word(word: str) -> str:
+    """Extract root word for better matching"""
+    if word.endswith(('ing', 'ed', 'er', 's', 'ly', 'tion', 'ment')):
+        if word.endswith('ing'):
+            return word[:-3]
+        elif word.endswith('ed'):
+            return word[:-2]
+        elif word.endswith(('er', 'ly')):
+            return word[:-2]
+        elif word.endswith('tion'):
+            return word[:-4]
+        elif word.endswith('ment'):
+            return word[:-4]
+        elif word.endswith('s'):
+            return word[:-1]
+    return word
+
+def find_semantic_match(query_word: str, sentence_lower: str) -> bool:
+    """Find semantic matches using government terminology"""
+    
+    # Enhanced semantic groups from alignment system
+    semantic_groups = {
+        'recommend': ['recommend', 'suggestion', 'suggest', 'advise', 'propose', 'urge', 'advocate', 'endorse', 'recommendation', 'recommendations'],
+        'suggest': ['suggest', 'recommend', 'proposal', 'propose', 'advise', 'hint', 'indicate', 'suggestion', 'suggestions'],
+        'respond': ['respond', 'response', 'reply', 'answer', 'feedback', 'reaction', 'comment', 'responses', 'replies'],
+        'response': ['response', 'respond', 'reply', 'answer', 'feedback', 'reaction', 'comment', 'responses', 'replies'],
+        'implement': ['implement', 'execute', 'carry out', 'put into practice', 'apply', 'deploy', 'implementation'],
+        'review': ['review', 'examine', 'assess', 'evaluate', 'analyze', 'inspect', 'analysis'],
+        'policy': ['policy', 'procedure', 'guideline', 'protocol', 'framework', 'strategy', 'policies'],
+        'accept': ['accept', 'agree', 'approve', 'endorse', 'support', 'adopt', 'acceptance'],
+        'reject': ['reject', 'decline', 'refuse', 'dismiss', 'deny', 'oppose', 'rejection'],
+        'government': ['government', 'department', 'ministry', 'agency', 'authority', 'administration'],
+        'report': ['report', 'document', 'paper', 'study', 'analysis', 'investigation'],
+        'meeting': ['meeting', 'conference', 'session', 'discussion', 'consultation', 'briefing'],
+        'budget': ['budget', 'funding', 'financial', 'cost', 'expenditure', 'allocation'],
+        'urgent': ['urgent', 'immediate', 'critical', 'priority', 'emergency', 'pressing']
+    }
+    
+    # Check if query word has semantic matches in the sentence
+    for key, synonyms in semantic_groups.items():
+        if query_word in synonyms:
+            # Look for any synonym in the sentence
+            for synonym in synonyms:
+                if synonym in sentence_lower:
+                    return True
+    
+    return False
+
+def classify_sentence_content_type(sentence: str) -> str:
+    """Classify sentence content type like alignment system"""
+    
+    sentence_lower = sentence.lower()
+    
+    # Government document classification
+    if any(word in sentence_lower for word in ['recommend', 'suggest', 'advise', 'propose', 'should', 'must', 'ought']):
+        return 'Recommendation'
+    elif any(word in sentence_lower for word in ['accept', 'reject', 'agree', 'disagree', 'implement', 'consider', 'response', 'reply']):
+        return 'Response'
+    elif any(word in sentence_lower for word in ['policy', 'procedure', 'guideline', 'framework', 'protocol', 'strategy']):
+        return 'Policy'
+    elif any(word in sentence_lower for word in ['review', 'analyze', 'assess', 'evaluate', 'examine', 'investigation']):
+        return 'Analysis'
+    elif any(word in sentence_lower for word in ['budget', 'funding', 'financial', 'cost', 'expenditure']):
+        return 'Financial'
+    elif any(word in sentence_lower for word in ['urgent', 'immediate', 'critical', 'priority', 'emergency']):
+        return 'Urgent'
+    elif any(word in sentence_lower for word in ['meeting', 'conference', 'discussion', 'consultation']):
+        return 'Meeting'
+    elif any(word in sentence_lower for word in ['government', 'department', 'ministry', 'agency', 'authority']):
+        return 'Government'
+    else:
+        return 'General'
+
+def calculate_content_relevance(sentence: str, query: str) -> float:
+    """Calculate how relevant the content type is to the query"""
+    
+    sentence_type = classify_sentence_content_type(sentence)
+    query_lower = query.lower()
+    
+    # High relevance mappings
+    high_relevance = {
+        'Recommendation': ['recommend', 'suggest', 'advise', 'propose'],
+        'Response': ['respond', 'response', 'reply', 'answer'],
+        'Policy': ['policy', 'procedure', 'framework', 'guideline'],
+        'Financial': ['budget', 'cost', 'funding', 'financial'],
+        'Government': ['government', 'department', 'ministry'],
+        'Urgent': ['urgent', 'immediate', 'critical', 'emergency']
+    }
+    
+    # Check if query matches content type
+    for content_type, keywords in high_relevance.items():
+        if sentence_type == content_type:
+            if any(keyword in query_lower for keyword in keywords):
+                return 1.0  # Perfect match
+            else:
+                return 0.5  # Type match but not keyword match
+    
+    return 0.3  # General relevance
 
 def fuzzy_search_filtered(text: str, query: str, case_sensitive: bool = False) -> List[Dict]:
     """Fuzzy search with stop word filtering - FIXED highlighting"""
