@@ -1,55 +1,24 @@
-# Fixed requirements.txt for Streamlit Cloud deployment
-# Addresses dependency conflicts and missing packages
+# Simplified requirements.txt for reliable Streamlit Cloud deployment
+# Core dependencies only to avoid conflicts
 
-# Core dependencies
+# Streamlit and core data handling
 streamlit>=1.28.0
 pandas>=1.5.0
 numpy>=1.24.0
 
-# AI and machine learning
-sentence-transformers>=2.2.0
-scikit-learn>=1.3.0
-torch>=2.0.0
-transformers>=4.30.0
-huggingface-hub>=0.16.0
-
-# Document processing - FIXED CONFLICTS
+# Document processing - essential only
 PyPDF2>=3.0.0
-pdfplumber>=0.9.0
 python-docx>=0.8.11
-openpyxl>=3.1.0
-# REMOVED: xlrd>=2.0.1 (conflicts with textract)
 
-# Text processing and utilities
-chardet>=5.0.0
+# Text processing
 python-Levenshtein>=0.21.0
 fuzzywuzzy>=0.18.0
-regex>=2023.6.3
-nltk>=3.8.1
 
-# Additional ML/AI libraries for better performance
-faiss-cpu>=1.7.4
-tokenizers>=0.13.0
+# Optional: AI/ML libraries (will gracefully fallback if not available)
+# Uncomment these lines if you want to try AI features:
+# sentence-transformers>=2.2.0
+# torch>=2.0.0
+# scikit-learn>=1.3.0
 
-# Date and time handling
+# Date handling
 python-dateutil>=2.8.2
-
-# File handling and compression
-# REMOVED: zipfile36>=0.1.3 (not needed)
-# REMOVED: rarfile>=4.0 (not essential)
-
-# Optional: Enhanced text extraction
-# REMOVED: python-magic>=0.4.27 (can cause issues)
-# REMOVED: textract>=1.6.5 (conflicts with xlrd)
-
-# Optional: For charts and visualizations in analytics
-plotly>=5.15.0
-matplotlib>=3.7.0
-seaborn>=0.12.0
-
-# Optional: For advanced document analysis
-spacy>=3.6.0
-
-# REMOVED: Development packages that don't exist
-# streamlit-debug>=1.0.0 (doesn't exist)
-# streamlit-option-menu>=0.3.6 (optional)
