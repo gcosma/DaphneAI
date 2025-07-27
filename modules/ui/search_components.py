@@ -1,228 +1,565 @@
-# modules/ui/search_components.py
-# COMPLETE FILE - Enhanced search with page numbers and detailed info
-
+# Complete search_components.py with Enhanced Features and Recommendation-Response Alignment
 import streamlit as st
 import re
-import time
+import json
+import pandas as pd
+from typing import Dict, List, Any, Tuple, Optional
 from datetime import datetime
-from typing import Dict, List, Any, Optional
-import logging
+import time
+from collections import defaultdict
+
+# ========== CORE SEARCH INTERFACE ==========
 
 def render_search_interface(documents: List[Dict[str, Any]]):
-    """Main search interface with clear, simple options"""
-    st.header("🔍 Document Search")
+    """Enhanced search interface with clear options and descriptions"""
+    
+    st.header("🔍 Advanced Document Search")
+    st.markdown("*Search through your documents with multiple AI-powered methods*")
     
     if not documents:
-        st.info("No documents uploaded. Please upload documents first.")
-        # Add sample data button for testing
-        if st.button("🎯 Load Sample Data"):
-            sample_docs = [
-                {
-                    'filename': 'sample_policy.txt',
-                    'text': 'The government recommends implementing new healthcare policies to improve patient access and reduce waiting times. This policy should be considered for immediate implementation. We recommend further consultation with stakeholders.',
-                    'word_count': 28,
-                    'file_type': 'txt'
-                },
-                {
-                    'filename': 'sample_response.txt', 
-                    'text': 'The department accepts the recommendation for healthcare reform. We will establish a task force to oversee the implementation of these critical changes. The committee recommends monthly reviews and suggests immediate action.',
-                    'word_count': 32,
-                    'file_type': 'txt'
-                }
-            ]
-            st.session_state.documents = sample_docs
-            st.rerun()
+        st.warning("📁 Please upload documents first")
         return
     
     # Search input
     query = st.text_input(
-        "Search Documents", 
-        placeholder="Enter your search terms...",
-        help="Search across all uploaded documents"
+        "🔍 Enter your search query:",
+        placeholder="e.g., recommendations, policy changes, budget allocation",
+        help="Enter keywords, phrases, or concepts to search for"
     )
     
-    # Search method selection with clear explanations
-    st.markdown("**Choose how to search:**")
+    # Search method selection with clear descriptions
+    st.markdown("### 🎯 Search Method")
     
-    # Check if AI is available
-    ai_available = check_rag_availability()
-    
-    # Create clear options with explanations
-    search_options = [
-        ("Smart Search", "🧠", "Finds keywords and phrases - recommended for most searches"),
-        ("Exact Match", "🎯", "Finds exact words only - fastest, most precise"),
-        ("Fuzzy Search", "🌀", "Handles typos and misspellings"),
-    ]
-    
-    # Add AI options if available
-    if ai_available:
-        search_options.extend([
-            ("AI Semantic", "🤖", "AI finds related concepts and meanings - slower but smarter"),
-            ("Hybrid", "🔄", "Combines Smart + AI for best results - recommended for exploration")
-        ])
-    
-    # Display as selectbox with clear labels
-    search_labels = [f"{emoji} {name}" for name, emoji, desc in search_options]
-    search_choice = st.selectbox(
-        "Search Method:",
-        options=search_labels,
-        help="Choose the search method that fits your needs"
+    search_method = st.radio(
+        "Choose your search approach:",
+        [
+            "🧠 Smart Search - Finds keywords and phrases (recommended for most searches)",
+            "🎯 Exact Match - Finds exact words only (fastest, most precise)",
+            "🌀 Fuzzy Search - Handles typos and misspellings", 
+            "🤖 AI Semantic - AI finds related concepts (needs AI libraries)",
+            "🔄 Hybrid - Combines Smart + AI for best results (needs AI libraries)"
+        ],
+        index=0,
+        help="Different methods find different types of matches"
     )
     
-    # Show explanation for selected method
-    for name, emoji, desc in search_options:
-        if f"{emoji} {name}" == search_choice:
-            st.info(f"ℹ️ **{name}**: {desc}")
-            break
+    # Extract search method key
+    method_mapping = {
+        "🧠 Smart Search": "smart",
+        "🎯 Exact Match": "exact", 
+        "🌀 Fuzzy Search": "fuzzy",
+        "🤖 AI Semantic": "semantic",
+        "🔄 Hybrid": "hybrid"
+    }
     
-    # Settings
-    col1, col2, col3 = st.columns(3)
+    method_key = next(key for desc, key in method_mapping.items() if desc in search_method)
+    
+    # Additional options
+    col1, col2 = st.columns(2)
     
     with col1:
-        max_results = st.number_input(
-            "Max Results", 
-            min_value=1, 
-            max_value=100, 
-            value=20,
-            help="Maximum results to show"
-        )
+        max_results = st.slider("Max results per document", 1, 20, 5)
+        case_sensitive = st.checkbox("Case sensitive search", value=False)
     
     with col2:
-        group_by_doc = st.checkbox(
-            "Group by Document", 
-            value=True,
-            help="Group multiple matches from same document"
-        )
+        show_context = st.checkbox("Show context around matches", value=True)
+        highlight_matches = st.checkbox("Highlight search terms", value=True)
     
-    with col3:
-        if ai_available:
-            min_similarity = st.slider(
-                "AI Similarity", 
-                0.0, 1.0, 0.1, 0.05,
-                help="Minimum similarity for AI results"
-            )
-        else:
-            min_similarity = 0.1
+    # AI availability check
+    ai_available = check_rag_availability()
+    if method_key in ["semantic", "hybrid"] and not ai_available:
+        st.warning("🤖 AI search requires: `pip install sentence-transformers torch`")
+        if st.button("💡 Show Installation Instructions"):
+            st.code("pip install sentence-transformers torch scikit-learn")
+        return
     
-    # Show AI installation hint if needed
-    if not ai_available:
-        with st.expander("🤖 Want AI Search? (Optional)"):
-            st.markdown("""
-            **Install AI libraries for smarter search:**
-            ```bash
-            pip install sentence-transformers torch
-            ```
-            
-            **AI search finds concepts, not just keywords:**
-            - Searching "recommend" also finds "suggest", "advise", "propose"
-            - Understands context and meaning
-            - Great for exploring unfamiliar documents
-            """)
-    
-    # Perform search
-    if query:
-        # Extract method name from selection
-        method_name = search_choice.split(" ", 1)[1]  # Remove emoji
+    # Search execution
+    if st.button("🔍 Search Documents", type="primary") and query:
         
         start_time = time.time()
         
-        try:
-            # Route to appropriate search function
-            if method_name == "Smart Search":
-                results = smart_search_enhanced(query, documents, max_results)
-                search_info = "Smart keyword matching"
-                
-            elif method_name == "Exact Match":
-                results = exact_search_enhanced(query, documents, max_results)
-                search_info = "Exact word matching"
-                
-            elif method_name == "Fuzzy Search":
-                results = fuzzy_search_enhanced(query, documents, max_results)
-                search_info = "Typo-tolerant search"
-                
-            elif method_name == "AI Semantic" and ai_available:
-                with st.spinner("🤖 AI is analyzing document meanings..."):
-                    results = rag_semantic_search(query, documents, max_results, min_similarity)
-                search_info = "AI semantic analysis"
-                
-            elif method_name == "Hybrid" and ai_available:
-                with st.spinner("🔄 Combining Smart + AI search..."):
-                    results = hybrid_search(query, documents, max_results, min_similarity)
-                search_info = "Hybrid (Smart + AI) search"
-                
-            else:
-                # Fallback to smart search
-                results = smart_search_enhanced(query, documents, max_results)
-                search_info = "Smart search (fallback)"
+        with st.spinner(f"🔍 Searching with {search_method.split(' - ')[0]}..."):
+            
+            # Execute search based on method
+            results = execute_search(
+                documents=documents,
+                query=query,
+                method=method_key,
+                max_results=max_results,
+                case_sensitive=case_sensitive
+            )
             
             search_time = time.time() - start_time
             
-            # Log search for analytics
-            log_search(query, results, search_time, method_name.lower().replace(' ', '_'))
-            
             # Display results
-            display_search_results(results, query, search_time, method_name, search_info, group_by_doc)
-            
-        except Exception as e:
-            st.error(f"Search error: {str(e)}")
-            st.info("💡 Try a different search method or check your query")
-            logging.error(f"Search failed: {e}")
+            display_results_grouped(
+                results=results,
+                query=query,
+                search_time=search_time,
+                show_context=show_context,
+                highlight_matches=highlight_matches,
+                search_method=search_method.split(' - ')[0]
+            )
 
-def display_search_results(results, query, search_time, method_name, search_info, group_by_doc):
-    """Display search results with clear explanations"""
+# ========== SEARCH EXECUTION ==========
+
+def execute_search(documents: List[Dict], query: str, method: str, max_results: int = 5, case_sensitive: bool = False) -> List[Dict]:
+    """Execute search using the specified method with stop word filtering"""
+    return execute_search_with_preprocessing(documents, query, method, max_results, case_sensitive)
+
+def execute_search_with_preprocessing(documents: List[Dict], query: str, method: str, max_results: int = 5, case_sensitive: bool = False) -> List[Dict]:
+    """Execute search with query preprocessing"""
+    
+    # Preprocess query
+    processed_query = preprocess_query(query, method)
+    
+    # Show query transformation if different
+    if processed_query != query and method != "exact":
+        st.info(f"🔍 Search terms after filtering stop words: '{processed_query}'")
+    
+    all_results = []
+    
+    for doc in documents:
+        text = doc.get('text', '')
+        if not text:
+            continue
+        
+        # Execute search based on method using processed query
+        if method == "exact":
+            matches = exact_search(text, query, case_sensitive)  # Use original query for exact
+        elif method == "smart":
+            matches = smart_search_filtered(text, processed_query, case_sensitive)
+        elif method == "fuzzy":
+            matches = fuzzy_search_filtered(text, processed_query, case_sensitive)
+        elif method == "semantic":
+            matches = semantic_search(text, processed_query)
+        elif method == "hybrid":
+            matches = hybrid_search_filtered(text, processed_query, case_sensitive)
+        else:
+            matches = smart_search_filtered(text, processed_query, case_sensitive)
+        
+        # Limit results per document
+        matches = matches[:max_results]
+        
+        # Add document info to each match
+        for match in matches:
+            match['document'] = doc
+            match['search_method'] = method
+            match['original_query'] = query
+            match['processed_query'] = processed_query
+            all_results.append(match)
+    
+    # Sort by relevance score
+    all_results.sort(key=lambda x: x.get('score', 0), reverse=True)
+    
+    return all_results
+
+def exact_search(text: str, query: str, case_sensitive: bool = False) -> List[Dict]:
+    """Find exact matches only"""
+    
+    search_text = text if case_sensitive else text.lower()
+    search_query = query if case_sensitive else query.lower()
+    
+    matches = []
+    start = 0
+    
+    while True:
+        pos = search_text.find(search_query, start)
+        if pos == -1:
+            break
+        
+        # Extract context
+        context_start = max(0, pos - 100)
+        context_end = min(len(text), pos + len(query) + 100)
+        context = text[context_start:context_end]
+        
+        match = {
+            'position': pos,
+            'matched_text': text[pos:pos + len(query)],
+            'context': context,
+            'score': 100.0,  # Exact matches get highest score
+            'match_type': 'exact',
+            'page_number': estimate_page_number(pos, text),
+            'word_position': len(text[:pos].split()),
+            'percentage_through': (pos / len(text)) * 100 if text else 0
+        }
+        
+        matches.append(match)
+        start = pos + 1
+    
+    return matches
+
+def smart_search_filtered(text: str, query: str, case_sensitive: bool = False) -> List[Dict]:
+    """Smart search with stop word filtering"""
+    
+    if not query.strip():
+        return []
+    
+    search_text = text if case_sensitive else text.lower()
+    search_query = query if case_sensitive else query.lower()
+    
+    matches = []
+    
+    # Split query into meaningful words (stop words already filtered)
+    query_words = [word for word in query.split() if len(word) > 1]
+    
+    if not query_words:
+        return []
+    
+    # Find each meaningful word
+    for word in query_words:
+        # Find word with word boundaries, including partial matches
+        pattern = r'\b' + re.escape(word) + r'\w*'
+        
+        for match in re.finditer(pattern, search_text):
+            pos = match.start()
+            matched_text = text[match.start():match.end()]
+            
+            # Calculate score based on match quality
+            if match.group().lower() == word.lower():
+                score = 100.0  # Exact word match
+            elif match.group().lower().startswith(word.lower()):
+                score = 85.0   # Word starts with query
+            else:
+                score = 70.0   # Partial match
+            
+            # Bonus for longer matches
+            if len(matched_text) > len(word):
+                score += 5.0
+            
+            # Extract context
+            context_start = max(0, pos - 150)
+            context_end = min(len(text), pos + len(matched_text) + 150)
+            context = text[context_start:context_end]
+            
+            match_info = {
+                'position': pos,
+                'matched_text': matched_text,
+                'context': context,
+                'score': score,
+                'match_type': 'smart',
+                'page_number': estimate_page_number(pos, text),
+                'word_position': len(text[:pos].split()),
+                'percentage_through': (pos / len(text)) * 100 if text else 0,
+                'query_word': word
+            }
+            
+            matches.append(match_info)
+    
+    # Remove overlapping matches and sort by score
+    matches = remove_overlapping_matches(matches)
+    matches.sort(key=lambda x: x['score'], reverse=True)
+    
+    return matches
+
+def fuzzy_search_filtered(text: str, query: str, case_sensitive: bool = False) -> List[Dict]:
+    """Fuzzy search with stop word filtering"""
+    
+    if not query.strip():
+        return []
+    
+    import difflib
+    
+    search_text = text if case_sensitive else text.lower()
+    search_query = query if case_sensitive else query.lower()
+    
+    # Split into meaningful words
+    words = text.split()
+    search_words = search_text.split()
+    query_words = query.split()
+    
+    matches = []
+    
+    # Check each word against each query word
+    for query_word in query_words:
+        if len(query_word) < 2:
+            continue
+            
+        for i, word in enumerate(search_words):
+            similarity = difflib.SequenceMatcher(None, query_word, word).ratio()
+            
+            if similarity > 0.7:  # 70% similarity threshold
+                # Find position in original text
+                pos = len(' '.join(words[:i]))
+                if i > 0:
+                    pos += 1  # Add space
+                
+                # Extract context
+                context_start = max(0, pos - 150)
+                context_end = min(len(text), pos + len(words[i]) + 150)
+                context = text[context_start:context_end]
+                
+                match = {
+                    'position': pos,
+                    'matched_text': words[i],
+                    'context': context,
+                    'score': similarity * 100,
+                    'match_type': 'fuzzy',
+                    'similarity': similarity,
+                    'page_number': estimate_page_number(pos, text),
+                    'word_position': i,
+                    'percentage_through': (pos / len(text)) * 100 if text else 0,
+                    'query_word': query_word
+                }
+                
+                matches.append(match)
+    
+    # Remove overlapping matches and sort by similarity
+    matches = remove_overlapping_matches(matches)
+    matches.sort(key=lambda x: x['score'], reverse=True)
+    
+    return matches
+
+def semantic_search(text: str, query: str) -> List[Dict]:
+    """AI semantic search using sentence transformers"""
+    
+    try:
+        # Initialize RAG engine if not already done
+        if 'rag_engine' not in st.session_state:
+            from modules.search.rag_search import RAGSearchEngine
+            st.session_state.rag_engine = RAGSearchEngine()
+        
+        rag_engine = st.session_state.rag_engine
+        
+        # Use RAG search
+        rag_results = rag_engine.search(query, [{'text': text, 'filename': 'current_doc'}])
+        
+        matches = []
+        for result in rag_results:
+            # Convert RAG result to our format
+            match = {
+                'position': result.get('position', 0),
+                'matched_text': result.get('chunk', ''),
+                'context': result.get('chunk', ''),
+                'score': result.get('score', 0) * 100,
+                'match_type': 'semantic',
+                'page_number': result.get('page_number', 1),
+                'word_position': 0,
+                'percentage_through': 0
+            }
+            matches.append(match)
+        
+        return matches
+        
+    except Exception as e:
+        st.error(f"Semantic search failed: {str(e)}")
+        return []
+
+def hybrid_search_filtered(text: str, query: str, case_sensitive: bool = False) -> List[Dict]:
+    """Hybrid search with stop word filtering"""
+    
+    # Get smart search results with filtering
+    smart_results = smart_search_filtered(text, query, case_sensitive)
+    
+    # Get semantic search results (semantic search handles its own processing)
+    semantic_results = semantic_search(text, query)
+    
+    # Combine and deduplicate
+    all_matches = smart_results + semantic_results
+    
+    # Remove overlapping matches
+    unique_matches = remove_overlapping_matches(all_matches)
+    
+    # Sort by score
+    unique_matches.sort(key=lambda x: x['score'], reverse=True)
+    
+    return unique_matches
+
+def remove_overlapping_matches(matches: List[Dict]) -> List[Dict]:
+    """Remove overlapping matches, keeping the highest scored ones"""
+    
+    if not matches:
+        return matches
+    
+    # Sort by score descending
+    sorted_matches = sorted(matches, key=lambda x: x['score'], reverse=True)
+    
+    unique_matches = []
+    used_positions = set()
+    
+    for match in sorted_matches:
+        pos = match['position']
+        matched_text = match.get('matched_text', '')
+        match_length = len(matched_text)
+        
+        # Check if this match overlaps with any existing match
+        overlap = False
+        for used_start, used_end in used_positions:
+            # Check for overlap
+            if not (pos + match_length <= used_start or pos >= used_end):
+                overlap = True
+                break
+        
+        if not overlap:
+            unique_matches.append(match)
+            used_positions.add((pos, pos + match_length))
+    
+    return unique_matches
+
+# ========== RESULT DISPLAY ==========
+
+def display_results_grouped(results: List[Dict], query: str, search_time: float, 
+                          show_context: bool = True, highlight_matches: bool = True,
+                          search_method: str = "Search"):
+    """Display search results grouped by document with enhanced information"""
     
     if not results:
-        st.warning(f"No results found for '{query}' using {method_name}")
-        
-        # Suggest alternatives
-        st.markdown("**💡 Try these alternatives:**")
-        if method_name == "Exact Match":
-            st.info("• Use **Smart Search** for broader keyword matching")
-        elif method_name == "Smart Search":
-            st.info("• Try **Fuzzy Search** if there might be typos")
-            if check_rag_availability():
-                st.info("• Try **AI Semantic** to find related concepts")
-        elif method_name == "Fuzzy Search":
-            if check_rag_availability():
-                st.info("• Try **AI Semantic** to find related concepts")
-            else:
-                st.info("• Try **Smart Search** for standard keyword matching")
-        elif "AI" in method_name:
-            st.info("• Try **Smart Search** for exact keyword matching")
-        
+        st.warning(f"No results found for '{query}'")
         return
     
-    # Success message
-    doc_count = len(set(r['document']['filename'] for r in results))
-    st.success(f"✅ {search_info} complete!")
+    # Group results by document
+    doc_groups = defaultdict(list)
+    for result in results:
+        doc_name = result['document']['filename']
+        doc_groups[doc_name].append(result)
     
-    # Results summary
+    # Summary
+    total_docs = len(doc_groups)
+    total_matches = len(results)
+    
+    st.success(f"🎯 Found **{total_matches}** result(s) in **{total_docs}** document(s) for '**{query}**' in {search_time:.3f} seconds")
+    
+    # Export options
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Results", len(results))
+        if st.button("📋 Copy All Results"):
+            copy_all_results(results, query)
     with col2:
-        st.metric("Documents", doc_count)
+        if st.button("📊 Export to CSV"):
+            export_results_csv(results, query)
     with col3:
-        st.metric("Time", f"{search_time:.3f}s")
+        if st.button("📄 Generate Report"):
+            generate_search_report(results, query, search_method)
     
-    # Show breakdown for hybrid search
-    if method_name == "Hybrid":
-        smart_results = [r for r in results if 'smart' in r.get('search_type', '')]
-        ai_results = [r for r in results if 'rag' in r.get('search_type', '')]
+    # Display each document group
+    for doc_name, doc_results in doc_groups.items():
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("🧠 Smart Matches", len(smart_results))
-        with col2:
-            st.metric("🤖 AI Matches", len(ai_results))
-    
-    # Display results
-    if group_by_doc:
-        display_results_grouped(results, query, search_time)
-    else:
-        display_results_flat(results, query, search_time)
+        doc = doc_results[0]['document']
+        best_score = max(r['score'] for r in doc_results)
+        
+        # Document header with enhanced info
+        with st.expander(f"📄 {doc_name} ({len(doc_results)} matches, best score: {best_score:.1f})", expanded=True):
+            
+            # Document statistics
+            text = doc.get('text', '')
+            word_count = len(text.split())
+            char_count = len(text)
+            est_pages = max(1, char_count // 2000)
+            file_size_mb = char_count / (1024 * 1024)
+            
+            st.markdown(f"""
+            **File Type:** {doc_name.split('.')[-1].upper()}  |  **Words:** {word_count:,}  |  **Size:** {file_size_mb:.1f} MB  |  **Est. Pages:** {est_pages}
+            """)
+            
+            # Display each match in this document
+            for i, result in enumerate(doc_results, 1):
+                display_single_result(result, i, query, show_context, highlight_matches)
 
-# ========== RAG SEARCH FUNCTIONS ==========
+def display_single_result(result: Dict, index: int, query: str, show_context: bool, highlight_matches: bool):
+    """Display a single search result with enhanced formatting"""
+    
+    # Result header with score and method
+    method_icons = {
+        'exact': '🎯',
+        'smart': '🧠', 
+        'fuzzy': '🌀',
+        'semantic': '🤖',
+        'hybrid': '🔄'
+    }
+    
+    method = result.get('match_type', 'unknown')
+    icon = method_icons.get(method, '🔍')
+    score = result.get('score', 0)
+    
+    st.markdown(f"""
+    **{icon} {method.title()} Search - Match {index}**  
+    Score: {score:.1f}
+    """)
+    
+    # Position information
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown(f"📄 **Page {result.get('page_number', 1)}**")
+    
+    with col2:
+        pos = result.get('position', 0)
+        st.markdown(f"📍 **Position {pos:,}**")
+    
+    with col3:
+        percentage = result.get('percentage_through', 0)
+        st.markdown(f"📊 **{percentage:.0f}% through doc**")
+    
+    with col4:
+        word_pos = result.get('word_position', 0)
+        st.markdown(f"🔢 **Word {word_pos:,}**")
+    
+    # Match details
+    matched_text = result.get('matched_text', '')
+    if matched_text:
+        # Count occurrences of query terms
+        query_words = query.lower().split()
+        match_counts = {}
+        for word in query_words:
+            count = matched_text.lower().count(word)
+            if count > 0:
+                match_counts[word] = count
+        
+        if match_counts:
+            match_summary = " | ".join([f"{word}({count})" for word, count in match_counts.items()])
+            st.markdown(f"🎯 **Exact phrase '{query}':** {len([w for w in query_words if w in matched_text.lower()])}x | **Words:** {match_summary}")
+    
+    # Context display
+    if show_context:
+        context = result.get('context', '')
+        if context:
+            
+            # Highlight matches if requested
+            if highlight_matches:
+                highlighted_context = highlight_search_terms(context, query)
+                st.markdown(f"📖 **Context:** {highlighted_context}", unsafe_allow_html=True)
+            else:
+                st.markdown(f"📖 **Context:** {context}")
+            
+            # Position hint
+            page_num = result.get('page_number', 1)
+            percentage = result.get('percentage_through', 0)
+            st.caption(f"💡 This appears around page {page_num}, {percentage:.1f}% through the document")
+    
+    # Additional info for special search types
+    if method == 'fuzzy' and 'similarity' in result:
+        similarity = result['similarity']
+        st.caption(f"🌀 Fuzzy match similarity: {similarity:.2f}")
+    
+    elif method == 'semantic':
+        st.caption(f"🤖 AI found this as semantically related to your query")
+    
+    st.markdown("---")
+
+def highlight_search_terms(text: str, query: str) -> str:
+    """Highlight search terms in text"""
+    
+    query_words = query.split()
+    highlighted = text
+    
+    for word in query_words:
+        if len(word) > 2:  # Only highlight meaningful words
+            # Case-insensitive highlighting
+            pattern = re.compile(re.escape(word), re.IGNORECASE)
+            highlighted = pattern.sub(
+                lambda m: f"<mark style='background-color: #FFEB3B; padding: 2px; border-radius: 2px;'>{m.group()}</mark>",
+                highlighted
+            )
+    
+    return highlighted
+
+# ========== UTILITY FUNCTIONS ==========
+
+def estimate_page_number(char_position: int, text: str) -> int:
+    """Estimate page number based on character position"""
+    if char_position <= 0:
+        return 1
+    return max(1, char_position // 2000 + 1)  # ~2000 chars per page
 
 def check_rag_availability() -> bool:
     """Check if RAG dependencies are available"""
@@ -233,860 +570,843 @@ def check_rag_availability() -> bool:
     except ImportError:
         return False
 
-def rag_semantic_search(query: str, documents: List[Dict], max_results: int, min_similarity: float = 0.1) -> List[Dict]:
-    """RAG semantic search using sentence transformers"""
-    try:
-        from modules.search.rag_search import RAGSearchEngine
-        
-        # Initialize RAG engine (cached)
-        if 'rag_engine' not in st.session_state:
-            st.session_state.rag_engine = RAGSearchEngine()
-        
-        rag_engine = st.session_state.rag_engine
-        
-        # Perform RAG search
-        rag_results = rag_engine.search(query, documents, max_results)
-        
-        # Convert to standard format
-        results = []
-        for rag_result in rag_results:
-            if rag_result.get('similarity', 0) >= min_similarity:
-                results.append({
-                    'document': rag_result['document'],
-                    'score': rag_result['similarity'] * 100,  # Convert to 0-100 scale
-                    'matches': [f"Semantic similarity: {rag_result['similarity']:.3f}"],
-                    'context': rag_result.get('snippet', ''),
-                    'search_type': 'rag_semantic',
-                    'match_id': f"rag_{rag_result['document']['filename']}_{rag_result.get('chunk_info', {}).get('chunk_index', 0)}"
-                })
-        
-        return results
-        
-    except ImportError:
-        st.error("RAG search requires: pip install sentence-transformers torch")
-        return []
-    except Exception as e:
-        st.error(f"RAG search error: {str(e)}")
-        logging.error(f"RAG search failed: {e}")
-        return []
+# ========== STOP WORDS AND QUERY PROCESSING ==========
 
-def hybrid_search(query: str, documents: List[Dict], max_results: int, min_similarity: float = 0.1) -> List[Dict]:
-    """
-    HYBRID SEARCH - Combines Smart Search + AI for best results
-    """
-    
-    # Get results from both methods
-    smart_results = smart_search_enhanced(query, documents, max_results // 2)
-    
-    try:
-        ai_results = rag_semantic_search(query, documents, max_results // 2, min_similarity)
-    except:
-        # If AI fails, just use smart search
-        ai_results = []
-    
-    # Combine results intelligently
-    combined = []
-    seen_docs = set()
-    
-    # Add smart search results first (they're reliable)
-    for result in smart_results:
-        result['search_type'] = 'hybrid_smart'
-        combined.append(result)
-        seen_docs.add(result['document']['filename'])
-    
-    # Add AI results that don't duplicate smart results
-    for result in ai_results:
-        if result['document']['filename'] not in seen_docs:
-            result['search_type'] = 'hybrid_rag'
-            combined.append(result)
-    
-    # Sort by score and limit
-    combined.sort(key=lambda x: x['score'], reverse=True)
-    return combined[:max_results]
+# Comprehensive stop words list
+STOP_WORDS = {
+    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 
+    'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the', 
+    'to', 'was', 'will', 'with', 'the', 'this', 'but', 'they', 'have', 
+    'had', 'what', 'said', 'each', 'which', 'she', 'do', 'how', 'their', 
+    'if', 'up', 'out', 'many', 'then', 'them', 'these', 'so', 'some', 
+    'her', 'would', 'make', 'like', 'into', 'him', 'time', 'two', 'more', 
+    'go', 'no', 'way', 'could', 'my', 'than', 'first', 'been', 'call', 
+    'who', 'oil', 'sit', 'now', 'find', 'down', 'day', 'did', 'get', 
+    'come', 'made', 'may', 'part'
+}
 
-# ========== ENHANCED SEARCH FUNCTIONS ==========
-
-def smart_search_enhanced(query: str, documents: List[Dict], max_results: int) -> List[Dict]:
-    """Enhanced smart search that finds multiple matches per document"""
-    all_results = []
-    query_lower = query.lower()
-    query_words = [word for word in query_lower.split() if len(word) > 2]
-    
-    if not query_words:
-        return []
-    
-    for doc in documents:
-        if 'text' not in doc or not doc['text']:
-            continue
-        
-        text = doc['text']
-        text_lower = text.lower()
-        
-        # Split text into meaningful chunks
-        chunks = split_text_into_chunks(text)
-        
-        for chunk_idx, chunk in enumerate(chunks):
-            chunk_lower = chunk.lower()
-            score = 0
-            matches = []
-            
-            # Exact phrase matching (highest score)
-            if query_lower in chunk_lower:
-                phrase_count = chunk_lower.count(query_lower)
-                score += phrase_count * 100
-                matches.append(f"Exact phrase '{query}': {phrase_count}x")
-            
-            # Individual word matching
-            word_scores = []
-            for word in query_words:
-                word_count = chunk_lower.count(word)
-                if word_count > 0:
-                    word_score = word_count * 10
-                    score += word_score
-                    word_scores.append(f"{word}({word_count})")
-            
-            if word_scores:
-                matches.append(f"Words: {', '.join(word_scores)}")
-            
-            # Position bonus (earlier matches score higher)
-            if score > 0:
-                position_bonus = max(5 - (chunk_idx * 0.5), 0)
-                score += position_bonus
-                
-                # Extract context around best match
-                context = extract_context_from_chunk(chunk, query, 200)
-                
-                all_results.append({
-                    'document': doc,
-                    'score': score,
-                    'matches': matches,
-                    'context': context,
-                    'search_type': 'smart',
-                    'chunk_index': chunk_idx,
-                    'match_id': f"{doc['filename']}_{chunk_idx}"
-                })
-    
-    # Sort by score and limit results
-    all_results.sort(key=lambda x: x['score'], reverse=True)
-    return all_results[:max_results]
-
-def exact_search_enhanced(query: str, documents: List[Dict], max_results: int) -> List[Dict]:
-    """Enhanced exact search that finds all occurrences"""
-    all_results = []
-    query_lower = query.lower()
-    
-    for doc in documents:
-        if 'text' not in doc or not doc['text']:
-            continue
-        
-        text = doc['text']
-        text_lower = text.lower()
-        
-        # Find all occurrences
-        start = 0
-        occurrence = 0
-        
-        while True:
-            index = text_lower.find(query_lower, start)
-            if index == -1:
-                break
-            
-            occurrence += 1
-            
-            # Extract context around this match
-            context = extract_context_at_position(text, index, query, 200)
-            
-            all_results.append({
-                'document': doc,
-                'score': 100 + occurrence,  # Higher score for multiple occurrences
-                'matches': [f"Exact match #{occurrence} at position {index}"],
-                'context': context,
-                'search_type': 'exact',
-                'position': index,
-                'match_id': f"{doc['filename']}_pos_{index}"
-            })
-            
-            start = index + 1
-    
-    # Sort by score and limit
-    all_results.sort(key=lambda x: x['score'], reverse=True)
-    return all_results[:max_results]
-
-def fuzzy_search_enhanced(query: str, documents: List[Dict], max_results: int) -> List[Dict]:
-    """Enhanced fuzzy search with multiple matches per document"""
-    all_results = []
-    query_words = [word.lower() for word in query.split() if len(word) > 2]
-    
-    if not query_words:
-        return []
-    
-    for doc in documents:
-        if 'text' not in doc or not doc['text']:
-            continue
-        
-        text = doc['text']
-        chunks = split_text_into_chunks(text)
-        
-        for chunk_idx, chunk in enumerate(chunks):
-            chunk_lower = chunk.lower()
-            chunk_words = re.findall(r'\b\w+\b', chunk_lower)
-            
-            score = 0
-            matches = []
-            
-            for query_word in query_words:
-                best_similarity = 0
-                best_match = ""
-                
-                for chunk_word in chunk_words:
-                    similarity = calculate_similarity(query_word, chunk_word)
-                    if similarity > best_similarity and similarity >= 0.7:
-                        best_similarity = similarity
-                        best_match = chunk_word
-                
-                if best_similarity > 0:
-                    score += best_similarity * 20
-                    if best_similarity < 1.0:
-                        matches.append(f"{query_word}→{best_match}({best_similarity:.2f})")
-                    else:
-                        matches.append(f"{query_word}(exact)")
-            
-            if score > 10:  # Minimum threshold for fuzzy matches
-                context = extract_context_from_chunk(chunk, query, 200)
-                
-                all_results.append({
-                    'document': doc,
-                    'score': score,
-                    'matches': matches,
-                    'context': context,
-                    'search_type': 'fuzzy',
-                    'chunk_index': chunk_idx,
-                    'match_id': f"{doc['filename']}_fuzzy_{chunk_idx}"
-                })
-    
-    all_results.sort(key=lambda x: x['score'], reverse=True)
-    return all_results[:max_results]
-
-# ========== UTILITY FUNCTIONS ==========
-
-def split_text_into_chunks(text: str, max_chunk_size: int = 500) -> List[str]:
-    """Split text into meaningful chunks (sentences/paragraphs)"""
-    # First try to split by paragraphs
-    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
-    
-    chunks = []
-    for paragraph in paragraphs:
-        if len(paragraph) <= max_chunk_size:
-            chunks.append(paragraph)
-        else:
-            # Split long paragraphs by sentences
-            sentences = re.split(r'[.!?]+', paragraph)
-            current_chunk = ""
-            
-            for sentence in sentences:
-                sentence = sentence.strip()
-                if not sentence:
-                    continue
-                
-                if len(current_chunk + sentence) <= max_chunk_size:
-                    current_chunk += sentence + ". "
-                else:
-                    if current_chunk:
-                        chunks.append(current_chunk.strip())
-                    current_chunk = sentence + ". "
-            
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-    
-    return chunks if chunks else [text]
-
-def extract_context_from_chunk(chunk: str, query: str, context_length: int = 200) -> str:
-    """Extract context from a text chunk"""
-    if len(chunk) <= context_length:
-        return chunk
-    
-    query_lower = query.lower()
-    chunk_lower = chunk.lower()
-    
-    # Find best position for query
-    index = chunk_lower.find(query_lower)
-    if index == -1:
-        # If exact query not found, find first query word
-        for word in query_lower.split():
-            index = chunk_lower.find(word)
-            if index != -1:
-                break
-    
-    if index == -1:
-        return chunk[:context_length] + "..."
-    
-    # Extract context around the match
-    start = max(0, index - context_length // 2)
-    end = min(len(chunk), index + len(query) + context_length // 2)
-    
-    context = chunk[start:end]
-    
-    # Add ellipsis if truncated
-    if start > 0:
-        context = "..." + context
-    if end < len(chunk):
-        context = context + "..."
-    
-    return context
-
-def extract_context_at_position(text: str, position: int, query: str, context_length: int = 200) -> str:
-    """Extract context around a specific position in text"""
-    start = max(0, position - context_length // 2)
-    end = min(len(text), position + len(query) + context_length // 2)
-    
-    context = text[start:end]
-    
-    if start > 0:
-        context = "..." + context
-    if end < len(text):
-        context = context + "..."
-    
-    return context
-
-def calculate_similarity(word1: str, word2: str) -> float:
-    """Calculate similarity between two words"""
-    if word1 == word2:
-        return 1.0
-    
-    if len(word1) < 3 or len(word2) < 3:
-        return 0.0
-    
-    # Simple character-based similarity
-    set1, set2 = set(word1), set(word2)
-    intersection = len(set1 & set2)
-    union = len(set1 | set2)
-    
-    if union == 0:
-        return 0.0
-    
-    return intersection / union
-
-# ========== ENHANCED RESULT DISPLAY FUNCTIONS ==========
-
-def display_results_grouped(results: List[Dict], query: str, search_time: float):
-    """Display results grouped by document with detailed information"""
-    if not results:
-        return
-    
-    # Group results by document
-    doc_groups = {}
-    for result in results:
-        filename = result['document']['filename']
-        if filename not in doc_groups:
-            doc_groups[filename] = []
-        doc_groups[filename].append(result)
-    
-    # Sort groups by highest scoring result in each group
-    sorted_groups = sorted(doc_groups.items(), 
-                          key=lambda x: max(r['score'] for r in x[1]), 
-                          reverse=True)
-    
-    # Display each document group
-    for doc_filename, doc_results in sorted_groups:
-        doc = doc_results[0]['document']
-        highest_score = max(r['score'] for r in doc_results)
-        search_types = list(set(r['search_type'] for r in doc_results))
-        
-        # Create display label for search types
-        type_labels = {
-            'smart': '🧠', 'exact': '🎯', 'fuzzy': '🌀', 
-            'rag_semantic': '🤖', 'hybrid_smart': '🔄🧠', 'hybrid_rag': '🔄🤖'
-        }
-        type_display = ' '.join([type_labels.get(t, '🔍') for t in search_types])
-        
-        with st.expander(f"📄 {doc_filename} ({len(doc_results)} matches, best score: {highest_score:.1f}) {type_display}", 
-                        expanded=(len(sorted_groups) <= 3)):
-            
-            # Enhanced document metadata
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("File Type", doc.get('file_type', 'unknown').upper())
-            with col2:
-                st.metric("Words", f"{doc.get('word_count', 0):,}")
-            with col3:
-                st.metric("Size", f"{doc.get('file_size_mb', 0):.1f} MB")
-            with col4:
-                # Calculate estimated pages (roughly 250 words per page)
-                estimated_pages = max(1, doc.get('word_count', 0) // 250)
-                st.metric("Est. Pages", estimated_pages)
-            
-            # Sort matches within document by score
-            doc_results.sort(key=lambda x: x['score'], reverse=True)
-            
-            # Show all matches from this document with detailed info
-            for i, result in enumerate(doc_results, 1):
-                display_detailed_match(result, query, i, doc)
-
-def display_detailed_match(result: Dict, query: str, match_number: int, doc: Dict):
-    """Display a single match with detailed information"""
-    
-    search_type_name = {
-        'smart': '🧠 Smart Search',
-        'exact': '🎯 Exact Match', 
-        'fuzzy': '🌀 Fuzzy Search',
-        'rag_semantic': '🤖 AI Semantic',
-        'hybrid_smart': '🔄🧠 Hybrid (Smart)',
-        'hybrid_rag': '🔄🤖 Hybrid (AI)'
-    }.get(result['search_type'], '🔍 Search')
-    
-    # Calculate detailed position info
-    position_info = calculate_position_info(result, doc)
-    
-    # Match header with detailed info
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.markdown(f"**{search_type_name} - Match {match_number}**")
-    with col2:
-        st.markdown(f"**Score: {result['score']:.1f}**")
-    
-    # Detailed position information
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        if position_info['page_number']:
-            st.caption(f"📄 Page {position_info['page_number']}")
-        else:
-            st.caption("📄 Page N/A")
-    
-    with col2:
-        st.caption(f"📍 Position {position_info['char_position']:,}")
-    
-    with col3:
-        st.caption(f"📊 {position_info['percentage_through']:.1f}% through doc")
-    
-    with col4:
-        if position_info['word_position']:
-            st.caption(f"🔢 Word {position_info['word_position']:,}")
-    
-    # Match details
-    if result['matches']:
-        st.info("🎯 " + " | ".join(result['matches']))
-    
-    # Enhanced context with more detail
-    display_enhanced_context(result, query, position_info)
-    
-    # Additional match information
-    with st.expander(f"🔍 More details for Match {match_number}"):
-        display_match_details(result, position_info, doc)
-
-def calculate_position_info(result: Dict, doc: Dict) -> Dict:
-    """Calculate detailed position information for a match"""
-    text = doc.get('text', '')
-    context = result.get('context', '')
-    
-    # Find the position of this match in the full document
-    char_position = 0
-    word_position = 0
-    page_number = None
-    percentage_through = 0
-    
-    try:
-        # For exact matches with position
-        if 'position' in result:
-            char_position = result['position']
-        
-        # For chunk-based matches
-        elif 'chunk_index' in result:
-            chunk_idx = result['chunk_index']
-            # Estimate position based on chunk
-            if text:
-                chunks = split_text_into_chunks(text)
-                if chunk_idx < len(chunks):
-                    # Find where this chunk starts in the original text
-                    chunk_text = chunks[chunk_idx]
-                    char_position = text.find(chunk_text)
-                    if char_position == -1:
-                        # Fallback: estimate based on chunk size
-                        avg_chunk_size = len(text) // len(chunks)
-                        char_position = chunk_idx * avg_chunk_size
-        
-        # For RAG matches with chunk info
-        elif 'chunk_info' in result:
-            chunk_info = result['chunk_info']
-            if 'start_word' in chunk_info:
-                words = text.split()
-                word_position = chunk_info['start_word']
-                # Convert word position to character position
-                if word_position < len(words):
-                    char_position = len(' '.join(words[:word_position]))
-        
-        # If we still don't have position, try to find context in text
-        if char_position == 0 and context:
-            # Remove ellipsis and find context in original text
-            clean_context = context.replace('...', '').strip()
-            if clean_context and len(clean_context) > 10:
-                char_position = text.find(clean_context)
-                if char_position == -1:
-                    # Try with first 50 characters of context
-                    short_context = clean_context[:50]
-                    char_position = text.find(short_context)
-        
-        # Calculate percentage through document
-        if text and char_position >= 0:
-            percentage_through = (char_position / len(text)) * 100
-        
-        # Estimate page number (roughly 2000 characters per page for PDFs)
-        if char_position > 0:
-            page_number = max(1, char_position // 2000 + 1)
-        
-        # Calculate word position if not already set
-        if word_position == 0 and char_position > 0:
-            text_before = text[:char_position]
-            word_position = len(text_before.split())
-    
-    except Exception as e:
-        logging.warning(f"Error calculating position info: {e}")
-    
-    return {
-        'char_position': max(0, char_position),
-        'word_position': max(0, word_position),
-        'page_number': page_number,
-        'percentage_through': max(0, min(100, percentage_through))
-    }
-
-def display_enhanced_context(result: Dict, query: str, position_info: Dict):
-    """Display context with enhanced highlighting and navigation"""
-    
-    context = result.get('context', '')
-    if not context:
-        st.warning("No context available for this match")
-        return
-    
-    # Enhanced highlighting with different colors for different match types
-    highlighted_context = enhance_highlighting(context, query, result['search_type'])
-    
-    # Context header with navigation info
-    st.markdown("**📖 Context:**")
-    
-    # Show where this context appears in the document
-    if position_info['page_number']:
-        st.caption(f"💡 This appears around page {position_info['page_number']}, {position_info['percentage_through']:.1f}% through the document")
-    
-    # Display the highlighted context
-    st.markdown(highlighted_context, unsafe_allow_html=True)
-    
-    # Add context length info
-    st.caption(f"📏 Showing {len(context)} characters of context")
-
-def enhance_highlighting(text: str, query: str, search_type: str) -> str:
-    """Enhanced highlighting with different colors for different search types"""
-    if not text or not query:
-        return text
-    
-    # Choose highlight color based on search type
-    highlight_colors = {
-        'smart': '#FFEB3B',      # Yellow
-        'exact': '#4CAF50',      # Green  
-        'fuzzy': '#FF9800',      # Orange
-        'rag_semantic': '#2196F3', # Blue
-        'hybrid_smart': '#9C27B0', # Purple
-        'hybrid_rag': '#E91E63'    # Pink
-    }
-    
-    color = highlight_colors.get(search_type, '#FFEB3B')
-    
+def filter_stop_words(query: str) -> str:
+    """Remove stop words from query"""
     words = query.lower().split()
-    highlighted = text
+    filtered_words = [word for word in words if word not in STOP_WORDS and len(word) > 1]
     
-    for word in words:
-        if len(word) > 2:  # Skip very short words
-            # Create case-insensitive pattern that preserves original case
-            pattern = re.compile(f'({re.escape(word)})', re.IGNORECASE)
-            highlighted = pattern.sub(
-                f'<mark style="background-color: {color}; padding: 2px; border-radius: 3px; font-weight: bold;">\\1</mark>', 
-                highlighted
-            )
+    # If all words are stop words, keep the original query
+    if not filtered_words:
+        return query
     
-    return highlighted
+    return ' '.join(filtered_words)
 
-def display_match_details(result: Dict, position_info: Dict, doc: Dict):
-    """Display detailed information about the match"""
+def preprocess_query(query: str, method: str) -> str:
+    """Preprocess query based on search method"""
     
-    # Match metadata
-    st.markdown("**🔍 Match Information:**")
+    # For exact search, don't filter stop words
+    if method == "exact":
+        return query
     
-    match_details = []
-    match_details.append(f"**Search Type:** {result['search_type']}")
-    match_details.append(f"**Match Score:** {result['score']:.2f}")
+    # For other methods, filter stop words
+    filtered_query = filter_stop_words(query)
     
-    if 'match_id' in result:
-        match_details.append(f"**Match ID:** {result['match_id']}")
+    return filtered_query
+
+def copy_all_results(results: List[Dict], query: str):
+    """Copy all results to clipboard"""
     
-    for detail in match_details:
-        st.markdown(f"• {detail}")
+    output = f"Search Results for: {query}\n"
+    output += "=" * 50 + "\n\n"
     
-    # Position details
-    st.markdown("**📍 Position Details:**")
-    position_details = [
-        f"**Character Position:** {position_info['char_position']:,}",
-        f"**Word Position:** {position_info['word_position']:,}",
-        f"**Document Progress:** {position_info['percentage_through']:.2f}%"
-    ]
+    doc_groups = defaultdict(list)
+    for result in results:
+        doc_name = result['document']['filename']
+        doc_groups[doc_name].append(result)
     
-    if position_info['page_number']:
-        position_details.insert(0, f"**Estimated Page:** {position_info['page_number']}")
-    
-    for detail in position_details:
-        st.markdown(f"• {detail}")
-    
-    # Context details
-    context = result.get('context', '')
-    if context:
-        st.markdown("**📖 Context Details:**")
-        context_details = [
-            f"**Context Length:** {len(context)} characters",
-            f"**Context Words:** {len(context.split())} words"
-        ]
+    for doc_name, doc_results in doc_groups.items():
+        output += f"Document: {doc_name}\n"
+        output += f"Matches: {len(doc_results)}\n\n"
         
-        # Check if context is truncated
-        if context.startswith('...') or context.endswith('...'):
-            context_details.append("**Note:** Context is truncated for display")
+        for i, result in enumerate(doc_results, 1):
+            output += f"Match {i}:\n"
+            output += f"  Page: {result.get('page_number', 1)}\n"
+            output += f"  Score: {result.get('score', 0):.1f}\n"
+            output += f"  Context: {result.get('context', '')}\n\n"
         
-        for detail in context_details:
-            st.markdown(f"• {detail}")
+        output += "-" * 30 + "\n\n"
     
-    # Advanced options for this match
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button(f"📍 Show Surrounding Text", key=f"surrounding_{result.get('match_id', 'unknown')}"):
-            show_surrounding_text(result, doc, position_info)
-    
-    with col2:
-        if st.button(f"📋 Copy Match Info", key=f"copy_{result.get('match_id', 'unknown')}"):
-            copy_match_info(result, position_info, doc)
+    st.code(output)
+    st.success("Results copied to display! Use Ctrl+A, Ctrl+C to copy to clipboard")
 
-def show_surrounding_text(result: Dict, doc: Dict, position_info: Dict):
-    """Show more surrounding text around the match"""
+def export_results_csv(results: List[Dict], query: str):
+    """Export search results to CSV"""
     
-    text = doc.get('text', '')
-    char_pos = position_info['char_position']
+    csv_data = []
     
-    if not text or char_pos <= 0:
-        st.warning("Cannot show surrounding text - position not available")
-        return
-    
-    # Extract larger context (1000 characters around the match)
-    context_size = 1000
-    start = max(0, char_pos - context_size // 2)
-    end = min(len(text), char_pos + context_size // 2)
-    
-    surrounding_text = text[start:end]
-    
-    # Add markers to show boundaries
-    if start > 0:
-        surrounding_text = "... " + surrounding_text
-    if end < len(text):
-        surrounding_text = surrounding_text + " ..."
-    
-    st.markdown("**📖 Extended Context (±500 characters):**")
-    
-    # Show with highlighting
-    query_words = result.get('matches', [])
-    if query_words:
-        # Try to extract query from matches
-        for match in query_words:
-            if ':' in match:
-                query = match.split(':')[0].strip().replace('Exact phrase', '').replace("'", "")
-                break
-    else:
-        query = ""
-    
-    highlighted = enhance_highlighting(surrounding_text, query, result['search_type'])
-    st.markdown(highlighted, unsafe_allow_html=True)
-
-def copy_match_info(result: Dict, position_info: Dict, doc: Dict):
-    """Display copyable match information"""
-    
-    match_info = f"""
-Match Information:
-- Document: {doc['filename']}
-- Search Type: {result['search_type']}
-- Score: {result['score']:.2f}
-- Page: {position_info['page_number'] or 'N/A'}
-- Position: {position_info['char_position']:,} chars, {position_info['word_position']:,} words
-- Progress: {position_info['percentage_through']:.1f}% through document
-
-Context:
-{result.get('context', 'No context available')}
-    """.strip()
-    
-    st.text_area(
-        "📋 Match Information (ready to copy):",
-        match_info,
-        height=200,
-        key=f"copy_area_{result.get('match_id', 'unknown')}"
-    )
-
-def display_results_flat(results: List[Dict], query: str, search_time: float):
-    """Display results in flat list (not grouped)"""
-    if not results:
-        return
-    
-    for i, result in enumerate(results, 1):
-        doc = result['document']
-        search_type_name = {
-            'smart': '🧠 Smart',
-            'exact': '🎯 Exact', 
-            'fuzzy': '🌀 Fuzzy',
-            'rag_semantic': '🤖 AI',
-            'hybrid_smart': '🔄🧠 Hybrid-Smart',
-            'hybrid_rag': '🔄🤖 Hybrid-AI'
-        }.get(result['search_type'], '🔍')
-        
-        # Calculate position info for flat display
-        position_info = calculate_position_info(result, doc)
-        
-        with st.expander(f"{search_type_name} {i}. {doc['filename']} (Score: {result['score']:.1f}) Page {position_info['page_number'] or 'N/A'}", 
-                        expanded=(i <= 5)):
-            
-            # Document metadata
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("File Type", doc.get('file_type', 'unknown').upper())
-            with col2:
-                st.metric("Words", f"{doc.get('word_count', 0):,}")
-            with col3:
-                st.metric("Size", f"{doc.get('file_size_mb', 0):.1f} MB")
-            
-            # Position info
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.caption(f"📄 Page {position_info['page_number'] or 'N/A'}")
-            with col2:
-                st.caption(f"📍 Position {position_info['char_position']:,}")
-            with col3:
-                st.caption(f"📊 {position_info['percentage_through']:.1f}% through")
-            
-            # Match information
-            if result['matches']:
-                st.info("🎯 " + " | ".join(result['matches']))
-            
-            # Context with highlighting
-            highlighted_context = enhance_highlighting(result['context'], query, result['search_type'])
-            st.markdown("**📖 Context:**")
-            st.markdown(highlighted_context, unsafe_allow_html=True)
-
-def export_results_to_csv(results: List[Dict], query: str):
-    """Export search results to CSV format"""
-    
-    import pandas as pd
-    
-    # Prepare data for CSV
-    export_data = []
-    
-    for i, result in enumerate(results, 1):
-        doc = result['document']
-        position_info = calculate_position_info(result, doc)
-        
-        export_data.append({
-            'Match_Number': i,
+    for result in results:
+        row = {
             'Query': query,
-            'Document': doc['filename'],
-            'Search_Type': result['search_type'],
-            'Score': result['score'],
-            'Page_Number': position_info['page_number'],
-            'Character_Position': position_info['char_position'],
-            'Word_Position': position_info['word_position'],
-            'Percentage_Through': position_info['percentage_through'],
+            'Document': result['document']['filename'],
+            'Match_Type': result.get('match_type', ''),
+            'Score': result.get('score', 0),
+            'Page_Number': result.get('page_number', 1),
+            'Position': result.get('position', 0),
+            'Matched_Text': result.get('matched_text', ''),
             'Context': result.get('context', ''),
-            'Matches': ' | '.join(result.get('matches', [])),
-            'File_Type': doc.get('file_type', ''),
-            'Word_Count': doc.get('word_count', 0),
-            'File_Size_MB': doc.get('file_size_mb', 0)
-        })
+            'Percentage_Through': result.get('percentage_through', 0)
+        }
+        csv_data.append(row)
     
-    # Create DataFrame and CSV
-    df = pd.DataFrame(export_data)
+    df = pd.DataFrame(csv_data)
     csv = df.to_csv(index=False)
-    
-    # Offer download
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"search_results_{query.replace(' ', '_')}_{timestamp}.csv"
     
     st.download_button(
         label="📥 Download CSV",
         data=csv,
-        file_name=filename,
+        file_name=f"search_results_{query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
         mime="text/csv"
     )
+
+def generate_search_report(results: List[Dict], query: str, search_method: str):
+    """Generate a comprehensive search report"""
     
-    st.success(f"✅ Ready to download {len(results)} results as CSV!")
-
-# ========== ANALYTICS FUNCTIONS ==========
-
-def get_search_stats() -> Dict[str, Any]:
-    """Get search statistics from session state"""
-    if 'search_history' not in st.session_state:
-        st.session_state.search_history = []
+    # Group results by document
+    doc_groups = defaultdict(list)
+    for result in results:
+        doc_name = result['document']['filename']
+        doc_groups[doc_name].append(result)
     
-    history = st.session_state.search_history
+    report = f"""# Search Report: "{query}"
+
+**Search Method:** {search_method}  
+**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
+**Total Results:** {len(results)} matches in {len(doc_groups)} documents
+
+## Summary Statistics
+
+| Metric | Value |
+|--------|-------|
+| Documents Searched | {len(doc_groups)} |
+| Total Matches | {len(results)} |
+| Average Score | {sum(r.get('score', 0) for r in results) / len(results):.2f} |
+| Highest Score | {max(r.get('score', 0) for r in results):.2f} |
+
+## Results by Document
+
+"""
     
-    return {
-        'total_searches': len(history),
-        'unique_queries': len(set(h.get('query', '') for h in history)),
-        'avg_results': sum(h.get('result_count', 0) for h in history) / max(len(history), 1),
-        'avg_search_time': sum(h.get('search_time', 0) for h in history) / max(len(history), 1),
-        'recent_queries': [h.get('query', '') for h in history[-10:]]
-    }
+    for doc_name, doc_results in doc_groups.items():
+        best_score = max(r.get('score', 0) for r in doc_results)
+        avg_score = sum(r.get('score', 0) for r in doc_results) / len(doc_results)
+        
+        report += f"""### 📄 {doc_name}
+- **Matches:** {len(doc_results)}
+- **Best Score:** {best_score:.2f}
+- **Average Score:** {avg_score:.2f}
 
-def log_search(query: str, results: List[Dict], search_time: float, search_type: str):
-    """Log search activity for analytics"""
-    if 'search_history' not in st.session_state:
-        st.session_state.search_history = []
+"""
+        
+        for i, result in enumerate(doc_results, 1):
+            report += f"""**Match {i}** (Score: {result.get('score', 0):.1f})  
+*Page {result.get('page_number', 1)}, Position {result.get('position', 0):,}*
+
+> {result.get('context', '')[:200]}...
+
+---
+
+"""
     
-    search_entry = {
-        'timestamp': datetime.now().isoformat(),
-        'query': query,
-        'result_count': len(results),
-        'search_time': search_time,
-        'search_type': search_type,
-        'unique_documents': len(set(r['document']['filename'] for r in results))
-    }
+    st.download_button(
+        label="📄 Download Report",
+        data=report,
+        file_name=f"search_report_{query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+        mime="text/markdown"
+    )
+
+# ========== RECOMMENDATION-RESPONSE ALIGNMENT SYSTEM ==========
+
+def render_recommendation_alignment_interface(documents: List[Dict[str, Any]]):
+    """Specialized interface for aligning recommendations with responses"""
     
-    st.session_state.search_history.append(search_entry)
+    st.header("🏛️ Recommendation-Response Alignment")
+    st.markdown("*Automatically find recommendations and their corresponding responses*")
     
-    # Keep only last 100 searches
-    if len(st.session_state.search_history) > 100:
-        st.session_state.search_history = st.session_state.search_history[-100:]
+    if not documents:
+        st.warning("📁 Please upload documents first")
+        return
+    
+    # Configuration options
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**📋 Search Configuration:**")
+        
+        # Recommendation patterns
+        rec_patterns = st.multiselect(
+            "Recommendation Keywords",
+            ["recommend", "suggest", "advise", "propose", "urge", "call for", "should", "must"],
+            default=["recommend", "suggest", "advise"],
+            help="Keywords that indicate recommendations"
+        )
+        
+        # Response patterns  
+        resp_patterns = st.multiselect(
+            "Response Keywords", 
+            ["accept", "reject", "agree", "disagree", "implement", "consider", "response", "reply", "approved", "declined"],
+            default=["accept", "reject", "agree", "implement"],
+            help="Keywords that indicate responses"
+        )
+    
+    with col2:
+        st.markdown("**🤖 AI Configuration:**")
+        
+        # AI options
+        use_ai_summary = st.checkbox("Generate AI Summaries", value=True)
+        ai_available = check_rag_availability()
+        
+        if not ai_available:
+            st.warning("🤖 AI summaries require: pip install sentence-transformers torch")
+            use_ai_summary = False
+        
+        # Summary length
+        summary_length = st.selectbox(
+            "Summary Length",
+            ["Short (1-2 sentences)", "Medium (3-4 sentences)", "Long (5+ sentences)"],
+            index=1
+        )
+    
+    # Start analysis button
+    if st.button("🔍 Find & Align Recommendations", type="primary"):
+        with st.spinner("🔍 Analyzing documents for recommendations and responses..."):
+            
+            # Step 1: Find recommendations
+            recommendations = find_recommendations(documents, rec_patterns)
+            
+            # Step 2: Find responses
+            responses = find_responses(documents, resp_patterns)
+            
+            # Step 3: Align recommendations with responses
+            alignments = align_recommendations_responses(recommendations, responses)
+            
+            # Step 4: Generate AI summaries if enabled
+            if use_ai_summary and ai_available:
+                alignments = add_ai_summaries(alignments, summary_length)
+            
+            # Step 5: Display results
+            display_alignment_results(alignments, use_ai_summary)
 
-# ========== BACKWARD COMPATIBILITY ==========
+# ========== RECOMMENDATION FINDING FUNCTIONS ==========
 
-def smart_search(query: str, documents: List[Dict], max_results: int) -> List[Dict]:
-    """Backward compatibility wrapper"""
-    return smart_search_enhanced(query, documents, max_results)
+def find_recommendations(documents: List[Dict], patterns: List[str]) -> List[Dict]:
+    """Find all recommendations in documents"""
+    
+    recommendations = []
+    
+    for doc in documents:
+        text = doc.get('text', '')
+        if not text:
+            continue
+        
+        # Split into sentences for better analysis
+        sentences = split_into_sentences(text)
+        
+        for i, sentence in enumerate(sentences):
+            sentence_lower = sentence.lower()
+            
+            # Check if sentence contains recommendation patterns
+            for pattern in patterns:
+                if pattern.lower() in sentence_lower:
+                    
+                    # Extract context (previous and next sentence)
+                    context_start = max(0, i - 1)
+                    context_end = min(len(sentences), i + 2)
+                    context = ' '.join(sentences[context_start:context_end])
+                    
+                    # Calculate position
+                    char_position = text.find(sentence)
+                    
+                    recommendation = {
+                        'id': f"rec_{len(recommendations) + 1}",
+                        'document': doc,
+                        'sentence': sentence,
+                        'context': context,
+                        'pattern_matched': pattern,
+                        'sentence_index': i,
+                        'char_position': char_position,
+                        'page_number': estimate_page_number(char_position, text),
+                        'recommendation_type': classify_recommendation_type(sentence)
+                    }
+                    
+                    recommendations.append(recommendation)
+                    break  # Only match one pattern per sentence
+    
+    return recommendations
 
-def exact_search(query: str, documents: List[Dict], max_results: int) -> List[Dict]:
-    """Backward compatibility wrapper"""
-    return exact_search_enhanced(query, documents, max_results)
+def find_responses(documents: List[Dict], patterns: List[str]) -> List[Dict]:
+    """Find all responses in documents"""
+    
+    responses = []
+    
+    for doc in documents:
+        text = doc.get('text', '')
+        if not text:
+            continue
+        
+        sentences = split_into_sentences(text)
+        
+        for i, sentence in enumerate(sentences):
+            sentence_lower = sentence.lower()
+            
+            # Check if sentence contains response patterns
+            for pattern in patterns:
+                if pattern.lower() in sentence_lower:
+                    
+                    # Extract context
+                    context_start = max(0, i - 1)
+                    context_end = min(len(sentences), i + 2)
+                    context = ' '.join(sentences[context_start:context_end])
+                    
+                    # Calculate position
+                    char_position = text.find(sentence)
+                    
+                    response = {
+                        'id': f"resp_{len(responses) + 1}",
+                        'document': doc,
+                        'sentence': sentence,
+                        'context': context,
+                        'pattern_matched': pattern,
+                        'sentence_index': i,
+                        'char_position': char_position,
+                        'page_number': estimate_page_number(char_position, text),
+                        'response_type': classify_response_type(sentence)
+                    }
+                    
+                    responses.append(response)
+                    break
+    
+    return responses
 
-def fuzzy_search(query: str, documents: List[Dict], max_results: int) -> List[Dict]:
-    """Backward compatibility wrapper"""
-    return fuzzy_search_enhanced(query, documents, max_results)
+def align_recommendations_responses(recommendations: List[Dict], responses: List[Dict]) -> List[Dict]:
+    """Align recommendations with their corresponding responses using semantic similarity"""
+    
+    alignments = []
+    
+    for rec in recommendations:
+        best_matches = []
+        
+        # Find potential response matches
+        for resp in responses:
+            similarity_score = calculate_semantic_similarity(
+                rec['context'], 
+                resp['context']
+            )
+            
+            # Also check if they reference similar topics
+            topic_similarity = calculate_topic_similarity(
+                rec['sentence'],
+                resp['sentence']
+            )
+            
+            combined_score = (similarity_score * 0.7) + (topic_similarity * 0.3)
+            
+            if combined_score > 0.3:  # Threshold for potential match
+                best_matches.append({
+                    'response': resp,
+                    'similarity_score': similarity_score,
+                    'topic_similarity': topic_similarity,
+                    'combined_score': combined_score
+                })
+        
+        # Sort by combined score
+        best_matches.sort(key=lambda x: x['combined_score'], reverse=True)
+        
+        # Create alignment
+        alignment = {
+            'recommendation': rec,
+            'responses': best_matches[:3],  # Top 3 matches
+            'alignment_confidence': best_matches[0]['combined_score'] if best_matches else 0,
+            'alignment_status': determine_alignment_status(best_matches)
+        }
+        
+        alignments.append(alignment)
+    
+    return alignments
 
-def display_results(results: List[Dict], query: str, search_time: float):
-    """Backward compatibility wrapper"""
-    return display_results_grouped(results, query, search_time)
+def add_ai_summaries(alignments: List[Dict], summary_length: str) -> List[Dict]:
+    """Add AI-generated summaries to alignments"""
+    
+    try:
+        # Determine summary parameters
+        max_sentences = {
+            "Short (1-2 sentences)": 2,
+            "Medium (3-4 sentences)": 4,  
+            "Long (5+ sentences)": 6
+        }.get(summary_length, 4)
+        
+        for alignment in alignments:
+            rec = alignment['recommendation']
+            responses = alignment['responses']
+            
+            # Create summary prompt
+            summary_text = f"Recommendation: {rec['sentence']}\n\n"
+            
+            if responses:
+                summary_text += "Related Responses:\n"
+                for i, resp_match in enumerate(responses[:2], 1):
+                    resp = resp_match['response']
+                    summary_text += f"{i}. {resp['sentence']}\n"
+            
+            # Generate AI summary
+            summary = generate_ai_summary(summary_text, max_sentences)
+            
+            alignment['ai_summary'] = summary
+            alignment['summary_confidence'] = len(responses) * 0.2  # Simple confidence
+    
+    except Exception as e:
+        st.warning(f"AI summary generation failed: {str(e)}")
+        # Add empty summaries
+        for alignment in alignments:
+            alignment['ai_summary'] = "AI summary not available"
+            alignment['summary_confidence'] = 0
+    
+    return alignments
 
-# Export all functions
-__all__ = [
-    'render_search_interface',
-    'smart_search_enhanced',
-    'exact_search_enhanced',
-    'fuzzy_search_enhanced',
-    'rag_semantic_search',
-    'hybrid_search',
-    'display_results_grouped',
-    'display_results_flat',
-    'get_search_stats',
-    'log_search',
-    # Backward compatibility
-    'smart_search',
-    'exact_search',
-    'fuzzy_search',
-    'display_results'
-]
+def display_alignment_results(alignments: List[Dict], show_ai_summaries: bool):
+    """Display the recommendation-response alignments"""
+    
+    if not alignments:
+        st.warning("No recommendations found in the uploaded documents")
+        return
+    
+    # Summary statistics
+    st.markdown("### 📊 Analysis Summary")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Recommendations", len(alignments))
+    
+    with col2:
+        aligned_count = sum(1 for a in alignments if a['responses'])
+        st.metric("Recommendations with Responses", aligned_count)
+    
+    with col3:
+        avg_confidence = sum(a['alignment_confidence'] for a in alignments) / len(alignments) if alignments else 0
+        st.metric("Avg Alignment Confidence", f"{avg_confidence:.2f}")
+    
+    with col4:
+        high_confidence = sum(1 for a in alignments if a['alignment_confidence'] > 0.7)
+        st.metric("High Confidence Alignments", high_confidence)
+    
+    # Export options
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📊 Export Alignment Report"):
+            export_alignment_report(alignments)
+    
+    with col2:
+        if st.button("📋 Export to CSV"):
+            export_alignment_csv(alignments)
+    
+    # Display individual alignments
+    st.markdown("### 🔗 Recommendation-Response Alignments")
+    
+    for i, alignment in enumerate(alignments, 1):
+        display_single_alignment(alignment, i, show_ai_summaries)
+
+def display_single_alignment(alignment: Dict, index: int, show_ai_summaries: bool):
+    """Display a single recommendation-response alignment"""
+    
+    rec = alignment['recommendation']
+    responses = alignment['responses']
+    confidence = alignment['alignment_confidence']
+    
+    # Confidence indicator
+    confidence_color = "🟢" if confidence > 0.7 else "🟡" if confidence > 0.4 else "🔴"
+    
+    with st.expander(f"{confidence_color} Recommendation {index} - {rec['recommendation_type']} (Confidence: {confidence:.2f})", 
+                    expanded=index <= 3):
+        
+        # Two-column layout: Extract + Summary
+        col1, col2 = st.columns([3, 2] if show_ai_summaries else [1])
+        
+        with col1:
+            st.markdown("**📋 Original Extract:**")
+            
+            # Recommendation section
+            st.markdown("**🎯 Recommendation:**")
+            st.info(f"📄 {rec['document']['filename']} (Page {rec['page_number']})")
+            
+            # Highlight the recommendation
+            highlighted_rec = f"<mark style='background-color: #FFEB3B; padding: 4px; border-radius: 4px;'>{rec['sentence']}</mark>"
+            st.markdown(highlighted_rec, unsafe_allow_html=True)
+            
+            # Show context
+            st.caption(f"📖 Context: {rec['context']}")
+            
+            # Responses section
+            if responses:
+                st.markdown("**↩️ Related Responses:**")
+                
+                for j, resp_match in enumerate(responses, 1):
+                    resp = resp_match['response']
+                    similarity = resp_match['combined_score']
+                    
+                    # Color code by similarity
+                    resp_color = "#4CAF50" if similarity > 0.7 else "#FF9800" if similarity > 0.5 else "#F44336"
+                    
+                    st.info(f"📄 {resp['document']['filename']} (Page {resp['page_number']}) - Similarity: {similarity:.2f}")
+                    
+                    highlighted_resp = f"<mark style='background-color: {resp_color}; color: white; padding: 4px; border-radius: 4px;'>{resp['sentence']}</mark>"
+                    st.markdown(highlighted_resp, unsafe_allow_html=True)
+                    
+                    st.caption(f"📖 Context: {resp['context']}")
+                    
+                    if j < len(responses):
+                        st.markdown("---")
+            else:
+                st.warning("❌ No matching responses found")
+        
+        # AI Summary column
+        if show_ai_summaries:
+            with col2:
+                st.markdown("**🤖 AI Summary:**")
+                
+                if 'ai_summary' in alignment and alignment['ai_summary']:
+                    # Summary box
+                    summary_confidence = alignment.get('summary_confidence', 0)
+                    
+                    st.markdown(f"""
+                    <div style="
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color: white;
+                        padding: 16px;
+                        border-radius: 8px;
+                        margin: 8px 0;
+                    ">
+                        <h4 style="margin: 0 0 12px 0; color: white;">📝 Summary</h4>
+                        <p style="margin: 0; line-height: 1.6;">{alignment['ai_summary']}</p>
+                        <small style="opacity: 0.8;">Confidence: {summary_confidence:.2f}</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Key insights
+                    if responses:
+                        st.markdown("**🔍 Key Insights:**")
+                        insights = generate_key_insights(rec, responses)
+                        for insight in insights:
+                            st.markdown(f"• {insight}")
+                else:
+                    st.info("🤖 AI summary not available")
+        
+        # Detailed information
+        with st.expander("🔍 Detailed Analysis"):
+            
+            # Recommendation details
+            st.markdown("**📋 Recommendation Details:**")
+            rec_details = [
+                f"**Type:** {rec['recommendation_type']}",
+                f"**Document:** {rec['document']['filename']}",
+                f"**Page:** {rec['page_number']}",
+                f"**Pattern Matched:** {rec['pattern_matched']}",
+                f"**Position:** {rec['char_position']:,} characters"
+            ]
+            
+            for detail in rec_details:
+                st.markdown(f"• {detail}")
+            
+            # Response analysis
+            if responses:
+                st.markdown("**↩️ Response Analysis:**")
+                
+                response_types = [r['response']['response_type'] for r in responses]
+                type_counts = {t: response_types.count(t) for t in set(response_types)}
+                
+                st.markdown(f"• **Response Types Found:** {', '.join(type_counts.keys())}")
+                st.markdown(f"• **Documents with Responses:** {len(set(r['response']['document']['filename'] for r in responses))}")
+                st.markdown(f"• **Average Similarity:** {sum(r['combined_score'] for r in responses) / len(responses):.3f}")
+
+# ========== UTILITY FUNCTIONS FOR ALIGNMENT ==========
+
+def split_into_sentences(text: str) -> List[str]:
+    """Split text into sentences"""
+    # Improved sentence splitting
+    sentences = re.split(r'[.!?]+', text)
+    return [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
+
+def classify_recommendation_type(sentence: str) -> str:
+    """Classify the type of recommendation"""
+    sentence_lower = sentence.lower()
+    
+    if any(word in sentence_lower for word in ['urgent', 'immediate', 'critical', 'emergency']):
+        return 'Urgent'
+    elif any(word in sentence_lower for word in ['consider', 'review', 'explore', 'examine']):
+        return 'Consideration'
+    elif any(word in sentence_lower for word in ['implement', 'establish', 'create', 'develop']):
+        return 'Implementation'
+    elif any(word in sentence_lower for word in ['policy', 'regulation', 'framework', 'legislation']):
+        return 'Policy'
+    elif any(word in sentence_lower for word in ['budget', 'funding', 'financial', 'cost']):
+        return 'Financial'
+    elif any(word in sentence_lower for word in ['training', 'education', 'skills', 'capacity']):
+        return 'Training'
+    else:
+        return 'General'
+
+def classify_response_type(sentence: str) -> str:
+    """Classify the type of response"""
+    sentence_lower = sentence.lower()
+    
+    if any(word in sentence_lower for word in ['accept', 'agree', 'approve', 'endorse']):
+        return 'Acceptance'
+    elif any(word in sentence_lower for word in ['reject', 'decline', 'disagree', 'oppose']):
+        return 'Rejection'
+    elif any(word in sentence_lower for word in ['consider', 'review', 'evaluate', 'assess']):
+        return 'Under Review'
+    elif any(word in sentence_lower for word in ['implement', 'action', 'proceed', 'execute']):
+        return 'Implementation'
+    elif any(word in sentence_lower for word in ['partial', 'some', 'limited', 'qualified']):
+        return 'Partial Acceptance'
+    else:
+        return 'General Response'
+
+def calculate_semantic_similarity(text1: str, text2: str) -> float:
+    """Calculate semantic similarity between two texts"""
+    # Enhanced word overlap similarity
+    words1 = set(w.lower() for w in text1.split() if len(w) > 2 and w.lower() not in STOP_WORDS)
+    words2 = set(w.lower() for w in text2.split() if len(w) > 2 and w.lower() not in STOP_WORDS)
+    
+    if not words1 or not words2:
+        return 0.0
+    
+    intersection = len(words1 & words2)
+    union = len(words1 | words2)
+    
+    return intersection / union if union > 0 else 0.0
+
+def calculate_topic_similarity(sentence1: str, sentence2: str) -> float:
+    """Calculate topic similarity based on key terms"""
+    
+    # Extract key topics/entities
+    key_terms1 = extract_key_terms(sentence1)
+    key_terms2 = extract_key_terms(sentence2)
+    
+    if not key_terms1 or not key_terms2:
+        return 0.0
+    
+    intersection = len(set(key_terms1) & set(key_terms2))
+    union = len(set(key_terms1) | set(key_terms2))
+    
+    return intersection / union if union > 0 else 0.0
+
+def extract_key_terms(sentence: str) -> List[str]:
+    """Extract key terms from a sentence"""
+    # Enhanced key term extraction
+    words = re.findall(r'\b\w+\b', sentence.lower())
+    key_terms = [word for word in words if len(word) > 3 and word not in STOP_WORDS]
+    
+    # Add some domain-specific important terms even if short
+    important_short_terms = {'ai', 'it', 'hr', 'ceo', 'cfo', 'uk', 'eu', 'us', 'gdp'}
+    short_terms = [word for word in words if word in important_short_terms]
+    
+    return key_terms + short_terms
+
+def determine_alignment_status(matches: List[Dict]) -> str:
+    """Determine the status of recommendation-response alignment"""
+    if not matches:
+        return "No Response Found"
+    
+    best_score = matches[0]['combined_score']
+    
+    if best_score > 0.8:
+        return "Strong Alignment"
+    elif best_score > 0.6:
+        return "Good Alignment"
+    elif best_score > 0.4:
+        return "Weak Alignment"
+    else:
+        return "Poor Alignment"
+
+def generate_ai_summary(text: str, max_sentences: int) -> str:
+    """Generate AI summary of recommendation-response pair"""
+    
+    # Split into lines and analyze
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    
+    summary_points = []
+    
+    # Extract key information
+    for line in lines:
+        if any(keyword in line.lower() for keyword in ['recommend', 'suggest', 'accept', 'reject', 'implement', 'consider']):
+            # Clean and simplify the sentence
+            clean_line = line.strip()
+            if clean_line and len(clean_line) > 15:
+                # Remove redundant phrases
+                clean_line = re.sub(r'\b(that|which|who|where|when)\b', '', clean_line)
+                clean_line = re.sub(r'\s+', ' ', clean_line).strip()
+                summary_points.append(clean_line)
+    
+    # Limit to max sentences
+    summary_points = summary_points[:max_sentences]
+    
+    if not summary_points:
+        return "This recommendation-response pair shows standard government consultation process."
+    
+    # Create coherent summary
+    if len(summary_points) == 1:
+        return summary_points[0]
+    else:
+        return '. '.join(summary_points) + '.'
+
+def generate_key_insights(recommendation: Dict, responses: List[Dict]) -> List[str]:
+    """Generate key insights from recommendation-response analysis"""
+    insights = []
+    
+    if responses:
+        # Analyze response types
+        response_types = [r['response']['response_type'] for r in responses]
+        
+        if 'Acceptance' in response_types:
+            insights.append("✅ At least one positive response found")
+        
+        if 'Rejection' in response_types:
+            insights.append("❌ Some rejections or concerns identified")
+        
+        if 'Under Review' in response_types:
+            insights.append("⏳ Response indicates ongoing consideration")
+        
+        if 'Partial Acceptance' in response_types:
+            insights.append("🔄 Partial or qualified acceptance noted")
+        
+        # Document spread
+        response_docs = set(r['response']['document']['filename'] for r in responses)
+        if len(response_docs) > 1:
+            insights.append(f"📄 Responses found across {len(response_docs)} documents")
+        
+        # Similarity analysis
+        avg_similarity = sum(r['combined_score'] for r in responses) / len(responses)
+        if avg_similarity > 0.7:
+            insights.append("🎯 High confidence in recommendation-response matching")
+        elif avg_similarity < 0.5:
+            insights.append("⚠️ Low confidence - may need manual review")
+        
+        # Timeline analysis (basic)
+        rec_type = recommendation['recommendation_type']
+        if rec_type == 'Urgent' and 'Implementation' in response_types:
+            insights.append("⚡ Urgent recommendation received implementation response")
+        
+    else:
+        insights.append("❓ No corresponding responses identified")
+        insights.append("📝 May require follow-up or be addressed elsewhere")
+    
+    return insights
+
+def export_alignment_report(alignments: List[Dict]):
+    """Export detailed alignment report"""
+    
+    report = f"""# Recommendation-Response Alignment Report
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## Executive Summary
+- **Total Recommendations:** {len(alignments)}
+- **Recommendations with Responses:** {sum(1 for a in alignments if a['responses'])}
+- **Average Alignment Confidence:** {sum(a['alignment_confidence'] for a in alignments) / len(alignments):.3f if alignments else 0}
+- **High Confidence Alignments:** {sum(1 for a in alignments if a['alignment_confidence'] > 0.7)}
+
+## Recommendation Types Analysis
+"""
+    
+    # Analyze recommendation types
+    rec_types = [a['recommendation']['recommendation_type'] for a in alignments]
+    type_counts = {t: rec_types.count(t) for t in set(rec_types)}
+    
+    for rec_type, count in sorted(type_counts.items()):
+        report += f"- **{rec_type}:** {count} recommendations\n"
+    
+    report += "\n## Detailed Analysis\n"
+    
+    for i, alignment in enumerate(alignments, 1):
+        rec = alignment['recommendation']
+        responses = alignment['responses']
+        
+        report += f"""
+### {i}. {rec['recommendation_type']} Recommendation
+**Document:** {rec['document']['filename']} (Page {rec['page_number']})  
+**Confidence:** {alignment['alignment_confidence']:.3f} ({alignment['alignment_status']})
+
+**Recommendation Text:**
+> {rec['sentence']}
+
+"""
+        
+        if responses:
+            report += f"**{len(responses)} Related Response(s) Found:**\n\n"
+            for j, resp_match in enumerate(responses, 1):
+                resp = resp_match['response']
+                report += f"**Response {j}:** {resp['response_type']} (Similarity: {resp_match['combined_score']:.3f})  \n"
+                report += f"*Source: {resp['document']['filename']} (Page {resp['page_number']})*\n\n"
+                report += f"> {resp['sentence']}\n\n"
+        else:
+            report += "**Status:** No corresponding responses found\n\n"
+        
+        report += "---\n\n"
+    
+    # Download button
+    st.download_button(
+        label="📄 Download Report",
+        data=report,
+        file_name=f"recommendation_alignment_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+        mime="text/markdown"
+    )
+
+def export_alignment_csv(alignments: List[Dict]):
+    """Export alignments to CSV"""
+    
+    csv_data = []
+    
+    for i, alignment in enumerate(alignments, 1):
+        rec = alignment['recommendation']
+        
+        base_row = {
+            'Recommendation_ID': i,
+            'Recommendation_Text': rec['sentence'],
+            'Recommendation_Type': rec['recommendation_type'],
+            'Recommendation_Document': rec['document']['filename'],
+            'Recommendation_Page': rec['page_number'],
+            'Alignment_Confidence': alignment['alignment_confidence'],
+            'Alignment_Status': alignment['alignment_status'],
+            'Pattern_Matched': rec['pattern_matched']
+        }
+        
+        if alignment['responses']:
+            for j, resp_match in enumerate(alignment['responses'], 1):
+                resp = resp_match['response']
+                row = base_row.copy()
+                row.update({
+                    'Response_Number': j,
+                    'Response_Text': resp['sentence'],
+                    'Response_Type': resp['response_type'],
+                    'Response_Document': resp['document']['filename'],
+                    'Response_Page': resp['page_number'],
+                    'Response_Similarity': resp_match['combined_score'],
+                    'Topic_Similarity': resp_match['topic_similarity'],
+                    'Response_Pattern': resp['pattern_matched']
+                })
+                csv_data.append(row)
+        else:
+            base_row.update({
+                'Response_Number': 0,
+                'Response_Text': 'No response found',
+                'Response_Type': 'None',
+                'Response_Document': 'None',
+                'Response_Page': 0,
+                'Response_Similarity': 0,
+                'Topic_Similarity': 0,
+                'Response_Pattern': 'None'
+            })
+            csv_data.append(base_row)
+    
+    df = pd.DataFrame(csv_data)
+    csv = df.to_csv(index=False)
+    
+    st.download_button(
+        label="📥 Download CSV",
+        data=csv,
+        file_name=f"recommendation_alignments_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv"
+    )
