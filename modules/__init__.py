@@ -1,6 +1,5 @@
 # modules/__init__.py
 # Main package initialization for document search application
-
 import logging
 
 # Setup basic logging
@@ -9,9 +8,10 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-__version__ = "1.0.0"
+# Package metadata - FIXED: Use single underscores
+__version__ = "2.0.0"
 __description__ = "Advanced Document Search System with RAG + Smart Search"
-__author__ = "Your Name"
+__author__ = "DaphneAI Team"
 
 # Import functions with proper error handling
 try:
@@ -48,9 +48,9 @@ except ImportError as e:
     def check_dependencies():
         return {'pdfplumber': False, 'PyPDF2': False, 'python-docx': False}
 
-# UI components - optional import
+# UI components - updated import path
 try:
-    from .ui.search_components import render_search_interface
+    from .ui import render_search_interface, render_recommendation_alignment_interface
     UI_AVAILABLE = True
 except ImportError as e:
     logging.warning(f"Could not import UI components: {e}")
@@ -60,19 +60,66 @@ except ImportError as e:
         import streamlit as st
         st.error("Search interface components not available")
         st.info("Basic search functionality is still available through the simple interface")
+    
+    def render_recommendation_alignment_interface(documents):
+        import streamlit as st
+        st.error("Recommendation alignment components not available")
 
-# Package exports
+# Integration helper fallback
+try:
+    from .integration_helper import (
+        setup_search_tab, 
+        prepare_documents_for_search, 
+        extract_text_from_file,
+        render_analytics_tab
+    )
+    INTEGRATION_HELPER_AVAILABLE = True
+except ImportError as e:
+    logging.warning(f"Could not import integration_helper: {e}")
+    INTEGRATION_HELPER_AVAILABLE = False
+    
+    # Provide basic fallbacks
+    def setup_search_tab():
+        import streamlit as st
+        st.error("Integration helper not available")
+    
+    def prepare_documents_for_search(files, extract_func):
+        return [{'filename': f.name, 'text': 'Basic text extraction'} for f in files]
+    
+    def extract_text_from_file(file):
+        return "Text extraction not available"
+    
+    def render_analytics_tab():
+        import streamlit as st
+        st.info("Analytics not available")
+
+# Package exports - FIXED: Use single underscores
 __all__ = [
+    # Core utilities
     'setup_logging',
     'log_action', 
     'search_analytics',
+    
+    # Document processing
     'process_uploaded_files',
     'get_processing_stats',
     'check_dependencies',
+    
+    # UI components
     'render_search_interface',
+    'render_recommendation_alignment_interface',
+    
+    # Integration helpers
+    'setup_search_tab',
+    'prepare_documents_for_search',
+    'extract_text_from_file',
+    'render_analytics_tab',
+    
+    # Availability flags
     'CORE_UTILS_AVAILABLE',
     'DOCUMENT_PROCESSOR_AVAILABLE',
-    'UI_AVAILABLE'
+    'UI_AVAILABLE',
+    'INTEGRATION_HELPER_AVAILABLE'
 ]
 
 # Log package initialization
@@ -81,3 +128,21 @@ logger.info(f"Initialized document search package v{__version__}")
 logger.info(f"Core utils: {'✓' if CORE_UTILS_AVAILABLE else '✗'}")
 logger.info(f"Document processor: {'✓' if DOCUMENT_PROCESSOR_AVAILABLE else '✗'}")
 logger.info(f"UI components: {'✓' if UI_AVAILABLE else '✗'}")
+logger.info(f"Integration helper: {'✓' if INTEGRATION_HELPER_AVAILABLE else '✗'}")
+
+# Convenience function for package status
+def get_package_status():
+    """Get the status of all package components"""
+    return {
+        'version': __version__,
+        'core_utils': CORE_UTILS_AVAILABLE,
+        'document_processor': DOCUMENT_PROCESSOR_AVAILABLE,
+        'ui_components': UI_AVAILABLE,
+        'integration_helper': INTEGRATION_HELPER_AVAILABLE,
+        'all_available': all([
+            CORE_UTILS_AVAILABLE,
+            DOCUMENT_PROCESSOR_AVAILABLE, 
+            UI_AVAILABLE,
+            INTEGRATION_HELPER_AVAILABLE
+        ])
+    }
