@@ -6,7 +6,13 @@ DaphneAI - Government Document Search and Analysis
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from modules.integration_helper import setup_search_tab, prepare_documents_for_search, extract_text_from_file
+from modules.integration_helper import (
+    setup_search_tab, 
+    prepare_documents_for_search, 
+    extract_text_from_file,
+    get_document_statistics,
+    render_analytics_tab
+)
 
 def main():
     """Main application"""
@@ -74,7 +80,6 @@ def render_extract_tab():
         return
     
     documents = st.session_state.documents
-    st.success(f"📄 {len(documents)} documents available")
     
     # Document selector
     doc_names = [doc['filename'] for doc in documents]
@@ -82,93 +87,62 @@ def render_extract_tab():
     
     if selected_doc:
         # Find selected document
-        doc = next(d for d in documents if d['filename'] == selected_doc)
+        doc = next((d for d in documents if d['filename'] == selected_doc), None)
         
-        # Document info
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Document Type", doc.get('document_type', 'general').title())
-        with col2:
-            st.metric("Text Length", f"{len(doc['text']):,} chars")
-        with col3:
-            st.metric("Word Count", f"{len(doc['text'].split()):,} words")
+        if doc:
+            # Document info
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("File Type", doc.get('file_type', 'unknown').upper())
+            with col2:
+                st.metric("Word Count", f"{doc.get('word_count', 0):,}")
+            with col3:
+                st.metric("File Size", f"{doc.get('file_size_mb', 0):.1f} MB")
+            
+            # Document content
+            st.subheader("📄 Document Content")
+            
+            # Show text with option to expand
+            if 'text' in doc and doc['text']:
+                text = doc['text']
+                
+                # Show preview by default
+                preview_length = 1000
+                if len(text) > preview_length:
+                    st.text_area(
+                        "Content Preview (first 1000 characters):",
+                        text[:preview_length] + "...",
+                        height=200,
+                        disabled=True
+                    )
+                    
+                    # Option to show full text
+                    if st.button("📖 Show Full Content"):
+                        st.text_area(
+                            "Full Content:",
+                            text,
+                            height=400,
+                            disabled=True
+                        )
+                else:
+                    st.text_area(
+                        "Full Content:",
+                        text,
+                        height=300,
+                        disabled=True
+                    )
+            else:
+                st.error("No text content available for this document")
         
-        # Document content
-        st.subheader("📖 Document Content")
-        st.text_area(
-            "Full Text",
-            doc['text'],
-            height=400,
-            help="Full extracted text content"
-        )
-
-def render_analytics_tab():
-    """Analytics and statistics"""
-    st.header("📊 Analytics Dashboard")
-    
-    if 'documents' not in st.session_state or not st.session_state.documents:
-        st.warning("📁 No documents available for analysis.")
-        return
-    
-    from modules.integration_helper import get_document_statistics
-    stats = get_document_statistics()
-    
-    # Overview metrics
-    st.subheader("📈 Overview")
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total Documents", stats['total_documents'])
-    
-    with col2:
-        st.metric("Total Characters", f"{stats['total_text_length']:,}")
-    
-    with col3:
-        st.metric("Average Length", f"{stats['average_document_length']:,}")
-    
-    with col4:
-        avg_words = stats['total_text_length'] // 5  # Rough word estimate
-        st.metric("Est. Total Words", f"{avg_words:,}")
-    
-    # Document type breakdown
-    if stats['document_types']:
-        st.subheader("📋 Document Types")
-        
-        # Create chart data
-        type_data = []
-        for doc_type, count in stats['document_types'].items():
-            type_data.append({
-                'Type': doc_type.title(),
-                'Count': count,
-                'Percentage': round((count / stats['total_documents']) * 100, 1)
-            })
-        
-        # Display as table and chart
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            df = pd.DataFrame(type_data)
-            st.dataframe(df, use_container_width=True)
-        
-        with col2:
-            st.bar_chart(df.set_index('Type')['Count'])
-    
-    # Search analytics (if available)
-    if 'search_history' in st.session_state and st.session_state.search_history:
-        st.subheader("🔍 Search Analytics")
-        
-        search_history = st.session_state.search_history
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.metric("Total Searches", len(search_history))
-        
-        with col2:
-            recent_searches = search_history[-5:]
-            st.write("**Recent Searches:**")
-            for search in reversed(recent_searches):
-                st.write(f"• {search['query']} ({search['results']} results)")
+        # Download options
+        if st.button("💾 Download Extracted Text"):
+            if doc and 'text' in doc:
+                st.download_button(
+                    label="Download as TXT",
+                    data=doc['text'],
+                    file_name=f"{doc['filename']}_extracted.txt",
+                    mime="text/plain"
+                )
 
 if __name__ == "__main__":
     main()
