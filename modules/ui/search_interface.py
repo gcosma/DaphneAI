@@ -32,8 +32,8 @@ def render_search_interface(documents: List[Dict[str, Any]]):
             "🧠 Smart Search - Finds keywords and phrases (recommended for most searches)",
             "🎯 Exact Match - Finds exact words only (fastest, most precise)",
             "🌀 Fuzzy Search - Handles typos and misspellings", 
-            "🤖 AI Semantic - AI finds related concepts (needs AI libraries)",
-            "🔄 Hybrid - Combines Smart + AI for best results (needs AI libraries)"
+            "🤖 AI Semantic - AI finds related concepts (works with fallback)",
+            "🔄 Hybrid - Combines Smart + AI for best results"
         ],
         index=0,
         help="Different methods find different types of matches"
@@ -54,20 +54,33 @@ def render_search_interface(documents: List[Dict[str, Any]]):
     col1, col2 = st.columns(2)
     
     with col1:
-        max_results = st.slider("Max results per document", 1, 20, 5)
+        # CHANGED: Add "All Results" option and set as default
+        max_results_options = ["All Results"] + list(range(1, 21))
+        max_results_selection = st.selectbox(
+            "Max results per document", 
+            max_results_options,
+            index=0,  # Default to "All Results"
+            help="Select 'All Results' to see every match, or limit to a specific number"
+        )
+        
+        # Convert selection to number (None means all results)
+        max_results = None if max_results_selection == "All Results" else max_results_selection
+        
         case_sensitive = st.checkbox("Case sensitive search", value=False)
     
     with col2:
         show_context = st.checkbox("Show context around matches", value=True)
         highlight_matches = st.checkbox("Highlight search terms", value=True)
     
-    # AI availability check
+    # AI availability check - IMPROVED: Show info but don't block
     ai_available = check_rag_availability()
-    if method_key in ["semantic", "hybrid"] and not ai_available:
-        st.warning("🤖 AI search requires: `pip install sentence-transformers torch`")
-        if st.button("💡 Show Installation Instructions"):
-            st.code("pip install sentence-transformers torch scikit-learn")
-        return
+    if method_key in ["semantic", "hybrid"]:
+        if ai_available:
+            st.info("🤖 AI libraries detected - full semantic search available")
+        else:
+            st.info("🤖 AI libraries not detected - using enhanced fallback semantic search")
+            if st.button("💡 Show Installation Instructions for Full AI"):
+                st.code("pip install sentence-transformers torch scikit-learn")
     
     # Search execution
     if st.button("🔍 Search Documents", type="primary") and query:
@@ -81,7 +94,7 @@ def render_search_interface(documents: List[Dict[str, Any]]):
                 documents=documents,
                 query=query,
                 method=method_key,
-                max_results=max_results,
+                max_results=max_results,  # Pass None for all results
                 case_sensitive=case_sensitive
             )
             
