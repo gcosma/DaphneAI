@@ -324,37 +324,61 @@ def semantic_search_direct(text: str, query: str) -> List[Dict]:
         raise Exception(f"Semantic search error: {str(e)}")
 
 def semantic_fallback_search(text: str, query: str) -> List[Dict]:
-    """Fallback semantic search using word similarity and synonyms"""
+    """Enhanced fallback semantic search using word similarity and synonyms"""
     
-    # Define semantic word groups (synonyms and related terms)
+    # Enhanced semantic word groups (synonyms and related terms)
     semantic_groups = {
-        'recommend': ['recommend', 'suggest', 'advise', 'propose', 'urge', 'advocate', 'endorse'],
-        'suggest': ['suggest', 'recommend', 'propose', 'advise', 'hint', 'indicate'],
-        'implement': ['implement', 'execute', 'carry out', 'put into practice', 'apply', 'deploy'],
-        'review': ['review', 'examine', 'assess', 'evaluate', 'analyze', 'inspect'],
-        'policy': ['policy', 'procedure', 'guideline', 'protocol', 'framework', 'strategy'],
-        'response': ['response', 'reply', 'answer', 'feedback', 'reaction', 'comment'],
-        'accept': ['accept', 'agree', 'approve', 'endorse', 'support', 'adopt'],
-        'reject': ['reject', 'decline', 'refuse', 'dismiss', 'deny', 'oppose']
+        'recommend': ['recommend', 'suggestion', 'suggest', 'advise', 'propose', 'urge', 'advocate', 'endorse', 'recommendation', 'recommendations'],
+        'suggest': ['suggest', 'recommend', 'proposal', 'propose', 'advise', 'hint', 'indicate', 'suggestion', 'suggestions'],
+        'respond': ['respond', 'response', 'reply', 'answer', 'feedback', 'reaction', 'comment', 'responses', 'replies'],
+        'response': ['response', 'respond', 'reply', 'answer', 'feedback', 'reaction', 'comment', 'responses', 'replies'],
+        'implement': ['implement', 'execute', 'carry out', 'put into practice', 'apply', 'deploy', 'implementation'],
+        'review': ['review', 'examine', 'assess', 'evaluate', 'analyze', 'inspect', 'analysis'],
+        'policy': ['policy', 'procedure', 'guideline', 'protocol', 'framework', 'strategy', 'policies'],
+        'accept': ['accept', 'agree', 'approve', 'endorse', 'support', 'adopt', 'acceptance'],
+        'reject': ['reject', 'decline', 'refuse', 'dismiss', 'deny', 'oppose', 'rejection'],
+        'government': ['government', 'department', 'ministry', 'agency', 'authority', 'administration'],
+        'report': ['report', 'document', 'paper', 'study', 'analysis', 'investigation']
     }
     
     matches = []
     query_words = query.lower().split()
     
-    # Find semantic matches
-    for query_word in query_words:
-        if len(query_word) < 3:
-            continue
-            
-        # Find related words
+    # Remove stop words from query
+    meaningful_words = [word for word in query_words if word not in STOP_WORDS and len(word) > 2]
+    
+    if not meaningful_words:
+        return []
+    
+    # Find semantic matches for each meaningful word
+    for query_word in meaningful_words:
+        
+        # Find related words for this query term
         related_words = []
+        
+        # Direct lookup in semantic groups
+        if query_word in semantic_groups:
+            related_words.extend(semantic_groups[query_word])
+        
+        # Check if query word is contained in any synonym
         for key, synonyms in semantic_groups.items():
-            if query_word in synonyms or any(query_word in syn for syn in synonyms):
+            if any(query_word in synonym for synonym in synonyms):
                 related_words.extend(synonyms)
         
-        # If no semantic group found, use the word itself
+        # If no semantic group found, use the word itself and common variations
         if not related_words:
             related_words = [query_word]
+            # Add common word endings
+            if len(query_word) > 4:
+                related_words.extend([
+                    query_word + 's',
+                    query_word + 'ing', 
+                    query_word + 'ed',
+                    query_word + 'ion'
+                ])
+        
+        # Remove duplicates
+        related_words = list(set(related_words))
         
         # Search for related words in text
         search_text = text.lower()
@@ -363,7 +387,9 @@ def semantic_fallback_search(text: str, query: str) -> List[Dict]:
         
         for i, word in enumerate(search_words):
             for related_word in related_words:
-                if related_word in word or word in related_word:
+                # Check for matches (word contains related word or vice versa)
+                if (related_word in word or word in related_word) and len(word) > 2:
+                    
                     # Calculate semantic similarity score
                     if word == related_word:
                         score = 95.0  # Exact semantic match
@@ -371,6 +397,10 @@ def semantic_fallback_search(text: str, query: str) -> List[Dict]:
                         score = 100.0  # Exact query match
                     elif related_word in word:
                         score = 85.0  # Contains semantic word
+                    elif word in related_word:
+                        score = 80.0  # Word contained in semantic term
+                    elif word.startswith(related_word) or related_word.startswith(word):
+                        score = 75.0  # Prefix match
                     else:
                         score = 70.0  # Partial semantic match
                     
@@ -393,7 +423,8 @@ def semantic_fallback_search(text: str, query: str) -> List[Dict]:
                         'page_number': estimate_page_number(pos, text),
                         'word_position': i,
                         'percentage_through': (pos / len(text)) * 100 if text else 0,
-                        'semantic_relation': f"{query_word} → {related_word}"
+                        'semantic_relation': f"{query_word} → {related_word}",
+                        'query_word': query_word
                     }
                     
                     matches.append(match)
