@@ -1,5 +1,5 @@
 # modules/search/rag_search.py
-# RAG (Retrieval-Augmented Generation) Search Engine
+# COMPLETE RAG (Retrieval-Augmented Generation) Search Engine
 
 import streamlit as st
 import numpy as np
@@ -111,7 +111,9 @@ class RAGSearchEngine:
             return []
         
         # Build index if needed
-        if self.document_embeddings is None or len(self.document_chunks) != sum(1 for doc in documents if doc.get('text')):
+        current_doc_count = sum(1 for doc in documents if doc.get('text'))
+        if (self.document_embeddings is None or 
+            len(self.document_chunks) != current_doc_count):
             if not self._build_index(documents):
                 return []
         
@@ -122,12 +124,11 @@ class RAGSearchEngine:
             # Calculate similarities
             similarities = torch.cosine_similarity(query_embedding, self.document_embeddings)
             
-            # Get top results
-            top_indices = torch.argsort(similarities, descending=True)[:max_results * 2]  # Get more for deduplication
+            # Get top results (get more for potential deduplication)
+            top_indices = torch.argsort(similarities, descending=True)[:max_results * 3]
             
             # Process results
             results = []
-            seen_documents = set()
             
             for idx in top_indices:
                 chunk = self.document_chunks[idx.item()]
@@ -137,17 +138,13 @@ class RAGSearchEngine:
                 if similarity < 0.1:
                     continue
                 
-                doc_filename = chunk['document']['filename']
-                
-                # Deduplicate by document (keep highest scoring chunk per document)
-                if doc_filename in seen_documents:
-                    continue
-                seen_documents.add(doc_filename)
+                # Extract snippet around best match
+                snippet = self._extract_snippet(chunk, query)
                 
                 result = {
                     'document': chunk['document'],
                     'similarity': similarity,
-                    'snippet': self._extract_snippet(chunk, query),
+                    'snippet': snippet,
                     'chunk_info': {
                         'start_word': chunk['start_word'],
                         'end_word': chunk['end_word'],
@@ -158,6 +155,7 @@ class RAGSearchEngine:
                 
                 results.append(result)
                 
+                # Stop when we have enough results
                 if len(results) >= max_results:
                     break
             
@@ -175,29 +173,41 @@ class RAGSearchEngine:
         query_lower = query.lower()
         text_lower = text.lower()
         
-        # Find query in text
+        # Find best position for query context
         best_pos = 0
         best_score = 0
         
-        # Look for exact phrase match
+        # Look for exact phrase match first
         if query_lower in text_lower:
             best_pos = text_lower.find(query_lower)
         else:
-            # Look for individual words
+            # Look for individual query words
             query_words = query_lower.split()
             for word in query_words:
                 pos = text_lower.find(word)
                 if pos != -1:
                     # Score based on how many query words are nearby
-                    local_score = sum(1 for qw in query_words if qw in text_lower[max(0, pos-100):pos+100])
+                    local_score = sum(1 for qw in query_words 
+                                    if qw in text_lower[max(0, pos-100):pos+100])
                     if local_score > best_score:
                         best_score = local_score
                         best_pos = pos
         
         # Extract snippet around best position
         words = text.split()
-        word_pos = len(text[:best_pos].split())
+        if not words:
+            return text[:200] + "..." if len(text) > 200 else text
         
+        # Find word position corresponding to character position
+        char_count = 0
+        word_pos = 0
+        for i, word in enumerate(words):
+            if char_count >= best_pos:
+                word_pos = i
+                break
+            char_count += len(word) + 1  # +1 for space
+        
+        # Extract context around the word position
         start_word = max(0, word_pos - context_words)
         end_word = min(len(words), word_pos + context_words)
         
@@ -225,3 +235,12 @@ class RAGSearchEngine:
             'chunks_indexed': len(self.document_chunks),
             'dependencies_available': RAG_DEPENDENCIES_AVAILABLE
         }
+    
+    def clear_index(self):
+        """Clear the current index to force rebuild"""
+        self.document_embeddings = None
+        self.document_chunks = []
+        self.logger.info("RAG index cleared")
+
+# Export the main class
+__all__ = ['RAGSearchEngine', 'RAG_DEPENDENCIES_AVAILABLE']
