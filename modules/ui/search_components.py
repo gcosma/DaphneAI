@@ -633,11 +633,19 @@ def display_single_result(result: Dict, index: int, query: str, show_context: bo
             exact_count = result.get('context', '').lower().count(query.lower())
             st.markdown(f"🎯 **Exact phrase '{query}':** Found {exact_count} time(s)")
         else:
-            # For other methods, show word matching info
-            query_words = query.lower().split()
+            # For other methods, show word matching info (filtered)
+            original_query = result.get('original_query', query)
+            filtered_query = result.get('processed_query', filter_stop_words(query))
+            
+            # Show both original and filtered if different
+            if filtered_query != original_query:
+                st.markdown(f"🔍 **Original query:** '{original_query}' → **Filtered:** '{filtered_query}'")
+            
+            # Show which meaningful words were found
+            query_words = filtered_query.lower().split() if filtered_query else []
             context_lower = result.get('context', '').lower()
             found_words = [word for word in query_words if word in context_lower]
-            st.markdown(f"🔍 **Query words found:** {', '.join(found_words) if found_words else 'None (but related terms found)'}")
+            st.markdown(f"📝 **Meaningful words found:** {', '.join(found_words) if found_words else 'Related terms found'}")
     
     # Context display
     if show_context:
@@ -672,16 +680,19 @@ def display_single_result(result: Dict, index: int, query: str, show_context: bo
     st.markdown("---")
 
 def highlight_search_terms(text: str, query: str) -> str:
-    """Highlight search terms in text - ENHANCED for better matching"""
+    """Highlight search terms in text - FIXED to exclude stop words"""
     
-    query_words = query.split()
+    # Filter out stop words from highlighting (same as search filtering)
+    filtered_query = filter_stop_words(query)
+    query_words = filtered_query.split() if filtered_query else []
+    
     highlighted = text
     
     # Sort words by length (longest first) to avoid partial highlighting conflicts
     query_words.sort(key=len, reverse=True)
     
     for word in query_words:
-        if len(word) > 1:  # Only highlight meaningful words
+        if len(word) > 1 and word.lower() not in STOP_WORDS:  # Double-check stop words
             
             # Create multiple patterns for better matching
             patterns = [
@@ -701,8 +712,8 @@ def highlight_search_terms(text: str, query: str) -> str:
             if word.endswith('tion'):
                 patterns.append(word[:-4])  # Remove 'tion'
             
-            # Remove short or duplicate patterns
-            patterns = list(set([p for p in patterns if len(p) > 2]))
+            # Remove short or duplicate patterns, and filter stop words again
+            patterns = list(set([p for p in patterns if len(p) > 2 and p.lower() not in STOP_WORDS]))
             
             # Apply highlighting for each pattern
             for pattern in patterns:
@@ -713,6 +724,9 @@ def highlight_search_terms(text: str, query: str) -> str:
                     
                     def highlight_match(match):
                         matched_word = match.group()
+                        # Double-check: don't highlight if it's a stop word
+                        if matched_word.lower() in STOP_WORDS:
+                            return matched_word
                         return f"<mark style='background-color: #FFEB3B; padding: 2px; border-radius: 2px; font-weight: bold;'>{matched_word}</mark>"
                     
                     highlighted = compiled_pattern.sub(highlight_match, highlighted)
