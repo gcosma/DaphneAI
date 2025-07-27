@@ -190,7 +190,7 @@ def exact_search(text: str, query: str, case_sensitive: bool = False) -> List[Di
     return matches
 
 def smart_search_filtered(text: str, query: str, case_sensitive: bool = False) -> List[Dict]:
-    """Smart search with stop word filtering"""
+    """Smart search with stop word filtering - ENHANCED for word variations"""
     
     if not query.strip():
         return []
@@ -206,45 +206,78 @@ def smart_search_filtered(text: str, query: str, case_sensitive: bool = False) -
     if not query_words:
         return []
     
-    # Find each meaningful word
+    # Find each meaningful word with better pattern matching
     for word in query_words:
-        # Find word with word boundaries, including partial matches
-        pattern = r'\b' + re.escape(word) + r'\w*'
+        # ENHANCED: Create root word for better matching
+        root_word = word
+        if word.endswith(('ing', 'ed', 'er', 's', 'ly')):
+            # Try to find root word
+            if word.endswith('ing'):
+                root_word = word[:-3]
+            elif word.endswith('ed'):
+                root_word = word[:-2]
+            elif word.endswith(('er', 'ly')):
+                root_word = word[:-2]
+            elif word.endswith('s'):
+                root_word = word[:-1]
         
-        for match in re.finditer(pattern, search_text):
-            pos = match.start()
-            matched_text = text[match.start():match.end()]
-            
-            # Calculate score based on match quality
-            if match.group().lower() == word.lower():
-                score = 100.0  # Exact word match
-            elif match.group().lower().startswith(word.lower()):
-                score = 85.0   # Word starts with query
-            else:
-                score = 70.0   # Partial match
-            
-            # Bonus for longer matches
-            if len(matched_text) > len(word):
-                score += 5.0
-            
-            # Extract context
-            context_start = max(0, pos - 150)
-            context_end = min(len(text), pos + len(matched_text) + 150)
-            context = text[context_start:context_end]
-            
-            match_info = {
-                'position': pos,
-                'matched_text': matched_text,
-                'context': context,
-                'score': score,
-                'match_type': 'smart',
-                'page_number': estimate_page_number(pos, text),
-                'word_position': len(text[:pos].split()),
-                'percentage_through': (pos / len(text)) * 100 if text else 0,
-                'query_word': word
-            }
-            
-            matches.append(match_info)
+        # ENHANCED: More flexible pattern to catch variations
+        # This will match: recommend, recommending, recommended, recommendation, etc.
+        patterns = [
+            rf'\b{re.escape(word)}\w*',           # Original word + endings
+            rf'\b{re.escape(root_word)}\w*',      # Root word + endings
+        ]
+        
+        # Remove duplicates
+        patterns = list(set(patterns))
+        
+        for pattern in patterns:
+            try:
+                for match in re.finditer(pattern, search_text):
+                    pos = match.start()
+                    matched_text = text[match.start():match.end()]
+                    
+                    # Calculate score based on match quality
+                    matched_lower = match.group().lower()
+                    word_lower = word.lower()
+                    
+                    if matched_lower == word_lower:
+                        score = 100.0  # Exact word match
+                    elif matched_lower.startswith(word_lower):
+                        score = 95.0   # Word starts with query (recommend -> recommending)
+                    elif matched_lower.startswith(root_word.lower()):
+                        score = 90.0   # Root word match (recommendation -> recommend)
+                    elif word_lower in matched_lower:
+                        score = 85.0   # Query word contained in match
+                    else:
+                        score = 70.0   # Partial match
+                    
+                    # Bonus for common word variations
+                    if any(matched_lower.endswith(suffix) for suffix in ['ing', 'ed', 'tion', 'ment']):
+                        score += 5.0
+                    
+                    # Extract context
+                    context_start = max(0, pos - 150)
+                    context_end = min(len(text), pos + len(matched_text) + 150)
+                    context = text[context_start:context_end]
+                    
+                    match_info = {
+                        'position': pos,
+                        'matched_text': matched_text,
+                        'context': context,
+                        'score': score,
+                        'match_type': 'smart',
+                        'page_number': estimate_page_number(pos, text),
+                        'word_position': len(text[:pos].split()),
+                        'percentage_through': (pos / len(text)) * 100 if text else 0,
+                        'query_word': word,
+                        'pattern_used': pattern
+                    }
+                    
+                    matches.append(match_info)
+            except re.error:
+                # Skip invalid regex patterns
+                continue
     
     # Remove overlapping matches and sort by score
     matches = remove_overlapping_matches(matches)
@@ -253,7 +286,7 @@ def smart_search_filtered(text: str, query: str, case_sensitive: bool = False) -
     return matches
 
 def fuzzy_search_filtered(text: str, query: str, case_sensitive: bool = False) -> List[Dict]:
-    """Fuzzy search with stop word filtering"""
+    """Fuzzy search with stop word filtering - FIXED highlighting"""
     
     if not query.strip():
         return []
@@ -278,20 +311,23 @@ def fuzzy_search_filtered(text: str, query: str, case_sensitive: bool = False) -
         for i, word in enumerate(search_words):
             similarity = difflib.SequenceMatcher(None, query_word, word).ratio()
             
-            if similarity > 0.7:  # 70% similarity threshold
+            if similarity > 0.6:  # Lower threshold for better results (was 0.7)
                 # Find position in original text
                 pos = len(' '.join(words[:i]))
                 if i > 0:
                     pos += 1  # Add space
                 
-                # Extract context
+                # Extract context with proper highlighting context
                 context_start = max(0, pos - 150)
                 context_end = min(len(text), pos + len(words[i]) + 150)
                 context = text[context_start:context_end]
                 
+                # FIXED: Use original case word for matched_text
+                matched_text = words[i]
+                
                 match = {
                     'position': pos,
-                    'matched_text': words[i],
+                    'matched_text': matched_text,  # FIXED: Original case preserved
                     'context': context,
                     'score': similarity * 100,
                     'match_type': 'fuzzy',
@@ -311,10 +347,10 @@ def fuzzy_search_filtered(text: str, query: str, case_sensitive: bool = False) -
     return matches
 
 def semantic_search(text: str, query: str) -> List[Dict]:
-    """AI semantic search using sentence transformers"""
+    """AI semantic search with fallback when RAG not available"""
     
     try:
-        # Initialize RAG engine if not already done
+        # Try to use RAG engine first
         if 'rag_engine' not in st.session_state:
             from modules.search.rag_search import RAGSearchEngine
             st.session_state.rag_engine = RAGSearchEngine()
@@ -342,8 +378,91 @@ def semantic_search(text: str, query: str) -> List[Dict]:
         return matches
         
     except Exception as e:
-        st.error(f"Semantic search failed: {str(e)}")
-        return []
+        # FALLBACK: Use enhanced word similarity when RAG fails
+        st.warning(f"🤖 AI semantic search not available. Using enhanced similarity matching instead.")
+        return semantic_fallback_search(text, query)
+
+def semantic_fallback_search(text: str, query: str) -> List[Dict]:
+    """Fallback semantic search using word similarity and synonyms"""
+    
+    # Define semantic word groups (synonyms and related terms)
+    semantic_groups = {
+        'recommend': ['recommend', 'suggest', 'advise', 'propose', 'urge', 'advocate', 'endorse'],
+        'suggest': ['suggest', 'recommend', 'propose', 'advise', 'hint', 'indicate'],
+        'implement': ['implement', 'execute', 'carry out', 'put into practice', 'apply', 'deploy'],
+        'review': ['review', 'examine', 'assess', 'evaluate', 'analyze', 'inspect'],
+        'policy': ['policy', 'procedure', 'guideline', 'protocol', 'framework', 'strategy'],
+        'response': ['response', 'reply', 'answer', 'feedback', 'reaction', 'comment'],
+        'accept': ['accept', 'agree', 'approve', 'endorse', 'support', 'adopt'],
+        'reject': ['reject', 'decline', 'refuse', 'dismiss', 'deny', 'oppose']
+    }
+    
+    matches = []
+    query_words = query.lower().split()
+    
+    # Find semantic matches
+    for query_word in query_words:
+        if len(query_word) < 3:
+            continue
+            
+        # Find related words
+        related_words = []
+        for key, synonyms in semantic_groups.items():
+            if query_word in synonyms or any(query_word in syn for syn in synonyms):
+                related_words.extend(synonyms)
+        
+        # If no semantic group found, use the word itself
+        if not related_words:
+            related_words = [query_word]
+        
+        # Search for related words in text
+        search_text = text.lower()
+        words = text.split()
+        search_words = search_text.split()
+        
+        for i, word in enumerate(search_words):
+            for related_word in related_words:
+                if related_word in word or word in related_word:
+                    # Calculate semantic similarity score
+                    if word == related_word:
+                        score = 95.0  # Exact semantic match
+                    elif word == query_word:
+                        score = 100.0  # Exact query match
+                    elif related_word in word:
+                        score = 85.0  # Contains semantic word
+                    else:
+                        score = 70.0  # Partial semantic match
+                    
+                    # Find position in original text
+                    pos = len(' '.join(words[:i]))
+                    if i > 0:
+                        pos += 1
+                    
+                    # Extract context
+                    context_start = max(0, pos - 150)
+                    context_end = min(len(text), pos + len(words[i]) + 150)
+                    context = text[context_start:context_end]
+                    
+                    match = {
+                        'position': pos,
+                        'matched_text': words[i],
+                        'context': context,
+                        'score': score,
+                        'match_type': 'semantic',
+                        'page_number': estimate_page_number(pos, text),
+                        'word_position': i,
+                        'percentage_through': (pos / len(text)) * 100 if text else 0,
+                        'semantic_relation': f"{query_word} → {related_word}"
+                    }
+                    
+                    matches.append(match)
+                    break  # Only match once per word
+    
+    # Remove overlapping matches and sort by score
+    matches = remove_overlapping_matches(matches)
+    matches.sort(key=lambda x: x['score'], reverse=True)
+    
+    return matches
 
 def hybrid_search_filtered(text: str, query: str, case_sensitive: bool = False) -> List[Dict]:
     """Hybrid search with stop word filtering"""
@@ -456,7 +575,7 @@ def display_results_grouped(results: List[Dict], query: str, search_time: float,
                 display_single_result(result, i, query, show_context, highlight_matches)
 
 def display_single_result(result: Dict, index: int, query: str, show_context: bool, highlight_matches: bool):
-    """Display a single search result with enhanced formatting"""
+    """Display a single search result with enhanced formatting - ENHANCED DEBUG INFO"""
     
     # Result header with score and method
     method_icons = {
@@ -476,6 +595,19 @@ def display_single_result(result: Dict, index: int, query: str, show_context: bo
     Score: {score:.1f}
     """)
     
+    # DEBUG: Show what was actually matched
+    matched_text = result.get('matched_text', '')
+    query_word = result.get('query_word', query)
+    
+    if method == 'fuzzy' and 'similarity' in result:
+        similarity = result['similarity']
+        st.caption(f"🔍 **Fuzzy Match:** '{matched_text}' ↔ '{query_word}' (similarity: {similarity:.2f})")
+    elif method == 'semantic' and 'semantic_relation' in result:
+        st.caption(f"🤖 **Semantic:** {result['semantic_relation']}")
+    elif method == 'smart':
+        pattern_used = result.get('pattern_used', 'standard')
+        st.caption(f"🧠 **Smart Match:** Found '{matched_text}' using pattern search")
+    
     # Position information
     col1, col2, col3, col4 = st.columns(4)
     
@@ -494,20 +626,18 @@ def display_single_result(result: Dict, index: int, query: str, show_context: bo
         word_pos = result.get('word_position', 0)
         st.markdown(f"🔢 **Word {word_pos:,}**")
     
-    # Match details
-    matched_text = result.get('matched_text', '')
+    # Match details with better information
     if matched_text:
-        # Count occurrences of query terms
-        query_words = query.lower().split()
-        match_counts = {}
-        for word in query_words:
-            count = matched_text.lower().count(word)
-            if count > 0:
-                match_counts[word] = count
-        
-        if match_counts:
-            match_summary = " | ".join([f"{word}({count})" for word, count in match_counts.items()])
-            st.markdown(f"🎯 **Exact phrase '{query}':** {len([w for w in query_words if w in matched_text.lower()])}x | **Words:** {match_summary}")
+        # For exact matches, show phrase counting
+        if method == 'exact':
+            exact_count = result.get('context', '').lower().count(query.lower())
+            st.markdown(f"🎯 **Exact phrase '{query}':** Found {exact_count} time(s)")
+        else:
+            # For other methods, show word matching info
+            query_words = query.lower().split()
+            context_lower = result.get('context', '').lower()
+            found_words = [word for word in query_words if word in context_lower]
+            st.markdown(f"🔍 **Query words found:** {', '.join(found_words) if found_words else 'None (but related terms found)'}")
     
     # Context display
     if show_context:
@@ -516,7 +646,12 @@ def display_single_result(result: Dict, index: int, query: str, show_context: bo
             
             # Highlight matches if requested
             if highlight_matches:
-                highlighted_context = highlight_search_terms(context, query)
+                # For fuzzy search, also highlight the actual matched word
+                highlight_query = query
+                if method == 'fuzzy' and matched_text:
+                    highlight_query = f"{query} {matched_text}"
+                
+                highlighted_context = highlight_search_terms(context, highlight_query)
                 st.markdown(f"📖 **Context:** {highlighted_context}", unsafe_allow_html=True)
             else:
                 st.markdown(f"📖 **Context:** {context}")
@@ -529,7 +664,7 @@ def display_single_result(result: Dict, index: int, query: str, show_context: bo
     # Additional info for special search types
     if method == 'fuzzy' and 'similarity' in result:
         similarity = result['similarity']
-        st.caption(f"🌀 Fuzzy match similarity: {similarity:.2f}")
+        st.caption(f"🌀 Fuzzy match similarity: {similarity:.2f} (threshold: 0.6)")
     
     elif method == 'semantic':
         st.caption(f"🤖 AI found this as semantically related to your query")
@@ -537,19 +672,53 @@ def display_single_result(result: Dict, index: int, query: str, show_context: bo
     st.markdown("---")
 
 def highlight_search_terms(text: str, query: str) -> str:
-    """Highlight search terms in text"""
+    """Highlight search terms in text - ENHANCED for better matching"""
     
     query_words = query.split()
     highlighted = text
     
+    # Sort words by length (longest first) to avoid partial highlighting conflicts
+    query_words.sort(key=len, reverse=True)
+    
     for word in query_words:
-        if len(word) > 2:  # Only highlight meaningful words
-            # Case-insensitive highlighting
-            pattern = re.compile(re.escape(word), re.IGNORECASE)
-            highlighted = pattern.sub(
-                lambda m: f"<mark style='background-color: #FFEB3B; padding: 2px; border-radius: 2px;'>{m.group()}</mark>",
-                highlighted
-            )
+        if len(word) > 1:  # Only highlight meaningful words
+            
+            # Create multiple patterns for better matching
+            patterns = [
+                word,                    # Exact word
+                word.rstrip('s'),        # Remove plural 's'
+                word + 'ing',           # Add 'ing'
+                word + 'ed',            # Add 'ed'
+                word + 'tion',          # Add 'tion'
+                word + 'ment',          # Add 'ment'
+            ]
+            
+            # Also try root forms
+            if word.endswith('ing'):
+                patterns.append(word[:-3])  # Remove 'ing'
+            if word.endswith('ed'):
+                patterns.append(word[:-2])  # Remove 'ed'
+            if word.endswith('tion'):
+                patterns.append(word[:-4])  # Remove 'tion'
+            
+            # Remove short or duplicate patterns
+            patterns = list(set([p for p in patterns if len(p) > 2]))
+            
+            # Apply highlighting for each pattern
+            for pattern in patterns:
+                try:
+                    # Case-insensitive word boundary matching
+                    regex_pattern = rf'\b{re.escape(pattern)}\w*'
+                    compiled_pattern = re.compile(regex_pattern, re.IGNORECASE)
+                    
+                    def highlight_match(match):
+                        matched_word = match.group()
+                        return f"<mark style='background-color: #FFEB3B; padding: 2px; border-radius: 2px; font-weight: bold;'>{matched_word}</mark>"
+                    
+                    highlighted = compiled_pattern.sub(highlight_match, highlighted)
+                except re.error:
+                    # Skip invalid patterns
+                    continue
     
     return highlighted
 
