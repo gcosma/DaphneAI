@@ -1,4 +1,4 @@
-# modules/ui/result_display.py - Search Results Display
+# modules/ui/result_display.py - Search Results Display - COMPLETE FIXED VERSION
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -18,7 +18,7 @@ def display_results_grouped(results: List[Dict], query: str, search_time: float,
     # Group results by document
     doc_groups = defaultdict(list)
     for result in results:
-        doc_name = result['document']['filename']
+        doc_name = result.get('document', {}).get('filename', 'Unknown Document')
         doc_groups[doc_name].append(result)
     
     # Summary
@@ -42,21 +42,21 @@ def display_results_grouped(results: List[Dict], query: str, search_time: float,
     # Display each document group
     for doc_name, doc_results in doc_groups.items():
         
-        doc = doc_results[0]['document']
-        best_score = max(r['score'] for r in doc_results)
+        doc = doc_results[0].get('document', {})
+        best_score = max(r.get('score', 0) for r in doc_results)
         
         # Document header with enhanced info
         with st.expander(f"📄 {doc_name} ({len(doc_results)} matches, best score: {best_score:.1f})", expanded=True):
             
             # Document statistics
             text = doc.get('text', '')
-            word_count = len(text.split())
-            char_count = len(text)
+            word_count = len(text.split()) if text else 0
+            char_count = len(text) if text else 0
             est_pages = max(1, char_count // 2000)
             file_size_mb = char_count / (1024 * 1024)
             
             st.markdown(f"""
-            **File Type:** {doc_name.split('.')[-1].upper()}  |  **Words:** {word_count:,}  |  **Size:** {file_size_mb:.1f} MB  |  **Est. Pages:** {est_pages}
+            **File Type:** {doc_name.split('.')[-1].upper() if '.' in doc_name else 'TXT'}  |  **Words:** {word_count:,}  |  **Size:** {file_size_mb:.1f} MB  |  **Est. Pages:** {est_pages}
             """)
             
             # Display each match in this document
@@ -218,112 +218,277 @@ def display_single_result(result: Dict, index: int, query: str, show_context: bo
     st.markdown("---")
 
 def copy_all_results(results: List[Dict], query: str):
-    """Copy all results to clipboard"""
+    """Copy all results to clipboard - COMPLETE FIXED VERSION"""
     
-    output = f"Search Results for: {query}\n"
-    output += "=" * 50 + "\n\n"
+    if not results:
+        st.warning("No results to copy")
+        return
     
-    doc_groups = defaultdict(list)
-    for result in results:
-        doc_name = result['document']['filename']
-        doc_groups[doc_name].append(result)
-    
-    for doc_name, doc_results in doc_groups.items():
-        output += f"Document: {doc_name}\n"
-        output += f"Matches: {len(doc_results)}\n\n"
+    try:
+        output = f"Search Results for: {query}\n"
+        output += f"Total Results: {len(results)}\n"
+        output += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        output += "=" * 60 + "\n\n"
         
-        for i, result in enumerate(doc_results, 1):
-            output += f"Match {i}:\n"
-            output += f"  Page: {result.get('page_number', 1)}\n"
-            output += f"  Score: {result.get('score', 0):.1f}\n"
-            output += f"  Context: {result.get('context', '')}\n\n"
+        doc_groups = defaultdict(list)
+        for result in results:
+            doc_name = result.get('document', {}).get('filename', 'Unknown Document')
+            doc_groups[doc_name].append(result)
         
-        output += "-" * 30 + "\n\n"
-    
-    st.code(output)
-    st.success("Results copied to display! Use Ctrl+A, Ctrl+C to copy to clipboard")
+        for doc_name, doc_results in doc_groups.items():
+            output += f"Document: {doc_name}\n"
+            output += f"Matches: {len(doc_results)}\n\n"
+            
+            for i, result in enumerate(doc_results, 1):
+                output += f"Match {i}:\n"
+                output += f"  Type: {result.get('content_type', 'General')}\n"
+                output += f"  Score: {result.get('score', 0):.1f}\n"
+                output += f"  Page: {result.get('page_number', 1)}\n"
+                output += f"  Context: {result.get('context', '')[:150]}...\n\n"
+            
+            output += "-" * 40 + "\n\n"
+        
+        # Limit output size for display
+        if len(output) > 3000:
+            display_output = output[:3000] + "\n... [Content truncated for display] ..."
+        else:
+            display_output = output
+        
+        st.code(display_output, language="text")
+        st.success("✅ Results displayed above! Use Ctrl+A, Ctrl+C to copy to clipboard")
+        
+        # Also provide as downloadable text file
+        safe_query = "".join(c for c in query if c.isalnum() or c in (' ', '-', '_')).strip()
+        safe_query = safe_query.replace(' ', '_')[:20]
+        
+        st.download_button(
+            label="📋 Download as Text File",
+            data=output,
+            file_name=f"search_results_{safe_query}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            mime="text/plain",
+            key=f"text_download_{len(results)}_{hash(query)}"
+        )
+        
+    except Exception as e:
+        st.error(f"Error copying results: {str(e)}")
+        
+        # Fallback: Simple list
+        st.markdown("**Simple Results List:**")
+        for i, result in enumerate(results[:20], 1):  # First 20 results
+            doc_name = result.get('document', {}).get('filename', 'Unknown')
+            score = result.get('score', 0)
+            st.write(f"{i}. {doc_name} - {score:.1f}")
 
 def export_results_csv(results: List[Dict], query: str):
-    """Export search results to CSV"""
+    """Export search results to CSV - COMPLETE FIXED VERSION"""
+    
+    if not results:
+        st.warning("No results to export")
+        return
     
     csv_data = []
     
-    for result in results:
+    for i, result in enumerate(results, 1):
+        # Handle missing keys gracefully
         row = {
+            'Match_Number': i,
             'Query': query,
-            'Document': result['document']['filename'],
-            'Match_Type': result.get('match_type', ''),
+            'Document': result.get('document', {}).get('filename', 'Unknown'),
+            'Match_Type': result.get('match_type', 'Unknown'),
             'Score': result.get('score', 0),
+            'Content_Type': result.get('content_type', 'General'),
+            'Content_Relevance': result.get('content_relevance', 0),
             'Page_Number': result.get('page_number', 1),
             'Position': result.get('position', 0),
-            'Matched_Text': result.get('matched_text', ''),
-            'Context': result.get('context', ''),
-            'Percentage_Through': result.get('percentage_through', 0)
+            'Percentage_Through': result.get('percentage_through', 0),
+            'Matched_Text': str(result.get('matched_text', ''))[:500],  # Limit length
+            'Context': str(result.get('context', ''))[:1000],  # Limit length
+            'Word_Similarity': result.get('word_similarity', 'N/A'),
+            'Semantic_Similarity': result.get('semantic_similarity', 'N/A'),
+            'Query_Coverage': result.get('query_coverage', 'N/A')
         }
         csv_data.append(row)
     
-    df = pd.DataFrame(csv_data)
-    csv = df.to_csv(index=False)
-    
-    st.download_button(
-        label="📥 Download CSV",
-        data=csv,
-        file_name=f"search_results_{query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv"
-    )
+    # Create DataFrame
+    try:
+        df = pd.DataFrame(csv_data)
+        csv = df.to_csv(index=False)
+        
+        # Generate safe filename
+        safe_query = "".join(c for c in query if c.isalnum() or c in (' ', '-', '_')).strip()
+        safe_query = safe_query.replace(' ', '_')[:20]  # Limit length
+        filename = f"search_results_{safe_query}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        
+        st.download_button(
+            label="📥 Download CSV",
+            data=csv,
+            file_name=filename,
+            mime="text/csv",
+            key=f"csv_download_{len(results)}_{hash(query)}"  # Unique key
+        )
+        
+        st.success(f"✅ CSV ready for download! ({len(results)} results)")
+        
+        # Show preview
+        with st.expander("📊 CSV Preview (First 5 rows)"):
+            st.dataframe(df.head())
+        
+    except Exception as e:
+        st.error(f"Error creating CSV: {str(e)}")
+        
+        # Fallback: Show data as table
+        st.markdown("**CSV Data Preview:**")
+        try:
+            simple_data = []
+            for i, result in enumerate(results[:10], 1):  # First 10 results
+                simple_data.append({
+                    'Match': i,
+                    'Document': result.get('document', {}).get('filename', 'Unknown')[:30],
+                    'Type': result.get('content_type', 'General'),
+                    'Score': result.get('score', 0),
+                    'Page': result.get('page_number', 1)
+                })
+            st.table(simple_data)
+        except:
+            st.write("Unable to display data preview")
 
 def generate_search_report(results: List[Dict], query: str, search_method: str):
-    """Generate a comprehensive search report"""
+    """Generate a comprehensive search report - COMPLETE FIXED VERSION"""
     
-    # Group results by document
-    doc_groups = defaultdict(list)
-    for result in results:
-        doc_name = result['document']['filename']
-        doc_groups[doc_name].append(result)
+    if not results:
+        st.warning("No results to generate report")
+        return
     
-    report = f"""# Search Report: "{query}"
+    try:
+        # Group results by document
+        doc_groups = defaultdict(list)
+        for result in results:
+            doc_name = result.get('document', {}).get('filename', 'Unknown Document')
+            doc_groups[doc_name].append(result)
+        
+        # Calculate statistics
+        total_results = len(results)
+        total_docs = len(doc_groups)
+        avg_score = sum(r.get('score', 0) for r in results) / total_results if total_results > 0 else 0
+        max_score = max((r.get('score', 0) for r in results), default=0)
+        
+        # Content type analysis
+        content_types = {}
+        for result in results:
+            content_type = result.get('content_type', 'General')
+            content_types[content_type] = content_types.get(content_type, 0) + 1
+        
+        # Generate report content
+        report = f"""# Search Report: "{query}"
 
 **Search Method:** {search_method}  
 **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
-**Total Results:** {len(results)} matches in {len(doc_groups)} documents
+**Total Results:** {total_results} matches in {total_docs} documents
 
-## Summary Statistics
+## Executive Summary
 
 | Metric | Value |
 |--------|-------|
-| Documents Searched | {len(doc_groups)} |
-| Total Matches | {len(results)} |
-| Average Score | {sum(r.get('score', 0) for r in results) / len(results):.2f} |
-| Highest Score | {max(r.get('score', 0) for r in results):.2f} |
+| Documents Searched | {total_docs} |
+| Total Matches | {total_results} |
+| Average Score | {avg_score:.2f} |
+| Highest Score | {max_score:.2f} |
 
-## Results by Document
+## Content Type Analysis
 
 """
-    
-    for doc_name, doc_results in doc_groups.items():
-        best_score = max(r.get('score', 0) for r in doc_results)
-        avg_score = sum(r.get('score', 0) for r in doc_results) / len(doc_results)
         
-        report += f"""### 📄 {doc_name}
+        # Add content type breakdown
+        if content_types:
+            for content_type, count in sorted(content_types.items(), key=lambda x: x[1], reverse=True):
+                percentage = (count / total_results) * 100
+                report += f"- **{content_type}:** {count} results ({percentage:.1f}%)\n"
+        else:
+            report += "- No content type analysis available\n"
+        
+        report += "\n## Results by Document\n\n"
+        
+        # Add document-by-document analysis
+        for doc_name, doc_results in doc_groups.items():
+            best_score = max((r.get('score', 0) for r in doc_results), default=0)
+            avg_score_doc = sum(r.get('score', 0) for r in doc_results) / len(doc_results) if doc_results else 0
+            
+            report += f"""### 📄 {doc_name}
 - **Matches:** {len(doc_results)}
 - **Best Score:** {best_score:.2f}
-- **Average Score:** {avg_score:.2f}
+- **Average Score:** {avg_score_doc:.2f}
 
 """
-        
-        for i, result in enumerate(doc_results, 1):
-            report += f"""**Match {i}** (Score: {result.get('score', 0):.1f})  
-*Page {result.get('page_number', 1)}, Position {result.get('position', 0):,}*
+            
+            # Add top matches from this document
+            sorted_results = sorted(doc_results, key=lambda x: x.get('score', 0), reverse=True)
+            for i, result in enumerate(sorted_results[:3], 1):  # Top 3 matches
+                score = result.get('score', 0)
+                page = result.get('page_number', 1)
+                position = result.get('position', 0)
+                content_type = result.get('content_type', 'General')
+                context = str(result.get('context', ''))[:200]  # First 200 chars
+                
+                report += f"""**Match {i}** - {content_type} (Score: {score:.1f})  
+*Page {page}, Position {position:,}*
 
-> {result.get('context', '')[:200]}...
+> {context}...
 
 ---
 
 """
-    
-    st.download_button(
-        label="📄 Download Report",
-        data=report,
-        file_name=f"search_report_{query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
-        mime="text/markdown"
-    )
+        
+        # Generate safe filename
+        safe_query = "".join(c for c in query if c.isalnum() or c in (' ', '-', '_')).strip()
+        safe_query = safe_query.replace(' ', '_')[:20]  # Limit length
+        filename = f"search_report_{safe_query}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        
+        # Provide download button
+        st.download_button(
+            label="📄 Download Report",
+            data=report,
+            file_name=filename,
+            mime="text/markdown",
+            key=f"report_download_{len(results)}_{hash(query)}"  # Unique key
+        )
+        
+        st.success(f"✅ Report ready for download! ({len(report)} characters)")
+        
+        # Show preview
+        with st.expander("📋 Report Preview"):
+            st.markdown("**First 1000 characters:**")
+            preview_text = report[:1000] + "..." if len(report) > 1000 else report
+            st.markdown(preview_text)
+        
+    except Exception as e:
+        st.error(f"Error generating report: {str(e)}")
+        
+        # Fallback: Simple report
+        st.markdown("**Simple Report:**")
+        simple_report = f"""# Search Report for: {query}
+
+**Search Method:** {search_method}  
+**Total Results:** {len(results)}  
+**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## Results Summary:
+"""
+        for i, result in enumerate(results[:10], 1):  # First 10 results
+            doc_name = result.get('document', {}).get('filename', 'Unknown')
+            score = result.get('score', 0)
+            content_type = result.get('content_type', 'General')
+            simple_report += f"{i}. **{doc_name}** - {content_type} (Score: {score:.1f})\n"
+        
+        st.markdown(simple_report)
+        
+        # Provide fallback download
+        safe_query = "".join(c for c in query if c.isalnum() or c in (' ', '-', '_')).strip()
+        safe_query = safe_query.replace(' ', '_')[:20]
+        
+        st.download_button(
+            label="📄 Download Simple Report",
+            data=simple_report,
+            file_name=f"simple_report_{safe_query}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+            mime="text/markdown",
+            key=f"simple_report_{len(results)}_{hash(query)}"
+        )
