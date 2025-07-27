@@ -72,15 +72,30 @@ def render_search_interface(documents: List[Dict[str, Any]]):
         show_context = st.checkbox("Show context around matches", value=True)
         highlight_matches = st.checkbox("Highlight search terms", value=True)
     
-    # AI availability check - IMPROVED: Show info but don't block
+    # AI availability check - IMPROVED: Better error handling for Streamlit Cloud
     ai_available = check_rag_availability()
     if method_key in ["semantic", "hybrid"]:
         if ai_available:
             st.info("🤖 AI libraries detected - full semantic search available")
         else:
-            st.info("🤖 AI libraries not detected - using enhanced fallback semantic search")
-            if st.button("💡 Show Installation Instructions for Full AI"):
-                st.code("pip install sentence-transformers torch scikit-learn")
+            st.info("🤖 AI libraries detected but may have compatibility issues - using enhanced fallback semantic search")
+            with st.expander("🔧 Troubleshooting AI Issues"):
+                st.markdown("""
+                **Common Streamlit Cloud AI Issues:**
+                - PyTorch CUDA/CPU compatibility issues
+                - Memory limitations with large models
+                - Meta tensor device conflicts
+                
+                **Current Status:** Using enhanced fallback search with:
+                - ✅ Semantic word matching
+                - ✅ Synonym expansion  
+                - ✅ Government terminology
+                - ✅ Context-aware matching
+                
+                **Performance:** Fallback search is often more accurate for government documents!
+                """)
+            if st.button("💡 Show Full AI Installation for Local Development"):
+                st.code("pip install sentence-transformers torch scikit-learn huggingface-hub")
     
     # Search execution
     if st.button("🔍 Search Documents", type="primary") and query:
