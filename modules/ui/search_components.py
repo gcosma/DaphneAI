@@ -628,3 +628,107 @@ def render_search_results(search_result: Dict):
         # Card view
         for i, result in enumerate(results, 1):
             doc = result['document']
+            score_key = 'similarity' if 'similarity' in result else 'score'
+            score = result[score_key]
+            
+            with st.container():
+                # Card header
+                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                
+                with col1:
+                    st.markdown(f"**{i}. {doc['filename']}**")
+                with col2:
+                    st.metric("Score", f"{score:.3f}")
+                with col3:
+                    st.caption(result['match_type'])
+                with col4:
+                    st.caption(f"{doc.get('word_count', 0)} words")
+                
+                # Relevance explanation
+                if 'relevance_reason' in result:
+                    st.caption(f"🔍 {result['relevance_reason']}")
+                
+                # Content preview and highlights
+                if display_mode == "📝 Details":
+                    # Show full document preview
+                    preview_text = doc['text'][:800] + "..." if len(doc['text']) > 800 else doc['text']
+                    st.text_area("Content Preview", preview_text, height=120, key=f"preview_{i}")
+                
+                # Show highlights
+                if result.get('highlights'):
+                    st.markdown("**📍 Relevant Excerpts:**")
+                    for highlight in result['highlights']:
+                        st.markdown(f"> {highlight}")
+                
+                # Score breakdown for advanced users
+                if 'score_breakdown' in result and display_mode == "📝 Details":
+                    with st.expander("📊 Score Breakdown"):
+                        breakdown = result['score_breakdown']
+                        for component, value in breakdown.items():
+                            if value > 0:
+                                st.write(f"• {component.replace('_', ' ').title()}: {value:.3f}")
+                
+                st.markdown("---")
+
+def render_search_analytics(search_engine: AdvancedSearchEngine):
+    """Display search analytics and history"""
+    if st.checkbox("📊 Show Analytics & History"):
+        tab1, tab2 = st.tabs(["📈 Performance", "📝 Search History"])
+        
+        with tab1:
+            # Performance metrics
+            if search_engine.search_history:
+                df = pd.DataFrame(search_engine.search_history)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("⚡ Performance Metrics")
+                    avg_time = df['search_time'].mean()
+                    st.metric("Average Search Time", f"{avg_time:.3f}s")
+                    st.metric("Total Searches", len(df))
+                    
+                    # Search mode distribution
+                    mode_counts = df['search_mode'].value_counts()
+                    st.bar_chart(mode_counts)
+                
+                with col2:
+                    st.subheader("📊 Search Times")
+                    st.line_chart(df.set_index('timestamp')['search_time'])
+                    
+                    # Results distribution
+                    st.subheader("🎯 Results Found")
+                    st.bar_chart(df['results_count'])
+        
+        with tab2:
+            # Search history
+            if search_engine.search_history:
+                st.subheader("📝 Recent Searches")
+                
+                history_df = pd.DataFrame(search_engine.search_history)
+                history_df['timestamp'] = pd.to_datetime(history_df['timestamp']).dt.strftime('%H:%M:%S')
+                
+                # Show recent searches
+                display_df = history_df[['timestamp', 'query', 'search_mode', 'results_count', 'search_time']].tail(20)
+                display_df.columns = ['Time', 'Query', 'Mode', 'Results', 'Time (s)']
+                
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Quick re-search buttons
+                st.subheader("🔄 Quick Re-search")
+                recent_queries = history_df['query'].tail(5).unique()
+                
+                cols = st.columns(min(len(recent_queries), 3))
+                for i, query in enumerate(recent_queries):
+                    if i < len(cols):
+                        if cols[i].button(f"🔍 '{query[:20]}...'", key=f"rerun_{i}"):
+                            st.session_state.quick_search = query
+                            st.rerun()
+                
+                # Handle quick search
+                if hasattr(st.session_state, 'quick_search'):
+                    st.info(f"Searching for: {st.session_state.quick_search}")
+                    del st.session_state.quick_search
+            
+            else:
+                st.info("No search history yet. Perform some searches to see analytics!")
