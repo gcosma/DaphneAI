@@ -283,4 +283,110 @@ def get_app_metrics() -> Dict[str, Any]:
 def export_analytics_data(filename: str = None) -> str:
     """Export analytics data to JSON file"""
     if not filename:
-        timestamp = datetime.now().strftime('%Y
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'search_analytics_{timestamp}.json'
+    
+    analytics_data = get_app_metrics()
+    
+    try:
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(analytics_data, f, indent=2, default=str)
+        
+        logger = logging.getLogger(__name__)
+        logger.info(f"Analytics data exported to {filename}")
+        
+        return filename
+        
+    except Exception as e:
+        log_error(e, "Failed to export analytics data")
+        return ""
+
+def cleanup_old_logs(days_to_keep: int = 7):
+    """Clean up old log files"""
+    try:
+        log_files = Path('.').glob('*.log')
+        cutoff_time = time.time() - (days_to_keep * 24 * 60 * 60)
+        
+        for log_file in log_files:
+            if log_file.stat().st_mtime < cutoff_time:
+                log_file.unlink()
+                
+        logger = logging.getLogger(__name__)
+        logger.info(f"Cleaned up log files older than {days_to_keep} days")
+        
+    except Exception as e:
+        log_error(e, "Failed to cleanup old logs")
+
+def validate_search_query(query: str) -> Dict[str, Any]:
+    """Validate and analyze search query"""
+    if not query or not query.strip():
+        return {
+            'valid': False,
+            'error': 'Query cannot be empty',
+            'suggestions': ['Try entering some keywords', 'Use specific terms related to your search']
+        }
+    
+    query = query.strip()
+    words = query.split()
+    
+    validation_result = {
+        'valid': True,
+        'cleaned_query': query,
+        'word_count': len(words),
+        'character_count': len(query),
+        'has_special_chars': bool(re.search(r'[^\w\s-"]', query)),
+        'has_quotes': '"' in query,
+        'suggested_improvements': []
+    }
+    
+    # Provide suggestions for better searches
+    if len(words) == 1 and len(query) < 3:
+        validation_result['suggested_improvements'].append('Try using longer or more specific terms')
+    
+    if len(words) > 10:
+        validation_result['suggested_improvements'].append('Consider using fewer, more specific keywords')
+    
+    if query.isupper():
+        validation_result['suggested_improvements'].append('Consider using normal case instead of ALL CAPS')
+        validation_result['cleaned_query'] = query.lower()
+    
+    return validation_result
+
+def format_search_time(seconds: float) -> str:
+    """Format search time for display"""
+    if seconds < 0.001:
+        return "<1ms"
+    elif seconds < 1:
+        return f"{seconds*1000:.0f}ms"
+    else:
+        return f"{seconds:.2f}s"
+
+def calculate_search_efficiency(results_count: int, search_time: float, query_complexity: int = 1) -> Dict[str, Any]:
+    """Calculate search efficiency metrics"""
+    
+    # Results per second
+    rps = results_count / max(search_time, 0.001)
+    
+    # Efficiency score (0-100)
+    base_score = min(100, rps * 10)
+    
+    # Adjust for query complexity
+    complexity_factor = 1.0 + (query_complexity - 1) * 0.1
+    efficiency_score = base_score / complexity_factor
+    
+    # Classify efficiency
+    if efficiency_score >= 80:
+        efficiency_rating = "Excellent"
+    elif efficiency_score >= 60:
+        efficiency_rating = "Good"
+    elif efficiency_score >= 40:
+        efficiency_rating = "Fair"
+    else:
+        efficiency_rating = "Poor"
+    
+    return {
+        'results_per_second': rps,
+        'efficiency_score': efficiency_score,
+        'efficiency_rating': efficiency_rating,
+        'search_time_formatted': format_search_time(search_time)
+    }
