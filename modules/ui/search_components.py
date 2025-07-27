@@ -1,5 +1,5 @@
 # modules/ui/search_components.py
-# COMPLETE FILE - Clear search options + Keep existing + Add RAG + Hybrid
+# COMPLETE FILE - Enhanced search with page numbers and detailed info
 
 import streamlit as st
 import re
@@ -19,14 +19,14 @@ def render_search_interface(documents: List[Dict[str, Any]]):
             sample_docs = [
                 {
                     'filename': 'sample_policy.txt',
-                    'text': 'The government recommends implementing new healthcare policies to improve patient access and reduce waiting times. This policy should be considered for immediate implementation. We recommend further consultation.',
+                    'text': 'The government recommends implementing new healthcare policies to improve patient access and reduce waiting times. This policy should be considered for immediate implementation. We recommend further consultation with stakeholders.',
                     'word_count': 28,
                     'file_type': 'txt'
                 },
                 {
                     'filename': 'sample_response.txt', 
-                    'text': 'The department accepts the recommendation for healthcare reform. We will establish a task force to oversee the implementation of these critical changes. The committee recommends monthly reviews.',
-                    'word_count': 30,
+                    'text': 'The department accepts the recommendation for healthcare reform. We will establish a task force to oversee the implementation of these critical changes. The committee recommends monthly reviews and suggests immediate action.',
+                    'word_count': 32,
                     'file_type': 'txt'
                 }
             ]
@@ -273,11 +273,6 @@ def rag_semantic_search(query: str, documents: List[Dict], max_results: int, min
 def hybrid_search(query: str, documents: List[Dict], max_results: int, min_similarity: float = 0.1) -> List[Dict]:
     """
     HYBRID SEARCH - Combines Smart Search + AI for best results
-    
-    This gives you:
-    1. Fast, reliable keyword matches (Smart Search)
-    2. Intelligent concept matches (AI Semantic)
-    3. Best overall coverage
     """
     
     # Get results from both methods
@@ -309,7 +304,7 @@ def hybrid_search(query: str, documents: List[Dict], max_results: int, min_simil
     combined.sort(key=lambda x: x['score'], reverse=True)
     return combined[:max_results]
 
-# ========== ENHANCED SEARCH FUNCTIONS (KEEP EXISTING) ==========
+# ========== ENHANCED SEARCH FUNCTIONS ==========
 
 def smart_search_enhanced(query: str, documents: List[Dict], max_results: int) -> List[Dict]:
     """Enhanced smart search that finds multiple matches per document"""
@@ -571,10 +566,10 @@ def calculate_similarity(word1: str, word2: str) -> float:
     
     return intersection / union
 
-# ========== RESULT DISPLAY FUNCTIONS ==========
+# ========== ENHANCED RESULT DISPLAY FUNCTIONS ==========
 
 def display_results_grouped(results: List[Dict], query: str, search_time: float):
-    """Display results grouped by document"""
+    """Display results grouped by document with detailed information"""
     if not results:
         return
     
@@ -604,52 +599,328 @@ def display_results_grouped(results: List[Dict], query: str, search_time: float)
         }
         type_display = ' '.join([type_labels.get(t, '🔍') for t in search_types])
         
-        with st.expander(f"📄 {doc_filename} ({len(doc_results)} matches, score: {highest_score:.1f}) {type_display}", 
+        with st.expander(f"📄 {doc_filename} ({len(doc_results)} matches, best score: {highest_score:.1f}) {type_display}", 
                         expanded=(len(sorted_groups) <= 3)):
             
-            # Document metadata
-            col1, col2, col3 = st.columns(3)
+            # Enhanced document metadata
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("File Type", doc.get('file_type', 'unknown').upper())
             with col2:
                 st.metric("Words", f"{doc.get('word_count', 0):,}")
             with col3:
                 st.metric("Size", f"{doc.get('file_size_mb', 0):.1f} MB")
+            with col4:
+                # Calculate estimated pages (roughly 250 words per page)
+                estimated_pages = max(1, doc.get('word_count', 0) // 250)
+                st.metric("Est. Pages", estimated_pages)
             
             # Sort matches within document by score
             doc_results.sort(key=lambda x: x['score'], reverse=True)
             
-            # Show all matches from this document
+            # Show all matches from this document with detailed info
             for i, result in enumerate(doc_results, 1):
-                search_type_name = {
-                    'smart': '🧠 Smart Search',
-                    'exact': '🎯 Exact Match', 
-                    'fuzzy': '🌀 Fuzzy Search',
-                    'rag_semantic': '🤖 AI Semantic',
-                    'hybrid_smart': '🔄🧠 Hybrid (Smart)',
-                    'hybrid_rag': '🔄🤖 Hybrid (AI)'
-                }.get(result['search_type'], '🔍 Search')
-                
-                st.markdown(f"**{search_type_name} - Match {i}** (Score: {result['score']:.1f})")
-                
-                if result['matches']:
-                    st.info(" | ".join(result['matches']))
-                
-                # Context with highlighting
-                highlighted_context = highlight_terms(result['context'], query)
-                st.markdown(highlighted_context, unsafe_allow_html=True)
-                
-                if i < len(doc_results):
-                    st.markdown("---")
-            
-            # View full document option
-            if st.button(f"📖 View Full Document: {doc_filename}", key=f"view_full_{doc_filename}"):
-                st.text_area(
-                    f"Full content of {doc_filename}:",
-                    doc.get('text', 'No content available'),
-                    height=400,
-                    key=f"full_text_{doc_filename}"
-                )
+                display_detailed_match(result, query, i, doc)
+
+def display_detailed_match(result: Dict, query: str, match_number: int, doc: Dict):
+    """Display a single match with detailed information"""
+    
+    search_type_name = {
+        'smart': '🧠 Smart Search',
+        'exact': '🎯 Exact Match', 
+        'fuzzy': '🌀 Fuzzy Search',
+        'rag_semantic': '🤖 AI Semantic',
+        'hybrid_smart': '🔄🧠 Hybrid (Smart)',
+        'hybrid_rag': '🔄🤖 Hybrid (AI)'
+    }.get(result['search_type'], '🔍 Search')
+    
+    # Calculate detailed position info
+    position_info = calculate_position_info(result, doc)
+    
+    # Match header with detailed info
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown(f"**{search_type_name} - Match {match_number}**")
+    with col2:
+        st.markdown(f"**Score: {result['score']:.1f}**")
+    
+    # Detailed position information
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        if position_info['page_number']:
+            st.caption(f"📄 Page {position_info['page_number']}")
+        else:
+            st.caption("📄 Page N/A")
+    
+    with col2:
+        st.caption(f"📍 Position {position_info['char_position']:,}")
+    
+    with col3:
+        st.caption(f"📊 {position_info['percentage_through']:.1f}% through doc")
+    
+    with col4:
+        if position_info['word_position']:
+            st.caption(f"🔢 Word {position_info['word_position']:,}")
+    
+    # Match details
+    if result['matches']:
+        st.info("🎯 " + " | ".join(result['matches']))
+    
+    # Enhanced context with more detail
+    display_enhanced_context(result, query, position_info)
+    
+    # Additional match information
+    with st.expander(f"🔍 More details for Match {match_number}"):
+        display_match_details(result, position_info, doc)
+
+def calculate_position_info(result: Dict, doc: Dict) -> Dict:
+    """Calculate detailed position information for a match"""
+    text = doc.get('text', '')
+    context = result.get('context', '')
+    
+    # Find the position of this match in the full document
+    char_position = 0
+    word_position = 0
+    page_number = None
+    percentage_through = 0
+    
+    try:
+        # For exact matches with position
+        if 'position' in result:
+            char_position = result['position']
+        
+        # For chunk-based matches
+        elif 'chunk_index' in result:
+            chunk_idx = result['chunk_index']
+            # Estimate position based on chunk
+            if text:
+                chunks = split_text_into_chunks(text)
+                if chunk_idx < len(chunks):
+                    # Find where this chunk starts in the original text
+                    chunk_text = chunks[chunk_idx]
+                    char_position = text.find(chunk_text)
+                    if char_position == -1:
+                        # Fallback: estimate based on chunk size
+                        avg_chunk_size = len(text) // len(chunks)
+                        char_position = chunk_idx * avg_chunk_size
+        
+        # For RAG matches with chunk info
+        elif 'chunk_info' in result:
+            chunk_info = result['chunk_info']
+            if 'start_word' in chunk_info:
+                words = text.split()
+                word_position = chunk_info['start_word']
+                # Convert word position to character position
+                if word_position < len(words):
+                    char_position = len(' '.join(words[:word_position]))
+        
+        # If we still don't have position, try to find context in text
+        if char_position == 0 and context:
+            # Remove ellipsis and find context in original text
+            clean_context = context.replace('...', '').strip()
+            if clean_context and len(clean_context) > 10:
+                char_position = text.find(clean_context)
+                if char_position == -1:
+                    # Try with first 50 characters of context
+                    short_context = clean_context[:50]
+                    char_position = text.find(short_context)
+        
+        # Calculate percentage through document
+        if text and char_position >= 0:
+            percentage_through = (char_position / len(text)) * 100
+        
+        # Estimate page number (roughly 2000 characters per page for PDFs)
+        if char_position > 0:
+            page_number = max(1, char_position // 2000 + 1)
+        
+        # Calculate word position if not already set
+        if word_position == 0 and char_position > 0:
+            text_before = text[:char_position]
+            word_position = len(text_before.split())
+    
+    except Exception as e:
+        logging.warning(f"Error calculating position info: {e}")
+    
+    return {
+        'char_position': max(0, char_position),
+        'word_position': max(0, word_position),
+        'page_number': page_number,
+        'percentage_through': max(0, min(100, percentage_through))
+    }
+
+def display_enhanced_context(result: Dict, query: str, position_info: Dict):
+    """Display context with enhanced highlighting and navigation"""
+    
+    context = result.get('context', '')
+    if not context:
+        st.warning("No context available for this match")
+        return
+    
+    # Enhanced highlighting with different colors for different match types
+    highlighted_context = enhance_highlighting(context, query, result['search_type'])
+    
+    # Context header with navigation info
+    st.markdown("**📖 Context:**")
+    
+    # Show where this context appears in the document
+    if position_info['page_number']:
+        st.caption(f"💡 This appears around page {position_info['page_number']}, {position_info['percentage_through']:.1f}% through the document")
+    
+    # Display the highlighted context
+    st.markdown(highlighted_context, unsafe_allow_html=True)
+    
+    # Add context length info
+    st.caption(f"📏 Showing {len(context)} characters of context")
+
+def enhance_highlighting(text: str, query: str, search_type: str) -> str:
+    """Enhanced highlighting with different colors for different search types"""
+    if not text or not query:
+        return text
+    
+    # Choose highlight color based on search type
+    highlight_colors = {
+        'smart': '#FFEB3B',      # Yellow
+        'exact': '#4CAF50',      # Green  
+        'fuzzy': '#FF9800',      # Orange
+        'rag_semantic': '#2196F3', # Blue
+        'hybrid_smart': '#9C27B0', # Purple
+        'hybrid_rag': '#E91E63'    # Pink
+    }
+    
+    color = highlight_colors.get(search_type, '#FFEB3B')
+    
+    words = query.lower().split()
+    highlighted = text
+    
+    for word in words:
+        if len(word) > 2:  # Skip very short words
+            # Create case-insensitive pattern that preserves original case
+            pattern = re.compile(f'({re.escape(word)})', re.IGNORECASE)
+            highlighted = pattern.sub(
+                f'<mark style="background-color: {color}; padding: 2px; border-radius: 3px; font-weight: bold;">\\1</mark>', 
+                highlighted
+            )
+    
+    return highlighted
+
+def display_match_details(result: Dict, position_info: Dict, doc: Dict):
+    """Display detailed information about the match"""
+    
+    # Match metadata
+    st.markdown("**🔍 Match Information:**")
+    
+    match_details = []
+    match_details.append(f"**Search Type:** {result['search_type']}")
+    match_details.append(f"**Match Score:** {result['score']:.2f}")
+    
+    if 'match_id' in result:
+        match_details.append(f"**Match ID:** {result['match_id']}")
+    
+    for detail in match_details:
+        st.markdown(f"• {detail}")
+    
+    # Position details
+    st.markdown("**📍 Position Details:**")
+    position_details = [
+        f"**Character Position:** {position_info['char_position']:,}",
+        f"**Word Position:** {position_info['word_position']:,}",
+        f"**Document Progress:** {position_info['percentage_through']:.2f}%"
+    ]
+    
+    if position_info['page_number']:
+        position_details.insert(0, f"**Estimated Page:** {position_info['page_number']}")
+    
+    for detail in position_details:
+        st.markdown(f"• {detail}")
+    
+    # Context details
+    context = result.get('context', '')
+    if context:
+        st.markdown("**📖 Context Details:**")
+        context_details = [
+            f"**Context Length:** {len(context)} characters",
+            f"**Context Words:** {len(context.split())} words"
+        ]
+        
+        # Check if context is truncated
+        if context.startswith('...') or context.endswith('...'):
+            context_details.append("**Note:** Context is truncated for display")
+        
+        for detail in context_details:
+            st.markdown(f"• {detail}")
+    
+    # Advanced options for this match
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button(f"📍 Show Surrounding Text", key=f"surrounding_{result.get('match_id', 'unknown')}"):
+            show_surrounding_text(result, doc, position_info)
+    
+    with col2:
+        if st.button(f"📋 Copy Match Info", key=f"copy_{result.get('match_id', 'unknown')}"):
+            copy_match_info(result, position_info, doc)
+
+def show_surrounding_text(result: Dict, doc: Dict, position_info: Dict):
+    """Show more surrounding text around the match"""
+    
+    text = doc.get('text', '')
+    char_pos = position_info['char_position']
+    
+    if not text or char_pos <= 0:
+        st.warning("Cannot show surrounding text - position not available")
+        return
+    
+    # Extract larger context (1000 characters around the match)
+    context_size = 1000
+    start = max(0, char_pos - context_size // 2)
+    end = min(len(text), char_pos + context_size // 2)
+    
+    surrounding_text = text[start:end]
+    
+    # Add markers to show boundaries
+    if start > 0:
+        surrounding_text = "... " + surrounding_text
+    if end < len(text):
+        surrounding_text = surrounding_text + " ..."
+    
+    st.markdown("**📖 Extended Context (±500 characters):**")
+    
+    # Show with highlighting
+    query_words = result.get('matches', [])
+    if query_words:
+        # Try to extract query from matches
+        for match in query_words:
+            if ':' in match:
+                query = match.split(':')[0].strip().replace('Exact phrase', '').replace("'", "")
+                break
+    else:
+        query = ""
+    
+    highlighted = enhance_highlighting(surrounding_text, query, result['search_type'])
+    st.markdown(highlighted, unsafe_allow_html=True)
+
+def copy_match_info(result: Dict, position_info: Dict, doc: Dict):
+    """Display copyable match information"""
+    
+    match_info = f"""
+Match Information:
+- Document: {doc['filename']}
+- Search Type: {result['search_type']}
+- Score: {result['score']:.2f}
+- Page: {position_info['page_number'] or 'N/A'}
+- Position: {position_info['char_position']:,} chars, {position_info['word_position']:,} words
+- Progress: {position_info['percentage_through']:.1f}% through document
+
+Context:
+{result.get('context', 'No context available')}
+    """.strip()
+    
+    st.text_area(
+        "📋 Match Information (ready to copy):",
+        match_info,
+        height=200,
+        key=f"copy_area_{result.get('match_id', 'unknown')}"
+    )
 
 def display_results_flat(results: List[Dict], query: str, search_time: float):
     """Display results in flat list (not grouped)"""
@@ -667,7 +938,10 @@ def display_results_flat(results: List[Dict], query: str, search_time: float):
             'hybrid_rag': '🔄🤖 Hybrid-AI'
         }.get(result['search_type'], '🔍')
         
-        with st.expander(f"{search_type_name} {i}. {doc['filename']} (Score: {result['score']:.1f})", 
+        # Calculate position info for flat display
+        position_info = calculate_position_info(result, doc)
+        
+        with st.expander(f"{search_type_name} {i}. {doc['filename']} (Score: {result['score']:.1f}) Page {position_info['page_number'] or 'N/A'}", 
                         expanded=(i <= 5)):
             
             # Document metadata
@@ -679,30 +953,69 @@ def display_results_flat(results: List[Dict], query: str, search_time: float):
             with col3:
                 st.metric("Size", f"{doc.get('file_size_mb', 0):.1f} MB")
             
+            # Position info
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.caption(f"📄 Page {position_info['page_number'] or 'N/A'}")
+            with col2:
+                st.caption(f"📍 Position {position_info['char_position']:,}")
+            with col3:
+                st.caption(f"📊 {position_info['percentage_through']:.1f}% through")
+            
             # Match information
             if result['matches']:
                 st.info("🎯 " + " | ".join(result['matches']))
             
             # Context with highlighting
-            highlighted_context = highlight_terms(result['context'], query)
+            highlighted_context = enhance_highlighting(result['context'], query, result['search_type'])
             st.markdown("**📖 Context:**")
             st.markdown(highlighted_context, unsafe_allow_html=True)
 
-def highlight_terms(text: str, query: str) -> str:
-    """Highlight search terms in text"""
-    if not text or not query:
-        return text
+def export_results_to_csv(results: List[Dict], query: str):
+    """Export search results to CSV format"""
     
-    words = query.lower().split()
-    highlighted = text
+    import pandas as pd
     
-    for word in words:
-        if len(word) > 2:  # Skip very short words
-            # Create case-insensitive pattern that preserves original case
-            pattern = re.compile(f'({re.escape(word)})', re.IGNORECASE)
-            highlighted = pattern.sub(r'<mark style="background-color: yellow; padding: 2px;">\1</mark>', highlighted)
+    # Prepare data for CSV
+    export_data = []
     
-    return highlighted
+    for i, result in enumerate(results, 1):
+        doc = result['document']
+        position_info = calculate_position_info(result, doc)
+        
+        export_data.append({
+            'Match_Number': i,
+            'Query': query,
+            'Document': doc['filename'],
+            'Search_Type': result['search_type'],
+            'Score': result['score'],
+            'Page_Number': position_info['page_number'],
+            'Character_Position': position_info['char_position'],
+            'Word_Position': position_info['word_position'],
+            'Percentage_Through': position_info['percentage_through'],
+            'Context': result.get('context', ''),
+            'Matches': ' | '.join(result.get('matches', [])),
+            'File_Type': doc.get('file_type', ''),
+            'Word_Count': doc.get('word_count', 0),
+            'File_Size_MB': doc.get('file_size_mb', 0)
+        })
+    
+    # Create DataFrame and CSV
+    df = pd.DataFrame(export_data)
+    csv = df.to_csv(index=False)
+    
+    # Offer download
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"search_results_{query.replace(' ', '_')}_{timestamp}.csv"
+    
+    st.download_button(
+        label="📥 Download CSV",
+        data=csv,
+        file_name=filename,
+        mime="text/csv"
+    )
+    
+    st.success(f"✅ Ready to download {len(results)} results as CSV!")
 
 # ========== ANALYTICS FUNCTIONS ==========
 
