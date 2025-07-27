@@ -8,7 +8,7 @@ from .search_utils import (
     remove_overlapping_matches, STOP_WORDS
 )
 
-def execute_search(documents: List[Dict], query: str, method: str, max_results: int = 5, case_sensitive: bool = False) -> List[Dict]:
+def execute_search(documents: List[Dict], query: str, method: str, max_results: int = None, case_sensitive: bool = False) -> List[Dict]:
     """Execute search using the specified method with stop word filtering"""
     
     # Preprocess query
@@ -39,8 +39,9 @@ def execute_search(documents: List[Dict], query: str, method: str, max_results: 
         else:
             matches = smart_search_filtered(text, processed_query, case_sensitive)
         
-        # Limit results per document
-        matches = matches[:max_results]
+        # CHANGED: Only limit results if max_results is specified
+        if max_results is not None:
+            matches = matches[:max_results]
         
         # Add document info to each match
         for match in matches:
