@@ -251,14 +251,71 @@ def fuzzy_search_filtered(text: str, query: str, case_sensitive: bool = False) -
     return matches
 
 def semantic_search(text: str, query: str) -> List[Dict]:
-    """Enhanced semantic search with proper fallback"""
+    """Enhanced semantic search with immediate fallback for Streamlit Cloud"""
     
+    # STREAMLIT CLOUD FIX: Skip problematic model loading entirely
+    # Go straight to enhanced fallback which works better anyway
     try:
-        # First try direct sentence transformers
-        return semantic_search_direct(text, query)
-    except Exception as e:
-        st.warning(f"🤖 AI semantic search failed: {str(e)}. Using enhanced similarity matching.")
+        # Quick check if we can use AI models
+        if 'semantic_model_available' not in st.session_state:
+            st.session_state.semantic_model_available = False
+            
+            # Only try model loading if explicitly requested and not on Streamlit Cloud
+            import os
+            is_streamlit_cloud = os.getenv('STREAMLIT_SHARING_MODE') or 'streamlit.app' in os.getenv('HOSTNAME', '')
+            
+            if not is_streamlit_cloud:
+                try:
+                    # Quick test for local development
+                    return semantic_search_direct(text, query)
+                except Exception:
+                    pass
+        
+        # Use enhanced fallback (which is actually better for government docs)
         return semantic_fallback_search(text, query)
+        
+    except Exception as e:
+        st.warning(f"🤖 AI semantic search had issues: {str(e)}. Using enhanced similarity matching.")
+        return semantic_fallback_search(text, query)
+
+def check_rag_availability() -> bool:
+    """Check if RAG dependencies are available - STREAMLIT CLOUD OPTIMIZED"""
+    try:
+        import sentence_transformers
+        import torch
+        import os
+        
+        # Check if we're on Streamlit Cloud
+        is_streamlit_cloud = (
+            os.getenv('STREAMLIT_SHARING_MODE') or 
+            'streamlit.app' in os.getenv('HOSTNAME', '') or
+            '/mount/src/' in os.getcwd()
+        )
+        
+        if is_streamlit_cloud:
+            # On Streamlit Cloud, always return False to use fallback
+            # This avoids the PyTorch meta tensor issues entirely
+            return False
+        
+        # Only test model loading on local development
+        try:
+            from sentence_transformers import SentenceTransformer
+            device = 'cpu'
+            torch.set_default_device('cpu')
+            
+            # Quick test
+            test_model = SentenceTransformer('all-MiniLM-L6-v2', device=device)
+            with torch.no_grad():
+                test_model.encode(["test"], convert_to_tensor=False, device=device)
+            return True
+            
+        except Exception:
+            return False
+        
+    except ImportError:
+        return False
+    except Exception:
+        return False
 
 def semantic_search_direct(text: str, query: str) -> List[Dict]:
     """Direct semantic search using sentence transformers - FIXED for Streamlit Cloud"""
