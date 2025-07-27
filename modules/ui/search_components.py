@@ -1,5 +1,5 @@
 # modules/ui/search_components.py
-# BEST SOLUTION - Complete working search components with multiple matches per document
+# COMPLETE FILE - Clear search options + Keep existing + Add RAG + Hybrid
 
 import streamlit as st
 import re
@@ -9,7 +9,7 @@ from typing import Dict, List, Any, Optional
 import logging
 
 def render_search_interface(documents: List[Dict[str, Any]]):
-    """Main search interface - enhanced to show multiple matches per document"""
+    """Main search interface with clear, simple options"""
     st.header("🔍 Document Search")
     
     if not documents:
@@ -38,56 +38,278 @@ def render_search_interface(documents: List[Dict[str, Any]]):
     query = st.text_input(
         "Search Documents", 
         placeholder="Enter your search terms...",
-        help="Search across all uploaded documents - shows multiple matches per document"
+        help="Search across all uploaded documents"
     )
     
-    # Search options
-    col1, col2, col3 = st.columns([2, 1, 1])
+    # Search method selection with clear explanations
+    st.markdown("**Choose how to search:**")
+    
+    # Check if AI is available
+    ai_available = check_rag_availability()
+    
+    # Create clear options with explanations
+    search_options = [
+        ("Smart Search", "🧠", "Finds keywords and phrases - recommended for most searches"),
+        ("Exact Match", "🎯", "Finds exact words only - fastest, most precise"),
+        ("Fuzzy Search", "🌀", "Handles typos and misspellings"),
+    ]
+    
+    # Add AI options if available
+    if ai_available:
+        search_options.extend([
+            ("AI Semantic", "🤖", "AI finds related concepts and meanings - slower but smarter"),
+            ("Hybrid", "🔄", "Combines Smart + AI for best results - recommended for exploration")
+        ])
+    
+    # Display as selectbox with clear labels
+    search_labels = [f"{emoji} {name}" for name, emoji, desc in search_options]
+    search_choice = st.selectbox(
+        "Search Method:",
+        options=search_labels,
+        help="Choose the search method that fits your needs"
+    )
+    
+    # Show explanation for selected method
+    for name, emoji, desc in search_options:
+        if f"{emoji} {name}" == search_choice:
+            st.info(f"ℹ️ **{name}**: {desc}")
+            break
+    
+    # Settings
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        search_mode = st.selectbox(
-            "Search Mode",
-            ["Smart Search", "Exact Match", "Fuzzy Search"],
-            help="Choose search algorithm"
-        )
-    
-    with col2:
         max_results = st.number_input(
             "Max Results", 
             min_value=1, 
             max_value=100, 
             value=20,
-            help="Maximum total results to show"
+            help="Maximum results to show"
         )
     
-    with col3:
+    with col2:
         group_by_doc = st.checkbox(
             "Group by Document", 
             value=True,
             help="Group multiple matches from same document"
         )
     
+    with col3:
+        if ai_available:
+            min_similarity = st.slider(
+                "AI Similarity", 
+                0.0, 1.0, 0.1, 0.05,
+                help="Minimum similarity for AI results"
+            )
+        else:
+            min_similarity = 0.1
+    
+    # Show AI installation hint if needed
+    if not ai_available:
+        with st.expander("🤖 Want AI Search? (Optional)"):
+            st.markdown("""
+            **Install AI libraries for smarter search:**
+            ```bash
+            pip install sentence-transformers torch
+            ```
+            
+            **AI search finds concepts, not just keywords:**
+            - Searching "recommend" also finds "suggest", "advise", "propose"
+            - Understands context and meaning
+            - Great for exploring unfamiliar documents
+            """)
+    
     # Perform search
     if query:
+        # Extract method name from selection
+        method_name = search_choice.split(" ", 1)[1]  # Remove emoji
+        
         start_time = time.time()
         
-        if search_mode == "Smart Search":
-            results = smart_search_enhanced(query, documents, max_results)
-        elif search_mode == "Exact Match":
-            results = exact_search_enhanced(query, documents, max_results)
-        else:  # Fuzzy Search
-            results = fuzzy_search_enhanced(query, documents, max_results)
+        try:
+            # Route to appropriate search function
+            if method_name == "Smart Search":
+                results = smart_search_enhanced(query, documents, max_results)
+                search_info = "Smart keyword matching"
+                
+            elif method_name == "Exact Match":
+                results = exact_search_enhanced(query, documents, max_results)
+                search_info = "Exact word matching"
+                
+            elif method_name == "Fuzzy Search":
+                results = fuzzy_search_enhanced(query, documents, max_results)
+                search_info = "Typo-tolerant search"
+                
+            elif method_name == "AI Semantic" and ai_available:
+                with st.spinner("🤖 AI is analyzing document meanings..."):
+                    results = rag_semantic_search(query, documents, max_results, min_similarity)
+                search_info = "AI semantic analysis"
+                
+            elif method_name == "Hybrid" and ai_available:
+                with st.spinner("🔄 Combining Smart + AI search..."):
+                    results = hybrid_search(query, documents, max_results, min_similarity)
+                search_info = "Hybrid (Smart + AI) search"
+                
+            else:
+                # Fallback to smart search
+                results = smart_search_enhanced(query, documents, max_results)
+                search_info = "Smart search (fallback)"
+            
+            search_time = time.time() - start_time
+            
+            # Log search for analytics
+            log_search(query, results, search_time, method_name.lower().replace(' ', '_'))
+            
+            # Display results
+            display_search_results(results, query, search_time, method_name, search_info, group_by_doc)
+            
+        except Exception as e:
+            st.error(f"Search error: {str(e)}")
+            st.info("💡 Try a different search method or check your query")
+            logging.error(f"Search failed: {e}")
+
+def display_search_results(results, query, search_time, method_name, search_info, group_by_doc):
+    """Display search results with clear explanations"""
+    
+    if not results:
+        st.warning(f"No results found for '{query}' using {method_name}")
         
-        search_time = time.time() - start_time
+        # Suggest alternatives
+        st.markdown("**💡 Try these alternatives:**")
+        if method_name == "Exact Match":
+            st.info("• Use **Smart Search** for broader keyword matching")
+        elif method_name == "Smart Search":
+            st.info("• Try **Fuzzy Search** if there might be typos")
+            if check_rag_availability():
+                st.info("• Try **AI Semantic** to find related concepts")
+        elif method_name == "Fuzzy Search":
+            if check_rag_availability():
+                st.info("• Try **AI Semantic** to find related concepts")
+            else:
+                st.info("• Try **Smart Search** for standard keyword matching")
+        elif "AI" in method_name:
+            st.info("• Try **Smart Search** for exact keyword matching")
         
-        # Log search for analytics
-        log_search(query, results, search_time, search_mode.lower().replace(' ', '_'))
+        return
+    
+    # Success message
+    doc_count = len(set(r['document']['filename'] for r in results))
+    st.success(f"✅ {search_info} complete!")
+    
+    # Results summary
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Results", len(results))
+    with col2:
+        st.metric("Documents", doc_count)
+    with col3:
+        st.metric("Time", f"{search_time:.3f}s")
+    
+    # Show breakdown for hybrid search
+    if method_name == "Hybrid":
+        smart_results = [r for r in results if 'smart' in r.get('search_type', '')]
+        ai_results = [r for r in results if 'rag' in r.get('search_type', '')]
         
-        # Display results
-        if group_by_doc:
-            display_results_grouped(results, query, search_time)
-        else:
-            display_results_flat(results, query, search_time)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("🧠 Smart Matches", len(smart_results))
+        with col2:
+            st.metric("🤖 AI Matches", len(ai_results))
+    
+    # Display results
+    if group_by_doc:
+        display_results_grouped(results, query, search_time)
+    else:
+        display_results_flat(results, query, search_time)
+
+# ========== RAG SEARCH FUNCTIONS ==========
+
+def check_rag_availability() -> bool:
+    """Check if RAG dependencies are available"""
+    try:
+        import sentence_transformers
+        import torch
+        return True
+    except ImportError:
+        return False
+
+def rag_semantic_search(query: str, documents: List[Dict], max_results: int, min_similarity: float = 0.1) -> List[Dict]:
+    """RAG semantic search using sentence transformers"""
+    try:
+        from modules.search.rag_search import RAGSearchEngine
+        
+        # Initialize RAG engine (cached)
+        if 'rag_engine' not in st.session_state:
+            st.session_state.rag_engine = RAGSearchEngine()
+        
+        rag_engine = st.session_state.rag_engine
+        
+        # Perform RAG search
+        rag_results = rag_engine.search(query, documents, max_results)
+        
+        # Convert to standard format
+        results = []
+        for rag_result in rag_results:
+            if rag_result.get('similarity', 0) >= min_similarity:
+                results.append({
+                    'document': rag_result['document'],
+                    'score': rag_result['similarity'] * 100,  # Convert to 0-100 scale
+                    'matches': [f"Semantic similarity: {rag_result['similarity']:.3f}"],
+                    'context': rag_result.get('snippet', ''),
+                    'search_type': 'rag_semantic',
+                    'match_id': f"rag_{rag_result['document']['filename']}_{rag_result.get('chunk_info', {}).get('chunk_index', 0)}"
+                })
+        
+        return results
+        
+    except ImportError:
+        st.error("RAG search requires: pip install sentence-transformers torch")
+        return []
+    except Exception as e:
+        st.error(f"RAG search error: {str(e)}")
+        logging.error(f"RAG search failed: {e}")
+        return []
+
+def hybrid_search(query: str, documents: List[Dict], max_results: int, min_similarity: float = 0.1) -> List[Dict]:
+    """
+    HYBRID SEARCH - Combines Smart Search + AI for best results
+    
+    This gives you:
+    1. Fast, reliable keyword matches (Smart Search)
+    2. Intelligent concept matches (AI Semantic)
+    3. Best overall coverage
+    """
+    
+    # Get results from both methods
+    smart_results = smart_search_enhanced(query, documents, max_results // 2)
+    
+    try:
+        ai_results = rag_semantic_search(query, documents, max_results // 2, min_similarity)
+    except:
+        # If AI fails, just use smart search
+        ai_results = []
+    
+    # Combine results intelligently
+    combined = []
+    seen_docs = set()
+    
+    # Add smart search results first (they're reliable)
+    for result in smart_results:
+        result['search_type'] = 'hybrid_smart'
+        combined.append(result)
+        seen_docs.add(result['document']['filename'])
+    
+    # Add AI results that don't duplicate smart results
+    for result in ai_results:
+        if result['document']['filename'] not in seen_docs:
+            result['search_type'] = 'hybrid_rag'
+            combined.append(result)
+    
+    # Sort by score and limit
+    combined.sort(key=lambda x: x['score'], reverse=True)
+    return combined[:max_results]
+
+# ========== ENHANCED SEARCH FUNCTIONS (KEEP EXISTING) ==========
 
 def smart_search_enhanced(query: str, documents: List[Dict], max_results: int) -> List[Dict]:
     """Enhanced smart search that finds multiple matches per document"""
@@ -105,7 +327,7 @@ def smart_search_enhanced(query: str, documents: List[Dict], max_results: int) -
         text = doc['text']
         text_lower = text.lower()
         
-        # Split text into meaningful chunks (sentences/paragraphs)
+        # Split text into meaningful chunks
         chunks = split_text_into_chunks(text)
         
         for chunk_idx, chunk in enumerate(chunks):
@@ -250,6 +472,8 @@ def fuzzy_search_enhanced(query: str, documents: List[Dict], max_results: int) -
     all_results.sort(key=lambda x: x['score'], reverse=True)
     return all_results[:max_results]
 
+# ========== UTILITY FUNCTIONS ==========
+
 def split_text_into_chunks(text: str, max_chunk_size: int = 500) -> List[str]:
     """Split text into meaningful chunks (sentences/paragraphs)"""
     # First try to split by paragraphs
@@ -347,11 +571,11 @@ def calculate_similarity(word1: str, word2: str) -> float:
     
     return intersection / union
 
+# ========== RESULT DISPLAY FUNCTIONS ==========
+
 def display_results_grouped(results: List[Dict], query: str, search_time: float):
     """Display results grouped by document"""
     if not results:
-        st.warning(f"No results found for '{query}'")
-        st.info("Try different search terms or use a different search mode.")
         return
     
     # Group results by document
@@ -367,15 +591,21 @@ def display_results_grouped(results: List[Dict], query: str, search_time: float)
                           key=lambda x: max(r['score'] for r in x[1]), 
                           reverse=True)
     
-    st.success(f"Found {len(results)} result(s) in {len(doc_groups)} document(s) for '{query}' in {search_time:.3f} seconds")
-    
     # Display each document group
     for doc_filename, doc_results in sorted_groups:
         doc = doc_results[0]['document']
         highest_score = max(r['score'] for r in doc_results)
+        search_types = list(set(r['search_type'] for r in doc_results))
         
-        with st.expander(f"📄 {doc_filename} ({len(doc_results)} matches, best score: {highest_score:.1f})", 
-                        expanded=(len(doc_groups) <= 3)):
+        # Create display label for search types
+        type_labels = {
+            'smart': '🧠', 'exact': '🎯', 'fuzzy': '🌀', 
+            'rag_semantic': '🤖', 'hybrid_smart': '🔄🧠', 'hybrid_rag': '🔄🤖'
+        }
+        type_display = ' '.join([type_labels.get(t, '🔍') for t in search_types])
+        
+        with st.expander(f"📄 {doc_filename} ({len(doc_results)} matches, score: {highest_score:.1f}) {type_display}", 
+                        expanded=(len(sorted_groups) <= 3)):
             
             # Document metadata
             col1, col2, col3 = st.columns(3)
@@ -391,7 +621,16 @@ def display_results_grouped(results: List[Dict], query: str, search_time: float)
             
             # Show all matches from this document
             for i, result in enumerate(doc_results, 1):
-                st.markdown(f"**🎯 Match {i} (Score: {result['score']:.1f})**")
+                search_type_name = {
+                    'smart': '🧠 Smart Search',
+                    'exact': '🎯 Exact Match', 
+                    'fuzzy': '🌀 Fuzzy Search',
+                    'rag_semantic': '🤖 AI Semantic',
+                    'hybrid_smart': '🔄🧠 Hybrid (Smart)',
+                    'hybrid_rag': '🔄🤖 Hybrid (AI)'
+                }.get(result['search_type'], '🔍 Search')
+                
+                st.markdown(f"**{search_type_name} - Match {i}** (Score: {result['score']:.1f})")
                 
                 if result['matches']:
                     st.info(" | ".join(result['matches']))
@@ -415,15 +654,20 @@ def display_results_grouped(results: List[Dict], query: str, search_time: float)
 def display_results_flat(results: List[Dict], query: str, search_time: float):
     """Display results in flat list (not grouped)"""
     if not results:
-        st.warning(f"No results found for '{query}'")
         return
-    
-    st.success(f"Found {len(results)} result(s) for '{query}' in {search_time:.3f} seconds")
     
     for i, result in enumerate(results, 1):
         doc = result['document']
+        search_type_name = {
+            'smart': '🧠 Smart',
+            'exact': '🎯 Exact', 
+            'fuzzy': '🌀 Fuzzy',
+            'rag_semantic': '🤖 AI',
+            'hybrid_smart': '🔄🧠 Hybrid-Smart',
+            'hybrid_rag': '🔄🤖 Hybrid-AI'
+        }.get(result['search_type'], '🔍')
         
-        with st.expander(f"📄 {i}. {doc['filename']} (Score: {result['score']:.1f})", 
+        with st.expander(f"{search_type_name} {i}. {doc['filename']} (Score: {result['score']:.1f})", 
                         expanded=(i <= 5)):
             
             # Document metadata
@@ -460,6 +704,8 @@ def highlight_terms(text: str, query: str) -> str:
     
     return highlighted
 
+# ========== ANALYTICS FUNCTIONS ==========
+
 def get_search_stats() -> Dict[str, Any]:
     """Get search statistics from session state"""
     if 'search_history' not in st.session_state:
@@ -495,7 +741,8 @@ def log_search(query: str, results: List[Dict], search_time: float, search_type:
     if len(st.session_state.search_history) > 100:
         st.session_state.search_history = st.session_state.search_history[-100:]
 
-# Backward compatibility functions
+# ========== BACKWARD COMPATIBILITY ==========
+
 def smart_search(query: str, documents: List[Dict], max_results: int) -> List[Dict]:
     """Backward compatibility wrapper"""
     return smart_search_enhanced(query, documents, max_results)
@@ -518,6 +765,8 @@ __all__ = [
     'smart_search_enhanced',
     'exact_search_enhanced',
     'fuzzy_search_enhanced',
+    'rag_semantic_search',
+    'hybrid_search',
     'display_results_grouped',
     'display_results_flat',
     'get_search_stats',
