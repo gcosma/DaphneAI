@@ -64,12 +64,13 @@ def display_results_grouped(results: List[Dict], query: str, search_time: float,
                 display_single_result(result, i, query, show_context, highlight_matches)
 
 def display_single_result(result: Dict, index: int, query: str, show_context: bool, highlight_matches: bool):
-    """Display a single search result with enhanced formatting - ENHANCED DEBUG INFO"""
+    """Display a single search result with enhanced formatting - ALIGNMENT-QUALITY DISPLAY"""
     
     # Result header with score and method
     method_icons = {
         'exact': '🎯',
         'smart': '🧠', 
+        'smart_enhanced': '🧠⭐',  # NEW: Enhanced smart search
         'fuzzy': '🌀',
         'semantic': '🤖',
         'hybrid': '🔄'
@@ -79,12 +80,41 @@ def display_single_result(result: Dict, index: int, query: str, show_context: bo
     icon = method_icons.get(method, '🔍')
     score = result.get('score', 0)
     
+    # ENHANCED: Content type display
+    content_type = result.get('content_type', 'General')
+    content_relevance = result.get('content_relevance', 0)
+    
+    # Content type icons
+    content_icons = {
+        'Recommendation': '🎯',
+        'Response': '↩️',
+        'Policy': '📋',
+        'Analysis': '📊',
+        'Financial': '💰',
+        'Urgent': '⚡',
+        'Meeting': '🤝',
+        'Government': '🏛️',
+        'General': '📄'
+    }
+    
+    content_icon = content_icons.get(content_type, '📄')
+    
+    # ENHANCED: Relevance indicator
+    relevance_color = "🟢" if content_relevance > 0.8 else "🟡" if content_relevance > 0.5 else "🔴"
+    
     st.markdown(f"""
-    **{icon} {method.title()} Search - Match {index}**  
-    Score: {score:.1f}
+    **{icon} {method.replace('_', ' ').title()} - Match {index}** {content_icon} {content_type}  
+    Score: {score:.1f} | Relevance: {relevance_color} {content_relevance:.2f}
     """)
     
-    # DEBUG: Show what was actually matched
+    # DEBUG: Show enhanced matching info for smart search
+    if method == 'smart_enhanced':
+        word_sim = result.get('word_similarity', 0)
+        semantic_sim = result.get('semantic_similarity', 0)
+        coverage = result.get('query_coverage', 'N/A')
+        st.caption(f"🔍 **Enhanced Match:** Word: {word_sim:.2f} | Semantic: {semantic_sim:.2f} | Coverage: {coverage}")
+    
+    # DEBUG: Show what was actually matched for other methods
     matched_text = result.get('matched_text', '')
     query_word = result.get('query_word', query)
     
@@ -93,8 +123,7 @@ def display_single_result(result: Dict, index: int, query: str, show_context: bo
         st.caption(f"🔍 **Fuzzy Match:** '{matched_text}' ↔ '{query_word}' (similarity: {similarity:.2f})")
     elif method == 'semantic' and 'semantic_relation' in result:
         st.caption(f"🤖 **Semantic:** {result['semantic_relation']}")
-    elif method == 'smart':
-        pattern_used = result.get('pattern_used', 'standard')
+    elif method == 'smart' and 'pattern_used' in result:
         st.caption(f"🧠 **Smart Match:** Found '{matched_text}' using pattern search")
     
     # Position information
@@ -115,6 +144,18 @@ def display_single_result(result: Dict, index: int, query: str, show_context: bo
         word_pos = result.get('word_position', 0)
         st.markdown(f"🔢 **Word {word_pos:,}**")
     
+    # ENHANCED: Content analysis for smart enhanced results
+    if method == 'smart_enhanced':
+        st.markdown(f"**🏷️ Content Analysis:** {content_type} content with {content_relevance:.0%} relevance to your query")
+        
+        # Show specific insights based on content type
+        if content_type == 'Recommendation' and any(word in query.lower() for word in ['recommend', 'suggest']):
+            st.info("💡 This appears to be a recommendation that matches your search terms")
+        elif content_type == 'Response' and any(word in query.lower() for word in ['respond', 'response', 'reply']):
+            st.info("💡 This appears to be a response that matches your search terms")
+        elif content_type == 'Policy' and any(word in query.lower() for word in ['policy', 'framework']):
+            st.info("💡 This appears to be policy content relevant to your query")
+    
     # Match details with better information
     if matched_text:
         # For exact matches, show phrase counting
@@ -131,10 +172,15 @@ def display_single_result(result: Dict, index: int, query: str, show_context: bo
                 st.markdown(f"🔍 **Original query:** '{original_query}' → **Filtered:** '{filtered_query}'")
             
             # Show which meaningful words were found
-            query_words = filtered_query.lower().split() if filtered_query else []
-            context_lower = result.get('context', '').lower()
-            found_words = [word for word in query_words if word in context_lower]
-            st.markdown(f"📝 **Meaningful words found:** {', '.join(found_words) if found_words else 'Related terms found'}")
+            if method == 'smart_enhanced':
+                # Enhanced display for smart enhanced results
+                coverage = result.get('query_coverage', 'N/A')
+                st.markdown(f"📝 **Query Coverage:** {coverage} terms matched")
+            else:
+                query_words = filtered_query.lower().split() if filtered_query else []
+                context_lower = result.get('context', '').lower()
+                found_words = [word for word in query_words if word in context_lower]
+                st.markdown(f"📝 **Meaningful words found:** {', '.join(found_words) if found_words else 'Related terms found'}")
     
     # Context display
     if show_context:
@@ -165,6 +211,9 @@ def display_single_result(result: Dict, index: int, query: str, show_context: bo
     
     elif method == 'semantic':
         st.caption(f"🤖 AI found this as semantically related to your query")
+    
+    elif method == 'smart_enhanced':
+        st.caption(f"🧠⭐ Enhanced search using government document analysis")
     
     st.markdown("---")
 
