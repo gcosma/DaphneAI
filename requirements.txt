@@ -1,16 +1,23 @@
-# Core dependencies for document search application
+# Core dependencies
 streamlit>=1.28.0
 pandas>=1.5.0
+numpy>=1.24.0
 
-# Document processing (choose one or both PDF libraries)
+# Document processing
+PyPDF2>=3.0.0
 pdfplumber>=0.9.0
-# PyPDF2>=3.0.0  # Alternative/backup PDF processor
 python-docx>=0.8.11
 
-# Optional: Advanced AI features (install if you want RAG semantic search)
-# sentence-transformers>=2.2.0
-# scikit-learn>=1.3.0
-# torch>=2.0.0
+# RAG and AI features (semantic search)
+sentence-transformers>=2.2.0
+scikit-learn>=1.3.0
+torch>=2.0.0
 
-# Utilities
+# Text processing and search
+nltk>=3.8.0
+fuzzywuzzy>=0.18.0
+python-Levenshtein>=0.20.0
+
+# Additional utilities
 python-dotenv>=1.0.0
+requests>=2.28.0
