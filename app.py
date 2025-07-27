@@ -1,476 +1,617 @@
-# Enhanced app.py with Recommendation-Response Alignment - FIXED
+# Fixed app.py - DaphneAI Government Document Analysis
 import streamlit as st
 import pandas as pd
 from datetime import datetime
 import re
 from typing import Dict, List, Any
+import logging
+import traceback
 
-# Try to import from modules, but provide fallbacks if they don't exist
-try:
-    from modules.integration_helper import (
-        setup_search_tab, 
-        prepare_documents_for_search, 
-        extract_text_from_file,
-        render_analytics_tab
-    )
-except ImportError:
-    # Provide fallback implementations
-    def setup_search_tab():
-        from modules.ui.search_components import render_search_interface
-        documents = st.session_state.get('documents', [])
-        render_search_interface(documents)
-    
-    def prepare_documents_for_search(uploaded_files, extract_function):
-        return enhanced_prepare_documents_for_search(uploaded_files, extract_function)
-    
-    def extract_text_from_file(uploaded_file):
-        # Basic text extraction
-        try:
-            if uploaded_file.type == "text/plain":
-                return str(uploaded_file.read(), "utf-8")
-            elif uploaded_file.type == "application/pdf":
-                import PyPDF2
-                pdf_reader = PyPDF2.PdfReader(uploaded_file)
-                text = ""
-                for page in pdf_reader.pages:
-                    text += page.extract_text()
-                return text
-            else:
-                return str(uploaded_file.read(), "utf-8")
-        except Exception as e:
-            st.error(f"Error extracting text from {uploaded_file.name}: {str(e)}")
-            return ""
-    
-    def render_analytics_tab():
-        st.header("📊 Document Analytics")
-        if 'documents' not in st.session_state or not st.session_state.documents:
-            st.warning("📁 Please upload documents first")
-            return
-        
-        documents = st.session_state.documents
-        
-        # Basic analytics
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Documents", len(documents))
-        with col2:
-            total_words = sum(len(doc.get('text', '').split()) for doc in documents)
-            st.metric("Total Words", f"{total_words:,}")
-        with col3:
-            avg_words = total_words // len(documents) if documents else 0
-            st.metric("Avg Words per Doc", f"{avg_words:,}")
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def safe_import_with_fallback():
+    """Safely import modules with comprehensive fallbacks"""
+    try:
+        from modules.integration_helper import (
+            setup_search_tab, 
+            prepare_documents_for_search, 
+            extract_text_from_file,
+            render_analytics_tab
+        )
+        return True, setup_search_tab, prepare_documents_for_search, extract_text_from_file, render_analytics_tab
+    except ImportError as e:
+        logger.warning(f"Import error: {e}")
+        return False, None, None, None, None
 
 def main():
-    """Main application with enhanced government analysis features"""
-    st.set_page_config(
-        page_title="DaphneAI - Government Document Analysis", 
-        layout="wide"
-    )
-    
-    st.title("🏛️ DaphneAI - Government Document Analysis")
-    st.markdown("*Advanced document processing and search for government content*")
-    
-    # Enhanced tabs with new alignment feature
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📁 Upload", 
-        "🔍 Extract", 
-        "🔍 Search",
-        "🔗 Align Rec-Resp",  # NEW TAB
-        "📊 Analytics"
-    ])
-    
-    with tab1:
-        render_upload_tab()
-    
-    with tab2:
-        render_extract_tab()
-    
-    with tab3:
-        setup_search_tab()
-    
-    with tab4:
-        render_alignment_tab()  # NEW FEATURE
-    
-    with tab5:
-        render_analytics_tab()
-
-def render_alignment_tab():
-    """Render the new recommendation-response alignment tab"""
-    
-    # Import the alignment system
+    """Main application with enhanced error handling"""
     try:
-        from modules.ui.search_components import render_recommendation_alignment_interface
-    except ImportError:
-        st.error("Search components module not found. Please check your file structure.")
-        return
-    
-    # Check if documents are available
-    if 'documents' not in st.session_state or not st.session_state.documents:
-        st.header("🔗 Recommendation-Response Alignment")
-        st.warning("📁 Please upload documents first in the Upload tab.")
+        st.set_page_config(
+            page_title="DaphneAI - Government Document Analysis", 
+            layout="wide",
+            initial_sidebar_state="expanded"
+        )
         
-        # Show what this feature does
-        st.markdown("""
-        ### 🎯 What This Feature Does:
+        st.title("🏛️ DaphneAI - Government Document Analysis")
+        st.markdown("*Advanced document processing and search for government content*")
         
-        **🔍 Automatically finds:**
-        - All recommendations in your documents
-        - Corresponding responses to those recommendations
-        - Aligns them using AI similarity matching
+        # Check module availability
+        modules_available, setup_search_tab, prepare_documents_for_search, extract_text_from_file, render_analytics_tab = safe_import_with_fallback()
         
-        **📊 Provides:**
-        - Side-by-side view of recommendation + response
-        - AI-generated summaries of each pair
-        - Confidence scores for alignments
-        - Export options for further analysis
+        if not modules_available:
+            render_fallback_interface()
+            return
         
-        **💡 Perfect for:**
-        - Government inquiry reports
-        - Policy documents and responses
-        - Committee recommendations and outcomes
-        - Audit findings and management responses
-        
-        ### 🚀 How to Use:
-        1. Upload your documents in the **Upload** tab
-        2. Return here to analyze recommendations and responses
-        3. Configure search patterns for your specific documents
-        4. Let AI find and align recommendation-response pairs
-        5. Review results with AI summaries and export findings
-        """)
-        
-        # Show example of what results look like
-        st.markdown("### 📋 Example Output:")
-        st.code("""
-        🟢 Recommendation 1 - Policy (Confidence: 0.85)
-        
-        📋 Original Extract:
-        🎯 Recommendation: "We recommend implementing new cybersecurity protocols"
-        📄 Document: security_audit.pdf (Page 3)
-        
-        ↩️ Related Response: "The department agrees to implement these protocols by Q4"
-        📄 Document: govt_response.pdf (Page 1) - Similarity: 0.87
-        
-        🤖 AI Summary:
-        The audit recommends new cybersecurity protocols for enhanced protection. 
-        The government response shows acceptance with Q4 implementation timeline.
-        Alignment indicates positive policy adoption.
-        """)
-        
-        return
-    
-    # Render the alignment interface
-    documents = st.session_state.documents
-    render_recommendation_alignment_interface(documents)
+        # Enhanced tabs with error handling
+        try:
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                "📁 Upload", 
+                "🔍 Extract", 
+                "🔍 Search",
+                "🔗 Align Rec-Resp",
+                "📊 Analytics"
+            ])
+            
+            with tab1:
+                render_upload_tab_safe(prepare_documents_for_search, extract_text_from_file)
+            
+            with tab2:
+                render_extract_tab_safe()
+            
+            with tab3:
+                render_search_tab_safe(setup_search_tab)
+            
+            with tab4:
+                render_alignment_tab_safe()
+            
+            with tab5:
+                render_analytics_tab_safe(render_analytics_tab)
+                
+        except Exception as e:
+            st.error(f"Tab rendering error: {str(e)}")
+            render_error_recovery()
+            
+    except Exception as e:
+        st.error(f"⚠️ Application Error: {str(e)}")
+        logger.error(f"Main application error: {e}")
+        logger.error(traceback.format_exc())
+        render_error_recovery()
 
-def render_upload_tab():
-    """Document upload and processing"""
-    st.header("📁 Document Upload")
+def render_fallback_interface():
+    """Render a basic fallback interface when modules aren't available"""
+    st.warning("🔧 Module loading issues detected. Using fallback interface.")
     
+    # Basic file upload
+    st.header("📁 Basic Document Upload")
     uploaded_files = st.file_uploader(
         "Choose files",
         accept_multiple_files=True,
         type=['pdf', 'docx', 'txt'],
-        help="Upload PDF, DOCX, or TXT files for analysis"
+        help="Upload PDF, DOCX, or TXT files"
     )
     
     if uploaded_files:
-        if st.button("🚀 Process Files", type="primary"):
-            with st.spinner("Processing documents..."):
-                documents = prepare_documents_for_search(uploaded_files, extract_text_from_file)
-                
-                st.success(f"✅ Processed {len(documents)} documents")
-                
-                # Show document types
-                doc_types = {}
-                for doc in documents:
-                    doc_type = doc.get('document_type', 'general')
-                    doc_types[doc_type] = doc_types.get(doc_type, 0) + 1
-                
-                if doc_types:
-                    st.markdown("**📊 Document Types Detected:**")
-                    for doc_type, count in doc_types.items():
-                        st.markdown(f"• {doc_type.title()}: {count} documents")
-                
-                # Show processing summary
-                total_chars = sum(len(doc.get('text', '')) for doc in documents)
-                avg_pages = total_chars // 2000  # Rough estimate
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Documents", len(documents))
-                with col2:
-                    st.metric("Total Characters", f"{total_chars:,}")
-                with col3:
-                    st.metric("Est. Total Pages", avg_pages)
-                
-                # Next steps
-                st.markdown("""
-                **✅ Files processed successfully!** 
-                
-                **🔍 Next Steps:**
-                - Go to **Search** tab for keyword searches
-                - Go to **Align Rec-Resp** tab to find recommendations and responses
-                - Go to **Analytics** tab for document insights
-                """)
-
-def render_extract_tab():
-    """Document extraction and preview"""
-    st.header("🔍 Document Extraction")
+        if st.button("🚀 Process Files (Basic)", type="primary"):
+            documents = []
+            for file in uploaded_files:
+                try:
+                    # Basic text extraction
+                    if file.type == "text/plain":
+                        text = str(file.read(), "utf-8")
+                    else:
+                        text = f"[Content from {file.name} - processing not available]"
+                    
+                    doc = {
+                        'filename': file.name,
+                        'text': text,
+                        'word_count': len(text.split()),
+                        'upload_time': datetime.now()
+                    }
+                    documents.append(doc)
+                except Exception as e:
+                    st.error(f"Error processing {file.name}: {str(e)}")
+            
+            if documents:
+                st.session_state.documents = documents
+                st.success(f"✅ Processed {len(documents)} documents in basic mode")
     
-    if 'documents' not in st.session_state or not st.session_state.documents:
-        st.warning("📁 Please upload documents first in the Upload tab.")
-        return
-    
-    documents = st.session_state.documents
-    
-    # Document selector
-    doc_names = [doc['filename'] for doc in documents]
-    selected_doc = st.selectbox("Select document to preview:", doc_names)
-    
-    if selected_doc:
-        # Find the selected document
-        doc = next((d for d in documents if d['filename'] == selected_doc), None)
+    # Basic search if documents exist
+    if 'documents' in st.session_state and st.session_state.documents:
+        st.header("🔍 Basic Search")
+        query = st.text_input("Search documents:", placeholder="Enter search terms...")
         
-        if doc:
-            # Document information
-            st.markdown(f"**📄 Document:** {doc['filename']}")
+        if query:
+            results = []
+            for doc in st.session_state.documents:
+                if query.lower() in doc.get('text', '').lower():
+                    count = doc['text'].lower().count(query.lower())
+                    results.append({
+                        'filename': doc['filename'],
+                        'matches': count
+                    })
             
-            # Document statistics - FIXED FUNCTION
-            text = doc.get('text', '')
-            stats = get_document_statistics(text)
-            
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Characters", f"{stats['char_count']:,}")
-            with col2:
-                st.metric("Words", f"{stats['word_count']:,}")
-            with col3:
-                st.metric("Sentences", f"{stats['sentence_count']:,}")
-            with col4:
-                st.metric("Est. Pages", stats['estimated_pages'])
-            
-            # Preview options
-            st.markdown("### 📖 Document Preview")
-            
-            preview_length = st.slider(
-                "Preview length (characters)", 
-                min_value=500, 
-                max_value=min(10000, len(text)), 
-                value=min(2000, len(text))
-            )
-            
-            # Show preview
-            preview_text = text[:preview_length]
-            if len(text) > preview_length:
-                preview_text += "... [truncated]"
-            
-            st.text_area(
-                "Document content:",
-                value=preview_text,
-                height=400,
-                disabled=True
-            )
-            
-            # Download processed text
-            st.download_button(
-                label="📥 Download Extracted Text",
-                data=text,
-                file_name=f"{selected_doc}_extracted.txt",
-                mime="text/plain"
-            )
+            if results:
+                st.success(f"Found {len(results)} matching documents")
+                for result in results:
+                    st.write(f"📄 {result['filename']} - {result['matches']} matches")
+            else:
+                st.warning("No matches found")
 
-def get_document_statistics(text: str) -> Dict[str, Any]:
-    """Calculate document statistics - FIXED IMPLEMENTATION"""
-    
-    if not text:
-        return {
-            'char_count': 0,
-            'word_count': 0,
-            'sentence_count': 0,
-            'estimated_pages': 0,
-            'line_count': 0,
-            'paragraph_count': 0
-        }
-    
-    # Basic counts
-    char_count = len(text)
-    words = text.split()
-    word_count = len(words)
-    
-    # Sentence count (improved)
-    sentences = re.split(r'[.!?]+', text)
-    sentence_count = len([s for s in sentences if s.strip()])
-    
-    # Line count
-    lines = text.split('\n')
-    line_count = len(lines)
-    
-    # Paragraph count (empty lines separate paragraphs)
-    paragraphs = re.split(r'\n\s*\n', text)
-    paragraph_count = len([p for p in paragraphs if p.strip()])
-    
-    # Estimated pages (2000 characters per page)
-    estimated_pages = max(1, char_count // 2000)
-    
-    return {
-        'char_count': char_count,
-        'word_count': word_count,
-        'sentence_count': sentence_count,
-        'estimated_pages': estimated_pages,
-        'line_count': line_count,
-        'paragraph_count': paragraph_count
-    }
+def render_upload_tab_safe(prepare_documents_for_search, extract_text_from_file):
+    """Safe document upload with error handling"""
+    try:
+        st.header("📁 Document Upload")
+        
+        uploaded_files = st.file_uploader(
+            "Choose files",
+            accept_multiple_files=True,
+            type=['pdf', 'docx', 'txt'],
+            help="Upload PDF, DOCX, or TXT files for analysis"
+        )
+        
+        if uploaded_files:
+            if st.button("🚀 Process Files", type="primary"):
+                with st.spinner("Processing documents..."):
+                    try:
+                        if prepare_documents_for_search and extract_text_from_file:
+                            documents = prepare_documents_for_search(uploaded_files, extract_text_from_file)
+                        else:
+                            documents = fallback_process_documents(uploaded_files)
+                        
+                        st.success(f"✅ Processed {len(documents)} documents")
+                        
+                        # Show basic statistics
+                        total_words = sum(doc.get('word_count', 0) for doc in documents)
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Documents", len(documents))
+                        with col2:
+                            st.metric("Total Words", f"{total_words:,}")
+                        with col3:
+                            avg_words = total_words // len(documents) if documents else 0
+                            st.metric("Avg Words", f"{avg_words:,}")
+                        
+                        st.markdown("""
+                        **✅ Files processed successfully!** 
+                        
+                        **🔍 Next Steps:**
+                        - Go to **Search** tab for keyword searches
+                        - Go to **Align Rec-Resp** tab to find recommendations and responses
+                        - Go to **Analytics** tab for document insights
+                        """)
+                        
+                    except Exception as e:
+                        st.error(f"Processing error: {str(e)}")
+                        logger.error(f"Document processing error: {e}")
+                        
+    except Exception as e:
+        st.error(f"Upload tab error: {str(e)}")
+        render_basic_upload_fallback()
 
-def classify_document_type(filename: str, text: str) -> str:
-    """Classify document type based on filename and content"""
-    
-    filename_lower = filename.lower()
-    text_lower = text.lower()
-    
-    # Policy documents
-    if any(keyword in filename_lower for keyword in ['policy', 'guideline', 'framework', 'strategy']):
-        return 'policy'
-    
-    # Reports
-    if any(keyword in filename_lower for keyword in ['report', 'review', 'assessment', 'evaluation']):
-        return 'report'
-    
-    # Responses
-    if any(keyword in filename_lower for keyword in ['response', 'reply', 'answer', 'feedback']):
-        return 'response'
-    
-    # Audit documents
-    if any(keyword in filename_lower for keyword in ['audit', 'inspection', 'compliance']):
-        return 'audit'
-    
-    # Meeting documents
-    if any(keyword in filename_lower for keyword in ['meeting', 'minutes', 'agenda']):
-        return 'meeting'
-    
-    # Content-based classification
-    recommendation_keywords = ['recommend', 'suggest', 'advise', 'propose']
-    response_keywords = ['accept', 'reject', 'agree', 'implement', 'consider']
-    
-    rec_count = sum(text_lower.count(keyword) for keyword in recommendation_keywords)
-    resp_count = sum(text_lower.count(keyword) for keyword in response_keywords)
-    
-    if rec_count > resp_count and rec_count > 3:
-        return 'recommendations'
-    elif resp_count > rec_count and resp_count > 3:
-        return 'responses'
-    
-    return 'general'
+def render_extract_tab_safe():
+    """Safe document extraction with error handling"""
+    try:
+        st.header("🔍 Document Extraction")
+        
+        if 'documents' not in st.session_state or not st.session_state.documents:
+            st.warning("📁 Please upload documents first in the Upload tab.")
+            return
+        
+        documents = st.session_state.documents
+        doc_names = [doc['filename'] for doc in documents]
+        selected_doc = st.selectbox("Select document to preview:", doc_names)
+        
+        if selected_doc:
+            doc = next((d for d in documents if d['filename'] == selected_doc), None)
+            
+            if doc and 'text' in doc:
+                text = doc['text']
+                
+                # Safe statistics calculation
+                word_count = len(text.split()) if text else 0
+                char_count = len(text) if text else 0
+                estimated_pages = max(1, char_count // 2000)
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Characters", f"{char_count:,}")
+                with col2:
+                    st.metric("Words", f"{word_count:,}")
+                with col3:
+                    # Safe sentence count
+                    try:
+                        sentences = re.split(r'[.!?]+', text)
+                        sentence_count = len([s for s in sentences if s.strip()])
+                    except:
+                        sentence_count = word_count // 10  # Estimate
+                    st.metric("Sentences", f"{sentence_count:,}")
+                with col4:
+                    st.metric("Est. Pages", estimated_pages)
+                
+                # Preview
+                st.markdown("### 📖 Document Preview")
+                preview_length = st.slider(
+                    "Preview length (characters)", 
+                    min_value=500, 
+                    max_value=min(10000, len(text)), 
+                    value=min(2000, len(text))
+                )
+                
+                preview_text = text[:preview_length]
+                if len(text) > preview_length:
+                    preview_text += "... [truncated]"
+                
+                st.text_area(
+                    "Document content:",
+                    value=preview_text,
+                    height=400,
+                    disabled=True
+                )
+                
+                # Download option
+                st.download_button(
+                    label="📥 Download Extracted Text",
+                    data=text,
+                    file_name=f"{selected_doc}_extracted.txt",
+                    mime="text/plain"
+                )
+            else:
+                st.error("Document text not available")
+                
+    except Exception as e:
+        st.error(f"Extract tab error: {str(e)}")
+        logger.error(f"Extract tab error: {e}")
 
-def enhanced_prepare_documents_for_search(uploaded_files, extract_function):
-    """Enhanced document preparation with type classification"""
-    
+def render_search_tab_safe(setup_search_tab):
+    """Safe search tab with error handling"""
+    try:
+        if setup_search_tab:
+            setup_search_tab()
+        else:
+            render_basic_search_fallback()
+    except Exception as e:
+        st.error(f"Search tab error: {str(e)}")
+        logger.error(f"Search tab error: {e}")
+        render_basic_search_fallback()
+
+def render_alignment_tab_safe():
+    """Safe alignment tab with error handling"""
+    try:
+        st.header("🔗 Recommendation-Response Alignment")
+        
+        if 'documents' not in st.session_state or not st.session_state.documents:
+            st.warning("📁 Please upload documents first in the Upload tab.")
+            show_alignment_feature_info()
+            return
+        
+        try:
+            # Try to import the alignment interface
+            from modules.ui.search_components import render_recommendation_alignment_interface
+            documents = st.session_state.documents
+            render_recommendation_alignment_interface(documents)
+        except ImportError:
+            st.error("🔧 Alignment module not available. Using fallback interface.")
+            render_basic_alignment_fallback()
+            
+    except Exception as e:
+        st.error(f"Alignment tab error: {str(e)}")
+        logger.error(f"Alignment tab error: {e}")
+        render_basic_alignment_fallback()
+
+def render_analytics_tab_safe(render_analytics_tab):
+    """Safe analytics tab with error handling"""
+    try:
+        if render_analytics_tab:
+            render_analytics_tab()
+        else:
+            render_basic_analytics_fallback()
+    except Exception as e:
+        st.error(f"Analytics tab error: {str(e)}")
+        logger.error(f"Analytics tab error: {e}")
+        render_basic_analytics_fallback()
+
+def fallback_process_documents(uploaded_files):
+    """Fallback document processing when modules aren't available"""
     documents = []
     
     for uploaded_file in uploaded_files:
         try:
-            # Extract text
-            text = extract_function(uploaded_file)
+            # Basic text extraction
+            if uploaded_file.type == "text/plain":
+                text = str(uploaded_file.read(), "utf-8")
+            elif uploaded_file.type == "application/pdf":
+                # Try basic PDF extraction
+                try:
+                    import PyPDF2
+                    from io import BytesIO
+                    pdf_reader = PyPDF2.PdfReader(BytesIO(uploaded_file.getvalue()))
+                    text = ""
+                    for page in pdf_reader.pages:
+                        text += page.extract_text()
+                except ImportError:
+                    text = f"[PDF content from {uploaded_file.name} - PDF processing not available]"
+                except Exception:
+                    text = f"[PDF processing failed for {uploaded_file.name}]"
+            else:
+                text = f"[Content from {uploaded_file.name} - processing not available for this file type]"
             
-            # Classify document type
-            doc_type = classify_document_type(uploaded_file.name, text)
-            
-            # Create enhanced document object
-            document = {
+            doc = {
                 'filename': uploaded_file.name,
                 'text': text,
-                'document_type': doc_type,
+                'word_count': len(text.split()) if text else 0,
+                'document_type': 'general',
                 'upload_time': datetime.now(),
-                'file_size': len(text),
-                'word_count': len(text.split()),
-                'contains_recommendations': 'recommend' in text.lower(),
-                'contains_responses': any(word in text.lower() for word in ['accept', 'reject', 'agree', 'implement'])
+                'file_size': len(text) if text else 0
             }
-            
-            documents.append(document)
+            documents.append(doc)
             
         except Exception as e:
             st.error(f"Error processing {uploaded_file.name}: {str(e)}")
-            continue
+            # Add error document
+            documents.append({
+                'filename': uploaded_file.name,
+                'text': '',
+                'error': str(e),
+                'word_count': 0,
+                'upload_time': datetime.now()
+            })
     
     # Store in session state
     st.session_state.documents = documents
-    
     return documents
 
-# Additional utility functions for better error handling
-def safe_import_search_components():
-    """Safely import search components with error handling"""
-    try:
-        from modules.ui.search_components import render_search_interface, render_recommendation_alignment_interface
-        return True, render_search_interface, render_recommendation_alignment_interface
-    except ImportError as e:
-        st.error(f"Could not import search components: {str(e)}")
-        st.markdown("""
-        **Missing Files:**
-        Please ensure you have the following file structure:
-        ```
-        modules/
-        ├── ui/
-        │   └── search_components.py
-        └── integration_helper.py
-        ```
-        """)
-        return False, None, None
+def render_basic_upload_fallback():
+    """Basic upload fallback interface"""
+    st.markdown("### 📁 Basic File Upload")
+    st.info("Using simplified upload process due to module loading issues.")
+    
+    uploaded_files = st.file_uploader(
+        "Choose files (Basic Mode)",
+        accept_multiple_files=True,
+        type=['txt'],  # Only text files in basic mode
+        help="Basic mode supports text files only"
+    )
+    
+    if uploaded_files and st.button("Process Text Files"):
+        documents = fallback_process_documents(uploaded_files)
+        st.success(f"Processed {len(documents)} files in basic mode")
 
-def create_sample_document():
-    """Create a sample document for testing"""
-    sample_text = """
-    Sample Government Report
+def render_basic_search_fallback():
+    """Basic search fallback interface"""
+    st.header("🔍 Basic Search")
     
-    This is a sample document for testing the DaphneAI system.
+    if 'documents' not in st.session_state or not st.session_state.documents:
+        st.warning("📁 Please upload documents first.")
+        return
     
-    Recommendations:
-    1. We recommend implementing new security protocols immediately.
-    2. The committee suggests reviewing the current budget allocation.
-    3. We advise conducting a comprehensive audit of all systems.
+    documents = st.session_state.documents
+    query = st.text_input("Search documents:", placeholder="Enter search terms...")
     
-    Responses:
-    1. The department agrees to implement the security protocols by Q4.
-    2. Budget review has been scheduled for next month.
-    3. Audit will be conducted by external firm starting January.
-    
-    This demonstrates how the system can find and align recommendations with their responses.
-    """
-    
-    return {
-        'filename': 'sample_report.txt',
-        'text': sample_text,
-        'document_type': 'report',
-        'upload_time': datetime.now(),
-        'file_size': len(sample_text),
-        'word_count': len(sample_text.split()),
-        'contains_recommendations': True,
-        'contains_responses': True
-    }
+    if query:
+        results = []
+        query_lower = query.lower()
+        
+        for doc in documents:
+            text = doc.get('text', '')
+            if text and query_lower in text.lower():
+                count = text.lower().count(query_lower)
+                results.append({
+                    'filename': doc['filename'],
+                    'matches': count,
+                    'word_count': doc.get('word_count', 0)
+                })
+        
+        if results:
+            st.success(f"Found {len(results)} matching documents")
+            for result in results:
+                st.write(f"📄 {result['filename']} - {result['matches']} matches ({result['word_count']} words)")
+        else:
+            st.warning("No matches found")
 
-# Error recovery function
-def handle_app_error():
-    """Handle application errors gracefully"""
-    st.error("⚠️ Application Error Detected")
+def render_basic_alignment_fallback():
+    """Basic alignment fallback interface"""
+    st.markdown("### 🔗 Basic Recommendation-Response Finder")
+    st.info("Using simplified alignment process due to module loading issues.")
     
+    if 'documents' not in st.session_state or not st.session_state.documents:
+        st.warning("📁 Please upload documents first.")
+        return
+    
+    documents = st.session_state.documents
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**🎯 Find Recommendations**")
+        rec_keywords = st.text_input("Recommendation keywords:", value="recommend, suggest, advise")
+    
+    with col2:
+        st.markdown("**↩️ Find Responses**")
+        resp_keywords = st.text_input("Response keywords:", value="accept, reject, agree, implement")
+    
+    if st.button("🔍 Find Recommendations and Responses"):
+        rec_words = [word.strip().lower() for word in rec_keywords.split(',')]
+        resp_words = [word.strip().lower() for word in resp_keywords.split(',')]
+        
+        recommendations = []
+        responses = []
+        
+        for doc in documents:
+            text = doc.get('text', '').lower()
+            filename = doc['filename']
+            
+            # Find recommendations
+            for word in rec_words:
+                if word in text:
+                    count = text.count(word)
+                    recommendations.append({
+                        'document': filename,
+                        'keyword': word,
+                        'count': count
+                    })
+            
+            # Find responses
+            for word in resp_words:
+                if word in text:
+                    count = text.count(word)
+                    responses.append({
+                        'document': filename,
+                        'keyword': word,
+                        'count': count
+                    })
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**🎯 Recommendations Found:**")
+            if recommendations:
+                for rec in recommendations:
+                    st.write(f"📄 {rec['document']}: '{rec['keyword']}' ({rec['count']}x)")
+            else:
+                st.info("No recommendations found")
+        
+        with col2:
+            st.markdown("**↩️ Responses Found:**")
+            if responses:
+                for resp in responses:
+                    st.write(f"📄 {resp['document']}: '{resp['keyword']}' ({resp['count']}x)")
+            else:
+                st.info("No responses found")
+
+def render_basic_analytics_fallback():
+    """Basic analytics fallback interface"""
+    st.header("📊 Basic Analytics")
+    
+    if 'documents' not in st.session_state or not st.session_state.documents:
+        st.warning("📁 No documents to analyze.")
+        return
+    
+    documents = st.session_state.documents
+    
+    # Basic statistics
+    total_docs = len(documents)
+    total_words = sum(doc.get('word_count', 0) for doc in documents)
+    avg_words = total_words // total_docs if total_docs > 0 else 0
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Documents", total_docs)
+    with col2:
+        st.metric("Total Words", f"{total_words:,}")
+    with col3:
+        st.metric("Average Words", f"{avg_words:,}")
+    
+    # Document list
+    st.markdown("### 📚 Document Details")
+    doc_data = []
+    for doc in documents:
+        doc_data.append({
+            'Filename': doc['filename'],
+            'Words': doc.get('word_count', 0),
+            'Type': doc.get('document_type', 'general').title(),
+            'Status': 'Error' if 'error' in doc else 'OK'
+        })
+    
+    df = pd.DataFrame(doc_data)
+    st.dataframe(df, use_container_width=True)
+
+def show_alignment_feature_info():
+    """Show information about the alignment feature"""
     st.markdown("""
-    **Troubleshooting Steps:**
+    ### 🎯 What This Feature Does:
     
-    1. **Check File Structure:** Ensure all required files are present
-    2. **Restart Application:** Refresh the page to reset session state
-    3. **Use Sample Data:** Click below to load sample data for testing
-    4. **Check Dependencies:** Ensure all required packages are installed
+    **🔍 Automatically finds:**
+    - All recommendations in your documents
+    - Corresponding responses to those recommendations
+    - Aligns them using AI similarity matching
+    
+    **📊 Provides:**
+    - Side-by-side view of recommendation + response
+    - AI-generated summaries of each pair
+    - Confidence scores for alignments
+    - Export options for further analysis
+    
+    **💡 Perfect for:**
+    - Government inquiry reports
+    - Policy documents and responses
+    - Committee recommendations and outcomes
+    - Audit findings and management responses
     """)
+
+def render_error_recovery():
+    """Render error recovery options"""
+    st.markdown("---")
+    st.markdown("### 🛠️ Error Recovery")
     
-    if st.button("🧪 Load Sample Data for Testing"):
-        sample_doc = create_sample_document()
-        st.session_state.documents = [sample_doc]
-        st.success("✅ Sample document loaded! Go to Search or Align Rec-Resp tabs to test.")
-        st.rerun()
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🔄 Reset Application"):
+            # Clear session state
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.success("Application reset. Please refresh the page.")
+    
+    with col2:
+        if st.button("🧪 Load Sample Data"):
+            create_sample_data()
+    
+    with col3:
+        if st.button("📋 Show Debug Info"):
+            show_debug_info()
+
+def create_sample_data():
+    """Create sample data for testing"""
+    sample_doc = {
+        'filename': 'sample_government_report.txt',
+        'text': """
+        Sample Government Report - Policy Review
+
+        Executive Summary:
+        This report contains several recommendations for improving government services.
+
+        Recommendations:
+        1. We recommend implementing new digital services to improve citizen access.
+        2. The committee suggests reviewing current budget allocations for healthcare.
+        3. We advise establishing a new framework for inter-departmental coordination.
+
+        Government Response:
+        1. The department agrees to implement digital services by Q4 2024.
+        2. Budget review has been scheduled for the next fiscal year.
+        3. The coordination framework proposal will be considered in the upcoming policy review.
+
+        Conclusion:
+        This demonstrates the alignment between recommendations and responses in government documentation.
+        """,
+        'word_count': 95,
+        'document_type': 'government',
+        'upload_time': datetime.now(),
+        'file_size': 756
+    }
+    
+    st.session_state.documents = [sample_doc]
+    st.success("✅ Sample data loaded! You can now test the application features.")
+
+def show_debug_info():
+    """Show debug information"""
+    st.markdown("### 🔍 Debug Information")
+    
+    # Python environment
+    import sys
+    import platform
+    
+    st.code(f"""
+    Python Version: {sys.version}
+    Platform: {platform.platform()}
+    Streamlit Version: {st.__version__}
+    
+    Session State Keys: {list(st.session_state.keys())}
+    
+    Documents in Session: {'Yes' if 'documents' in st.session_state else 'No'}
+    Document Count: {len(st.session_state.get('documents', []))}
+    """)
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        st.error(f"Application error: {str(e)}")
-        handle_app_error()
+    main()
