@@ -85,31 +85,42 @@ def smart_search(query: str, documents: List[Dict], max_results: int) -> List[Di
         if 'text' not in doc:
             continue
         
-        text = doc['text']
-        text_lower = text.lower()
+        text_lower = doc['text'].lower()
         score = 0
+        matches = []
         
-        # Exact phrase match (highest score)
+        # Exact phrase matching (highest score)
         if query_lower in text_lower:
             score += 100
+            matches.append(f"Exact phrase: '{query}'")
         
-        # Individual word matches
+        # Individual word matching
+        word_scores = []
         for word in query_words:
-            word_count = text_lower.count(word)
-            score += word_count * 10
+            if len(word) > 2:  # Skip very short words
+                word_count = text_lower.count(word)
+                if word_count > 0:
+                    word_score = word_count * 10
+                    score += word_score
+                    word_scores.append(f"{word}({word_count})")
         
-        # Context scoring (words close together)
-        for i in range(len(query_words) - 1):
-            word1, word2 = query_words[i], query_words[i + 1]
-            if word1 in text_lower and word2 in text_lower:
-                score += 20
+        if word_scores:
+            matches.append(f"Words: {', '.join(word_scores)}")
         
+        # Length bonus (prefer longer documents with matches)
         if score > 0:
+            length_bonus = min(len(doc['text']) / 1000, 10)
+            score += length_bonus
+            
+            # Find context around matches
+            context = extract_context(doc['text'], query, 150)
+            
             results.append({
                 'document': doc,
                 'score': score,
-                'filename': doc.get('filename', 'Unknown'),
-                'snippet': extract_snippet(text, query, 200)
+                'matches': matches,
+                'context': context,
+                'search_type': 'smart'
             })
     
     # Sort by score and limit results
@@ -117,154 +128,192 @@ def smart_search(query: str, documents: List[Dict], max_results: int) -> List[Di
     return results[:max_results]
 
 def exact_search(query: str, documents: List[Dict], max_results: int) -> List[Dict]:
-    """Exact phrase matching"""
+    """Exact keyword matching search"""
     results = []
     query_lower = query.lower()
     
     for doc in documents:
         if 'text' not in doc:
             continue
-            
-        text = doc['text']
-        if query_lower in text.lower():
-            results.append({
-                'document': doc,
-                'score': 100,
-                'filename': doc.get('filename', 'Unknown'),
-                'snippet': extract_snippet(text, query, 200)
-            })
-    
-    return results[:max_results]
-
-def fuzzy_search(query: str, documents: List[Dict], max_results: int) -> List[Dict]:
-    """Fuzzy search using word overlap"""
-    results = []
-    query_words = set(query.lower().split())
-    
-    for doc in documents:
-        if 'text' not in doc:
-            continue
-            
-        text = doc['text']
-        text_words = set(text.lower().split())
         
-        # Calculate overlap ratio
-        overlap = len(query_words.intersection(text_words))
-        if overlap > 0:
-            score = (overlap / len(query_words)) * 100
+        text_lower = doc['text'].lower()
+        
+        if query_lower in text_lower:
+            # Count occurrences
+            count = text_lower.count(query_lower)
+            context = extract_context(doc['text'], query, 150)
+            
             results.append({
                 'document': doc,
-                'score': score,
-                'filename': doc.get('filename', 'Unknown'),
-                'snippet': extract_snippet(text, query, 200)
+                'score': count * 100,  # Simple scoring by occurrence count
+                'matches': [f"Exact matches: {count}"],
+                'context': context,
+                'search_type': 'exact'
             })
     
     results.sort(key=lambda x: x['score'], reverse=True)
     return results[:max_results]
 
-def extract_snippet(text: str, query: str, max_length: int = 200) -> str:
-    """Extract relevant snippet around query"""
-    query_lower = query.lower()
+def fuzzy_search(query: str, documents: List[Dict], max_results: int) -> List[Dict]:
+    """Fuzzy search for typo tolerance"""
+    results = []
+    query_words = query.lower().split()
+    
+    for doc in documents:
+        if 'text' not in doc:
+            continue
+        
+        text_lower = doc['text'].lower()
+        text_words = re.findall(r'\b\w+\b', text_lower)
+        
+        score = 0
+        matches = []
+        
+        for query_word in query_words:
+            if len(query_word) < 3:  # Skip very short words
+                continue
+                
+            # Look for similar words
+            for text_word in text_words:
+                similarity = calculate_similarity(query_word, text_word)
+                if similarity > 0.7:  # 70% similarity threshold
+                    score += similarity * 10
+                    if similarity < 1.0:  # Not exact match
+                        matches.append(f"{query_word}→{text_word}({similarity:.2f})")
+        
+        if score > 0:
+            context = extract_context(doc['text'], query, 150)
+            results.append({
+                'document': doc,
+                'score': score,
+                'matches': matches,
+                'context': context,
+                'search_type': 'fuzzy'
+            })
+    
+    results.sort(key=lambda x: x['score'], reverse=True)
+    return results[:max_results]
+
+def calculate_similarity(word1: str, word2: str) -> float:
+    """Calculate simple string similarity (Levenshtein-based)"""
+    if word1 == word2:
+        return 1.0
+    
+    # Simple character-based similarity
+    set1, set2 = set(word1), set(word2)
+    intersection = len(set1 & set2)
+    union = len(set1 | set2)
+    
+    if union == 0:
+        return 0.0
+    
+    return intersection / union
+
+def extract_context(text: str, query: str, context_length: int = 150) -> str:
+    """Extract text context around search matches"""
     text_lower = text.lower()
+    query_lower = query.lower()
     
-    # Find first occurrence of query
-    pos = text_lower.find(query_lower)
-    if pos == -1:
-        # If exact query not found, use beginning of text
-        return text[:max_length] + "..." if len(text) > max_length else text
+    # Find first occurrence
+    index = text_lower.find(query_lower)
+    if index == -1:
+        # If exact query not found, try first word
+        words = query_lower.split()
+        if words:
+            index = text_lower.find(words[0])
     
-    # Extract snippet around the query
-    start = max(0, pos - max_length // 2)
-    end = min(len(text), pos + len(query) + max_length // 2)
+    if index == -1:
+        # Return beginning of text if no match found
+        return text[:context_length] + "..." if len(text) > context_length else text
     
-    snippet = text[start:end]
+    # Extract context around the match
+    start = max(0, index - context_length // 2)
+    end = min(len(text), index + len(query) + context_length // 2)
+    
+    context = text[start:end]
+    
+    # Add ellipsis if truncated
     if start > 0:
-        snippet = "..." + snippet
+        context = "..." + context
     if end < len(text):
-        snippet = snippet + "..."
+        context = context + "..."
     
-    return snippet
+    return context
 
 def display_results(results: List[Dict], query: str, search_time: float):
-    """Display search results"""
+    """Display search results in a user-friendly format"""
+    
     if not results:
-        st.info("No results found.")
+        st.warning(f"No results found for '{query}'")
+        st.info("Try different search terms or use a different search mode.")
         return
     
-    # Results summary
-    st.success(f"Found {len(results)} results in {search_time:.3f} seconds")
+    # Search summary
+    st.success(f"Found {len(results)} result(s) for '{query}' in {search_time:.3f} seconds")
     
     # Display each result
-    for i, result in enumerate(results):
-        with st.expander(f"📄 {result['filename']} (Score: {result['score']:.1f})"):
-            doc = result['document']
+    for i, result in enumerate(results, 1):
+        doc = result['document']
+        
+        with st.expander(f"📄 {i}. {doc['filename']} (Score: {result['score']:.1f})", expanded=(i <= 3)):
             
             # Document metadata
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("File Type", doc.get('file_type', 'unknown').upper())
             with col2:
-                st.metric("Word Count", doc.get('word_count', 0))
+                st.metric("Words", f"{doc.get('word_count', 0):,}")
             with col3:
-                st.metric("File Size", f"{doc.get('file_size_mb', 0)} MB")
+                st.metric("Size", f"{doc.get('file_size_mb', 0):.1f} MB")
             
-            # Snippet with highlighting
-            snippet = result['snippet']
-            highlighted_snippet = highlight_query_in_text(snippet, query)
-            st.markdown("**Relevant Content:**")
-            st.markdown(highlighted_snippet, unsafe_allow_html=True)
+            # Match information
+            if result['matches']:
+                st.info("🎯 " + " | ".join(result['matches']))
             
-            # Show full content button
-            if st.button(f"Show Full Content", key=f"show_full_{i}"):
-                st.text_area("Full Document Content", doc['text'], height=300)
+            # Context preview
+            st.markdown("**📖 Context:**")
+            # Highlight query terms in context
+            context = result['context']
+            highlighted_context = highlight_terms(context, query)
+            st.markdown(highlighted_context, unsafe_allow_html=True)
+            
+            # View full document button
+            if st.button(f"📖 View Full Document", key=f"view_{i}"):
+                st.text_area(
+                    f"Full content of {doc['filename']}:",
+                    doc.get('text', 'No content available'),
+                    height=300,
+                    key=f"full_text_{i}"
+                )
 
-def highlight_query_in_text(text: str, query: str) -> str:
-    """Highlight query terms in text"""
-    if not query:
-        return text
+def highlight_terms(text: str, query: str) -> str:
+    """Highlight search terms in text"""
+    words = query.lower().split()
+    highlighted = text
     
-    # Escape special regex characters in query
-    escaped_query = re.escape(query)
-    
-    # Highlight exact phrase
-    highlighted = re.sub(
-        f'({escaped_query})', 
-        r'<mark style="background-color: yellow">\1</mark>', 
-        text, 
-        flags=re.IGNORECASE
-    )
-    
-    # Highlight individual words
-    for word in query.split():
-        if len(word) > 2:  # Only highlight words longer than 2 characters
-            escaped_word = re.escape(word)
-            highlighted = re.sub(
-                f'\\b({escaped_word})\\b', 
-                r'<mark style="background-color: lightblue">\1</mark>', 
-                highlighted, 
-                flags=re.IGNORECASE
-            )
+    for word in words:
+        if len(word) > 2:  # Skip very short words
+            # Case-insensitive replacement with highlighting
+            pattern = re.compile(re.escape(word), re.IGNORECASE)
+            highlighted = pattern.sub(f'<mark style="background-color: yellow">{word}</mark>', highlighted)
     
     return highlighted
 
-# Alias functions for compatibility
-def render_search_tab():
-    """Render search tab (compatibility alias)"""
-    documents = st.session_state.get('documents', [])
-    render_search_interface(documents)
+def get_search_stats() -> Dict[str, Any]:
+    """Get search statistics from session state"""
+    if 'search_history' not in st.session_state:
+        st.session_state.search_history = []
+    
+    history = st.session_state.search_history
+    
+    return {
+        'total_searches': len(history),
+        'unique_queries': len(set(h.get('query', '') for h in history)),
+        'avg_results': sum(h.get('result_count', 0) for h in history) / max(len(history), 1),
+        'recent_queries': [h.get('query', '') for h in history[-5:]]
+    }
 
-def render_smart_search_tab():
-    """Alias for render_search_tab"""
-    return render_search_tab()
-
-def check_search_availability():
-    """Check if search is available"""
-    return True  # Always available with simple search
-
-# Export functions
-__all__ = [
-    'render_search_interface',
-    'render_search_tab', 
-    'render_smart_search_tab',
-    'check_search_availability'
-]
+def log_search(query: str, results: List[Dict], search_time: float, search_type: str):
+    """Log search activity for analytics"""
+    if 'search_history' not in st.session_state:
+        st.session_state
