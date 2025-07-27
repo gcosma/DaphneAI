@@ -1,58 +1,33 @@
 # modules/ui/__init__.py
 """
-UI components package for DaphneAI
-Provides search interface and display components
+DaphneAI Search UI Components Package
+
+This package provides enhanced document search capabilities including:
+- Advanced search methods (Smart, Exact, Fuzzy, AI Semantic, Hybrid)
+- Government recommendation-response alignment
+- Rich result display and export functionality
 """
 
-__version__ = "1.0.0"
+# Import main interfaces for easy access
+from .search_interface import render_search_interface
+from .recommendation_alignment import render_recommendation_alignment_interface
 
-# Try to import main components
-try:
-    from .search_components import render_search_interface, get_search_stats
-    UI_COMPONENTS_AVAILABLE = True
-except ImportError as e:
-    UI_COMPONENTS_AVAILABLE = False
-    
-    # Provide fallback function
-    def render_search_interface(documents):
-        import streamlit as st
-        st.error("Search interface not available")
-        st.info("Please check if all dependencies are installed")
-    
-    def get_search_stats():
-        return {'total_searches': 0}
+# Import commonly used utilities
+from .search_utils import (
+    check_rag_availability,
+    filter_stop_words,
+    STOP_WORDS
+)
 
+# Version information
+__version__ = "2.0.0"
+__author__ = "DaphneAI Team"
+
+# Export main functions
 __all__ = [
     'render_search_interface',
-    'get_search_stats',
-    'UI_COMPONENTS_AVAILABLE'
-]
-
-# ==========================================
-# modules/search/__init__.py
-"""
-Search engines package for DaphneAI
-Provides various search algorithms including RAG
-"""
-
-__version__ = "1.0.0"
-
-# Try to import search engines
-try:
-    from .rag_search import RAGSearchEngine
-    RAG_AVAILABLE = True
-except ImportError:
-    RAG_AVAILABLE = False
-    
-    # Provide dummy class
-    class RAGSearchEngine:
-        def __init__(self, *args, **kwargs):
-            self.available = False
-        
-        def search(self, *args, **kwargs):
-            return []
-
-__all__ = [
-    'RAGSearchEngine',
-    'RAG_AVAILABLE'
+    'render_recommendation_alignment_interface',
+    'check_rag_availability',
+    'filter_stop_words',
+    'STOP_WORDS'
 ]
