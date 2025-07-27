@@ -261,17 +261,43 @@ def semantic_search(text: str, query: str) -> List[Dict]:
         return semantic_fallback_search(text, query)
 
 def semantic_search_direct(text: str, query: str) -> List[Dict]:
-    """Direct semantic search using sentence transformers"""
+    """Direct semantic search using sentence transformers - FIXED for Streamlit Cloud"""
     
     try:
         from sentence_transformers import SentenceTransformer
         import numpy as np
+        import torch
         
-        # Initialize model if not cached
+        # FIXED: Force CPU usage and handle meta tensor issues
+        device = 'cpu'  # Force CPU on Streamlit Cloud
+        torch.set_default_device('cpu')
+        
+        # Initialize model if not cached with proper device handling
         if 'semantic_model' not in st.session_state:
-            st.session_state.semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
+            try:
+                # Try loading with explicit CPU device
+                model = SentenceTransformer('all-MiniLM-L6-v2', device=device)
+                # Ensure model is on CPU
+                model = model.to(device)
+                st.session_state.semantic_model = model
+                st.session_state.model_device = device
+                
+            except Exception as model_error:
+                # Fallback to a more compatible model
+                try:
+                    model = SentenceTransformer('paraphrase-MiniLM-L6-v2', device=device)
+                    model = model.to(device)
+                    st.session_state.semantic_model = model
+                    st.session_state.model_device = device
+                except Exception:
+                    # If both fail, raise to trigger fallback search
+                    raise Exception(f"Model loading failed: {str(model_error)}")
         
         model = st.session_state.semantic_model
+        
+        # Ensure model is on correct device
+        if hasattr(model, 'device') and model.device != torch.device(device):
+            model = model.to(device)
         
         # Split text into chunks (sentences)
         sentences = re.split(r'[.!?]+', text)
@@ -280,9 +306,32 @@ def semantic_search_direct(text: str, query: str) -> List[Dict]:
         if not chunks:
             return []
         
-        # Generate embeddings
-        query_embedding = model.encode([query])
-        chunk_embeddings = model.encode(chunks)
+        # Limit chunks to avoid memory issues on Streamlit Cloud
+        if len(chunks) > 100:
+            # Take first 50 and last 50 chunks
+            chunks = chunks[:50] + chunks[-50:]
+        
+        # Generate embeddings with error handling
+        try:
+            with torch.no_grad():  # Disable gradients for inference
+                query_embedding = model.encode([query], convert_to_tensor=False, device=device)
+                chunk_embeddings = model.encode(chunks, convert_to_tensor=False, device=device, batch_size=16)
+            
+            # Ensure numpy arrays
+            if torch.is_tensor(query_embedding):
+                query_embedding = query_embedding.cpu().numpy()
+            if torch.is_tensor(chunk_embeddings):
+                chunk_embeddings = chunk_embeddings.cpu().numpy()
+                
+        except Exception as encoding_error:
+            st.warning(f"Encoding failed: {str(encoding_error)}")
+            # Try with smaller batch size
+            try:
+                query_embedding = model.encode([query], convert_to_tensor=False, batch_size=1)
+                chunk_embeddings = model.encode(chunks[:20], convert_to_tensor=False, batch_size=1)  # Limit to 20 chunks
+                chunks = chunks[:20]  # Update chunks list
+            except Exception:
+                raise Exception(f"Encoding failed: {str(encoding_error)}")
         
         # Calculate cosine similarity
         similarities = np.dot(query_embedding, chunk_embeddings.T).flatten()
@@ -292,6 +341,9 @@ def semantic_search_direct(text: str, query: str) -> List[Dict]:
         
         matches = []
         for idx in top_indices:
+            if idx >= len(chunks):  # Safety check
+                continue
+                
             similarity = similarities[idx]
             
             if similarity > 0.3:  # Minimum similarity threshold
@@ -320,8 +372,46 @@ def semantic_search_direct(text: str, query: str) -> List[Dict]:
         
     except ImportError:
         raise Exception("Sentence transformers not available")
+    except RuntimeError as e:
+        if "meta tensor" in str(e) or "CUDA" in str(e):
+            raise Exception(f"PyTorch device error: {str(e)}")
+        else:
+            raise Exception(f"Runtime error: {str(e)}")
     except Exception as e:
         raise Exception(f"Semantic search error: {str(e)}")
+
+def check_rag_availability() -> bool:
+    """Check if RAG dependencies are available and working - ENHANCED"""
+    try:
+        import sentence_transformers
+        import torch
+        
+        # Try to load a small model to verify it works
+        from sentence_transformers import SentenceTransformer
+        
+        # FIXED: Test with CPU device only
+        device = 'cpu'
+        torch.set_default_device('cpu')
+        
+        # Quick test with a simple model
+        test_model = SentenceTransformer('all-MiniLM-L6-v2', device=device)
+        test_model = test_model.to(device)
+        
+        # Test encoding a simple sentence
+        with torch.no_grad():
+            test_embedding = test_model.encode(["test sentence"], convert_to_tensor=False, device=device)
+        
+        return True
+        
+    except ImportError:
+        return False
+    except RuntimeError as e:
+        if "meta tensor" in str(e) or "CUDA" in str(e):
+            # PyTorch/device issues, but libraries are available
+            return False
+        return False
+    except Exception:
+        return False
 
 def semantic_fallback_search(text: str, query: str) -> List[Dict]:
     """Enhanced fallback semantic search using word similarity and synonyms"""
