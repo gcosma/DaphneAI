@@ -1,281 +1,191 @@
 # app.py
-# Advanced Document Search Engine with RAG + Smart Search
+# Simple Document Search - Upload, Search, Get Ranked Results
 
 import streamlit as st
-import sys
-from pathlib import Path
+import re
 from datetime import datetime
 
-# Add modules to path
-sys.path.append(str(Path(__file__).parent))
+# Simple document processing
+def process_file(uploaded_file):
+    """Extract text from uploaded file"""
+    filename = uploaded_file.name
+    
+    try:
+        if filename.lower().endswith('.txt'):
+            text = uploaded_file.getvalue().decode('utf-8')
+        elif filename.lower().endswith('.pdf'):
+            # Simple PDF processing
+            try:
+                import pdfplumber
+                with pdfplumber.open(uploaded_file) as pdf:
+                    text = '\n'.join([page.extract_text() or '' for page in pdf.pages])
+            except ImportError:
+                return {'filename': filename, 'error': 'Install pdfplumber: pip install pdfplumber'}
+        elif filename.lower().endswith('.docx'):
+            # Simple DOCX processing
+            try:
+                import docx
+                from io import BytesIO
+                doc = docx.Document(BytesIO(uploaded_file.getvalue()))
+                text = '\n'.join([p.text for p in doc.paragraphs])
+            except ImportError:
+                return {'filename': filename, 'error': 'Install python-docx: pip install python-docx'}
+        else:
+            return {'filename': filename, 'error': 'Unsupported file type'}
+        
+        return {
+            'filename': filename,
+            'text': text,
+            'word_count': len(text.split())
+        }
+    except Exception as e:
+        return {'filename': filename, 'error': str(e)}
 
-# Import modules with error handling
-try:
-    from modules.core_utils import setup_logging, log_action
-    from modules.document_processor import process_uploaded_files, check_dependencies
-except ImportError as e:
-    st.error(f"Import error: {e}")
-    st.info("Some features may not be available. Please check your installation.")
+def search_documents(query, documents):
+    """Search documents and return ranked results"""
+    if not query or not documents:
+        return []
     
-    # Fallback functions
-    def setup_logging():
-        import logging
-        return logging.getLogger(__name__)
+    results = []
+    query_lower = query.lower()
+    query_words = query_lower.split()
     
-    def log_action(action, data=None):
-        pass
+    for doc in documents:
+        if 'text' not in doc:
+            continue
+            
+        text_lower = doc['text'].lower()
+        score = 0
+        
+        # Exact phrase match (highest score)
+        if query_lower in text_lower:
+            score += 10
+        
+        # Individual word matches
+        word_matches = sum(1 for word in query_words if word in text_lower)
+        score += word_matches * 2
+        
+        # Word frequency bonus
+        for word in query_words:
+            score += text_lower.count(word) * 0.5
+        
+        if score > 0:
+            # Find best snippet
+            snippet = find_snippet(doc['text'], query, 200)
+            
+            results.append({
+                'filename': doc['filename'],
+                'score': score,
+                'snippet': snippet,
+                'word_count': doc.get('word_count', 0)
+            })
     
-    def process_uploaded_files(files):
-        return [{'filename': f.name, 'error': 'Processing not available'} for f in files]
-    
-    def check_dependencies():
-        return {}
+    # Sort by score (highest first)
+    results.sort(key=lambda x: x['score'], reverse=True)
+    return results
 
-try:
-    from modules.ui.search_components import render_search_interface
-    ADVANCED_SEARCH_AVAILABLE = True
-except ImportError:
-    ADVANCED_SEARCH_AVAILABLE = False
+def find_snippet(text, query, max_length=200):
+    """Find the best snippet containing the query"""
+    query_lower = query.lower()
+    text_lower = text.lower()
+    
+    # Find first occurrence of query
+    index = text_lower.find(query_lower)
+    if index == -1:
+        # If exact phrase not found, find first word
+        words = query_lower.split()
+        for word in words:
+            index = text_lower.find(word)
+            if index != -1:
+                break
+    
+    if index == -1:
+        return text[:max_length] + "..."
+    
+    # Extract snippet around the found text
+    start = max(0, index - max_length // 2)
+    end = min(len(text), index + len(query) + max_length // 2)
+    snippet = text[start:end]
+    
+    # Highlight the query in the snippet
+    snippet = re.sub(f'({re.escape(query)})', r'**\1**', snippet, flags=re.IGNORECASE)
+    
+    return ("..." if start > 0 else "") + snippet + ("..." if end < len(text) else "")
 
-# Setup
-st.set_page_config(
-    page_title="Advanced Document Search",
-    page_icon="🔍",
-    layout="wide",
-    initial_sidebar_state="expanded"
+# Streamlit App
+st.set_page_config(page_title="Document Search", page_icon="🔍", layout="wide")
+
+st.title("🔍 Simple Document Search")
+st.write("Upload documents and search them - that's it!")
+
+# Initialize session state
+if 'documents' not in st.session_state:
+    st.session_state.documents = []
+
+# Upload section
+st.header("📁 Upload Documents")
+uploaded_files = st.file_uploader(
+    "Choose files", 
+    type=['pdf', 'txt', 'docx'], 
+    accept_multiple_files=True
 )
 
-logger = setup_logging()
-
-def initialize_session_state():
-    """Initialize session state"""
-    if 'initialized' not in st.session_state:
-        st.session_state.initialized = True
+if uploaded_files:
+    if st.button("Process Files"):
         st.session_state.documents = []
-        st.session_state.search_results = {}
-        st.session_state.search_history = []
-        st.session_state.rag_index_built = False
-        logger.info("Session state initialized")
-
-def render_header():
-    """Application header"""
-    st.title("🔍 Advanced Document Search Engine")
-    st.markdown("""
-    **Intelligent Search with RAG + Smart Pattern Matching**
-    
-    Upload documents and search with AI-powered semantic understanding or traditional keyword matching.
-    """)
-    
-    # Status indicators in sidebar
-    with st.sidebar:
-        st.markdown("### 🔧 System Status")
         
-        # Check dependencies
-        deps = check_dependencies()
-        
-        # PDF processing
-        if deps.get('pdfplumber') or deps.get('PyPDF2'):
-            st.success("✅ PDF Processing Available")
-        else:
-            st.error("❌ PDF Processing Unavailable")
-            st.caption("Install: `pip install pdfplumber`")
-        
-        # DOCX processing
-        if deps.get('python-docx'):
-            st.success("✅ DOCX Processing Available")
-        else:
-            st.warning("⚠️ DOCX Processing Unavailable")
-            st.caption("Install: `pip install python-docx`")
-        
-        # RAG capabilities
-        try:
-            import sentence_transformers
-            st.success("✅ RAG Available")
-        except ImportError:
-            st.error("❌ RAG Unavailable")
-            st.caption("Install: `pip install sentence-transformers torch`")
-        
-        # Advanced search
-        if ADVANCED_SEARCH_AVAILABLE:
-            st.success("✅ Advanced Search Available")
-        else:
-            st.warning("⚠️ Basic Search Only")
-        
-        st.metric("Documents Loaded", len(st.session_state.documents))
-        
-        if st.session_state.documents:
-            total_words = sum(doc.get('word_count', 0) for doc in st.session_state.documents)
-            st.metric("Total Words", f"{total_words:,}")
-
-def render_upload_section():
-    """Document upload with progress tracking"""
-    st.header("📁 Document Upload")
-    
-    uploaded_files = st.file_uploader(
-        "Upload Documents",
-        type=['pdf', 'txt', 'docx'],
-        accept_multiple_files=True,
-        help="Supported: PDF, TXT, DOCX files"
-    )
-    
-    if uploaded_files:
-        # Process documents with progress bar
         progress_bar = st.progress(0)
-        status_text = st.empty()
+        for i, file in enumerate(uploaded_files):
+            st.write(f"Processing {file.name}...")
+            doc = process_file(file)
+            st.session_state.documents.append(doc)
+            progress_bar.progress((i + 1) / len(uploaded_files))
         
-        try:
-            processed_docs = []
-            for i, file in enumerate(uploaded_files):
-                status_text.text(f"Processing {file.name}...")
-                progress_bar.progress((i + 1) / len(uploaded_files))
-                
-                # Process single file
-                doc_result = process_uploaded_files([file])
-                if doc_result:
-                    processed_docs.extend(doc_result)
-            
-            st.session_state.documents = processed_docs
-            st.session_state.rag_index_built = False  # Reset RAG index
-            
-            progress_bar.progress(1.0)
-            status_text.text("✅ All documents processed!")
-            
-            # Log the upload action
-            log_action("documents_uploaded", {
-                "count": len(processed_docs),
-                "total_words": sum(doc.get('word_count', 0) for doc in processed_docs)
-            })
-            
-            st.success(f"Successfully processed {len(processed_docs)} documents")
-            
-            # Show document summary
-            if processed_docs:
-                with st.expander("📊 Document Summary", expanded=False):
-                    for doc in processed_docs:
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.write(f"**{doc['filename']}**")
-                        with col2:
-                            if 'error' in doc:
-                                st.error(f"Error: {doc['error']}")
-                            else:
-                                st.write(f"{doc.get('word_count', 0):,} words")
-                        with col3:
-                            st.write(f"{doc.get('file_type', 'unknown').upper()}")
-                            
-        except Exception as e:
-            st.error(f"Error processing files: {str(e)}")
-            logger.error(f"Upload processing error: {e}")
+        st.success(f"Processed {len(uploaded_files)} files!")
 
-def render_basic_search(documents):
-    """Basic search interface if advanced search is not available"""
-    st.header("🔍 Basic Search")
+# Show loaded documents
+if st.session_state.documents:
+    st.write(f"**Loaded {len(st.session_state.documents)} documents:**")
+    for doc in st.session_state.documents:
+        if 'error' in doc:
+            st.error(f"❌ {doc['filename']}: {doc['error']}")
+        else:
+            st.write(f"✅ {doc['filename']} ({doc['word_count']} words)")
+
+# Search section
+st.header("🔍 Search")
+query = st.text_input("Enter your search query:", placeholder="Type what you're looking for...")
+
+if query and st.session_state.documents:
+    results = search_documents(query, st.session_state.documents)
     
-    query = st.text_input("Search documents:", placeholder="Enter your search terms...")
-    
-    if query and documents:
-        results = []
+    if results:
+        st.write(f"**Found {len(results)} results for '{query}':**")
         
-        for doc in documents:
-            if 'text' in doc and query.lower() in doc['text'].lower():
-                # Simple relevance scoring
-                text_lower = doc['text'].lower()
-                query_lower = query.lower()
-                
-                # Count occurrences
-                count = text_lower.count(query_lower)
-                
-                # Extract snippet
-                index = text_lower.find(query_lower)
-                start = max(0, index - 100)
-                end = min(len(doc['text']), index + len(query) + 100)
-                snippet = doc['text'][start:end]
-                
-                results.append({
-                    'document': doc,
-                    'count': count,
-                    'snippet': snippet
-                })
-        
-        # Sort by relevance
-        results.sort(key=lambda x: x['count'], reverse=True)
-        
-        st.write(f"Found {len(results)} results:")
-        
-        for result in results:
-            doc = result['document']
-            with st.expander(f"📄 {doc['filename']} ({result['count']} matches)"):
-                st.write(f"**File type:** {doc.get('file_type', 'unknown').upper()}")
-                st.write(f"**Word count:** {doc.get('word_count', 0):,}")
-                st.write("**Preview:**")
-                st.write(result['snippet'])
+        for i, result in enumerate(results, 1):
+            with st.expander(f"{i}. {result['filename']} (Score: {result['score']:.1f})"):
+                st.write(f"**Word count:** {result['word_count']}")
+                st.write("**Relevant excerpt:**")
+                st.markdown(result['snippet'])
+    else:
+        st.write("No results found.")
 
-def main():
-    """Main application"""
-    try:
-        initialize_session_state()
-        render_header()
-        
-        # Main layout
-        tab1, tab2 = st.tabs(["📁 Upload Documents", "🔍 Search Engine"])
-        
-        with tab1:
-            render_upload_section()
-        
-        with tab2:
-            if st.session_state.documents:
-                if ADVANCED_SEARCH_AVAILABLE:
-                    # Use advanced search interface
-                    render_search_interface(st.session_state.documents)
-                else:
-                    # Use basic search interface
-                    render_basic_search(st.session_state.documents)
-            else:
-                st.info("👆 Please upload documents first in the Upload tab")
-                
-                # Sample data option
-                if st.button("🎯 Try with Sample Data"):
-                    sample_docs = [
-                        {
-                            'filename': 'sample_policy.txt',
-                            'text': 'The government recommends implementing new healthcare policies to improve patient access and reduce waiting times. This policy should be considered for immediate implementation.',
-                            'word_count': 25,
-                            'file_type': 'txt'
-                        },
-                        {
-                            'filename': 'sample_response.txt', 
-                            'text': 'The department accepts the recommendation for healthcare reform. We will establish a task force to oversee the implementation of these critical changes.',
-                            'word_count': 24,
-                            'file_type': 'txt'
-                        }
-                    ]
-                    st.session_state.documents = sample_docs
-                    st.rerun()
-        
-        # Log app usage
-        log_action("app_loaded", {
-            "documents": len(st.session_state.documents),
-            "has_documents": bool(st.session_state.documents),
-            "advanced_search": ADVANCED_SEARCH_AVAILABLE
-        })
-        
-    except Exception as e:
-        logger.error(f"Application error: {e}")
-        st.error(f"❌ Application error: {str(e)}")
-        
-        # Error recovery
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔄 Restart Application"):
-                for key in list(st.session_state.keys()):
-                    del st.session_state[key]
-                st.rerun()
-        
-        with col2:
-            if st.button("🐛 Show Debug Info"):
-                st.code(str(e))
-                import traceback
-                st.code(traceback.format_exc())
+elif query:
+    st.write("Please upload some documents first.")
 
-if __name__ == "__main__":
-    main()
+# Sample data for testing
+if not st.session_state.documents:
+    if st.button("🎯 Load Sample Data for Testing"):
+        st.session_state.documents = [
+            {
+                'filename': 'sample1.txt',
+                'text': 'The government recommends implementing new healthcare policies to improve patient access and reduce waiting times.',
+                'word_count': 16
+            },
+            {
+                'filename': 'sample2.txt', 
+                'text': 'This document discusses the importance of data security and privacy protection in government systems.',
+                'word_count': 15
+            }
+        ]
+        st.rerun()
