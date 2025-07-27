@@ -1,25 +1,26 @@
-# Enhanced requirements.txt for DaphneAI Document Search System
+# Fixed requirements.txt for Streamlit Cloud deployment
+# Addresses dependency conflicts and missing packages
 
 # Core dependencies
 streamlit>=1.28.0
 pandas>=1.5.0
 numpy>=1.24.0
 
-# AI and machine learning - ENHANCED
+# AI and machine learning
 sentence-transformers>=2.2.0
 scikit-learn>=1.3.0
 torch>=2.0.0
 transformers>=4.30.0
 huggingface-hub>=0.16.0
 
-# Document processing - ENHANCED
+# Document processing - FIXED CONFLICTS
 PyPDF2>=3.0.0
 pdfplumber>=0.9.0
 python-docx>=0.8.11
 openpyxl>=3.1.0
-xlrd>=2.0.1
+# REMOVED: xlrd>=2.0.1 (conflicts with textract)
 
-# Text processing and utilities - ENHANCED
+# Text processing and utilities
 chardet>=5.0.0
 python-Levenshtein>=0.21.0
 fuzzywuzzy>=0.18.0
@@ -34,12 +35,12 @@ tokenizers>=0.13.0
 python-dateutil>=2.8.2
 
 # File handling and compression
-zipfile36>=0.1.3
-rarfile>=4.0
+# REMOVED: zipfile36>=0.1.3 (not needed)
+# REMOVED: rarfile>=4.0 (not essential)
 
 # Optional: Enhanced text extraction
-python-magic>=0.4.27
-textract>=1.6.5
+# REMOVED: python-magic>=0.4.27 (can cause issues)
+# REMOVED: textract>=1.6.5 (conflicts with xlrd)
 
 # Optional: For charts and visualizations in analytics
 plotly>=5.15.0
@@ -49,6 +50,6 @@ seaborn>=0.12.0
 # Optional: For advanced document analysis
 spacy>=3.6.0
 
-# Development and debugging (optional)
-streamlit-debug>=1.0.0
-streamlit-option-menu>=0.3.6
+# REMOVED: Development packages that don't exist
+# streamlit-debug>=1.0.0 (doesn't exist)
+# streamlit-option-menu>=0.3.6 (optional)
