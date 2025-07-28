@@ -1,7 +1,8 @@
-# modules/ui/beautiful_display.py - Beautiful Display Functions
+# modules/ui/beautiful_display.py - Beautiful Display Functions with Stop Word Filtering
 """
 Beautiful display functions for DaphneAI search results and alignments.
 This file contains all the formatting and presentation logic with complete paragraphs.
+Properly handles stop word filtering for clean, meaningful results.
 """
 
 import streamlit as st
@@ -10,9 +11,24 @@ import re
 from datetime import datetime
 from typing import Dict, List
 
+# STOP WORDS for highlighting (same as search_components)
+STOP_WORDS = {
+    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 
+    'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the', 
+    'to', 'was', 'will', 'with', 'the', 'this', 'but', 'they', 'have', 
+    'had', 'what', 'said', 'each', 'which', 'she', 'do', 'how', 'their', 
+    'if', 'up', 'out', 'many', 'then', 'them', 'these', 'so', 'some', 
+    'her', 'would', 'make', 'like', 'into', 'him', 'time', 'two', 'more', 
+    'go', 'no', 'way', 'could', 'my', 'than', 'first', 'been', 'call', 
+    'who', 'oil', 'sit', 'now', 'find', 'down', 'day', 'did', 'get', 
+    'come', 'made', 'may', 'part', 'or', 'also', 'back', 'any', 'good', 
+    'new', 'where', 'much', 'take', 'know', 'just', 'see', 'after', 
+    'very', 'well', 'here', 'should', 'old', 'still'
+}
+
 def display_search_results_beautiful(results: List[Dict], query: str, search_time: float, 
                                    show_context: bool, highlight_matches: bool):
-    """Display search results with beautiful paragraph formatting"""
+    """Display search results with beautiful paragraph formatting and proper filtering"""
     
     if not results:
         st.warning(f"No results found for '{query}'")
@@ -26,7 +42,9 @@ def display_search_results_beautiful(results: List[Dict], query: str, search_tim
             doc_groups[doc_name] = []
         doc_groups[doc_name].append(result)
     
-    # Beautiful summary
+    # Beautiful summary with filtering info
+    meaningful_words = get_meaningful_words(query)
+    
     st.markdown(f"""
     <div style="
         background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
@@ -42,6 +60,7 @@ def display_search_results_beautiful(results: List[Dict], query: str, search_tim
             Found <strong>{len(results)}</strong> results in <strong>{len(doc_groups)}</strong> documents for <strong>"{query}"</strong>
         </p>
         <small style="opacity: 0.9;">Search completed in {search_time:.3f} seconds</small>
+        {f'<br><small style="opacity: 0.8;">Focused on meaningful words: {", ".join(meaningful_words[:5])}{"..." if len(meaningful_words) > 5 else ""}</small>' if meaningful_words else ''}
     </div>
     """, unsafe_allow_html=True)
     
@@ -86,7 +105,7 @@ def display_search_results_beautiful(results: List[Dict], query: str, search_tim
 
 def display_single_search_result_beautiful(result: Dict, index: int, query: str, 
                                          show_context: bool, highlight_matches: bool):
-    """Display a single search result with beautiful formatting"""
+    """Display a single search result with beautiful formatting and filtering info"""
     
     method = result.get('match_type', 'unknown')
     score = result.get('score', 0)
@@ -121,14 +140,34 @@ def display_single_search_result_beautiful(result: Dict, index: int, query: str,
     </div>
     """, unsafe_allow_html=True)
     
+    # Show meaningful words found (for smart search)
+    if method == 'smart' and 'meaningful_words_found' in result:
+        meaningful_found = result['meaningful_words_found']
+        total_meaningful = result.get('total_meaningful_words', 0)
+        
+        if meaningful_found:
+            st.markdown(f"""
+            <div style="
+                background: #e3f2fd;
+                border-left: 4px solid #2196f3;
+                padding: 12px;
+                border-radius: 6px;
+                margin: 10px 0;
+                font-size: 14px;
+            ">
+                <strong>🎯 Meaningful Words Found:</strong> {', '.join(meaningful_found)} 
+                ({len(meaningful_found)}/{total_meaningful} words matched)
+            </div>
+            """, unsafe_allow_html=True)
+    
     # Display FULL context beautifully
     if show_context:
         full_context = result.get('context', '')
         if full_context:
             
-            # Apply highlighting if requested
+            # Apply highlighting if requested (only meaningful words)
             if highlight_matches:
-                display_content = highlight_text_beautiful(full_context, query)
+                display_content = highlight_meaningful_words_only(full_context, query)
             else:
                 display_content = full_context
             
@@ -214,7 +253,7 @@ def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summ
         page_num = rec.get('page_number', 1)
         st.info(f"📄 **Document:** {doc_name} | **Page:** {page_num}")
         
-        # Display the FULL recommendation sentence - no truncation
+        # Display the FULL recommendation sentence
         full_sentence = rec.get('sentence', 'No sentence available')
         
         # Beautiful highlighted display of the full content
@@ -335,7 +374,7 @@ def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summ
 
 def display_manual_search_results_beautiful(matches: List[Dict], target_sentence: str, 
                                           search_time: float, show_scores: bool, search_mode: str):
-    """Display manual search results with beautiful formatting"""
+    """Display manual search results with beautiful formatting and filtering info"""
     
     if not matches:
         st.markdown(f"""
@@ -355,6 +394,9 @@ def display_manual_search_results_beautiful(matches: List[Dict], target_sentence
         </div>
         """, unsafe_allow_html=True)
         return
+    
+    # Get meaningful words for display
+    meaningful_words = get_meaningful_words(target_sentence)
     
     # Beautiful summary
     mode_text = {
@@ -377,6 +419,7 @@ def display_manual_search_results_beautiful(matches: List[Dict], target_sentence
         <p style="margin: 0; font-size: 18px;">
             Found <strong>{len(matches)}</strong> similar {mode_text} in <strong>{search_time:.3f}</strong> seconds
         </p>
+        {f'<br><small style="opacity: 0.8;">Based on meaningful words: {", ".join(meaningful_words[:5])}{"..." if len(meaningful_words) > 5 else ""}</small>' if meaningful_words else ''}
     </div>
     """, unsafe_allow_html=True)
     
@@ -432,6 +475,26 @@ def display_manual_search_results_beautiful(matches: List[Dict], target_sentence
         with st.expander(f"{confidence_icon} Match {i} - {content_type} - {confidence_text}{score_text}", 
                         expanded=i <= 3):
             
+            # Show meaningful words matched
+            if 'matched_meaningful_words' in match:
+                matched_words = match['matched_meaningful_words']
+                total_words = match.get('total_meaningful_words', 0)
+                
+                if matched_words:
+                    st.markdown(f"""
+                    <div style="
+                        background: #e8f5e8;
+                        border-left: 4px solid #4caf50;
+                        padding: 12px;
+                        border-radius: 6px;
+                        margin: 10px 0;
+                        font-size: 14px;
+                    ">
+                        <strong>🎯 Meaningful Words Matched:</strong> {', '.join(matched_words)} 
+                        ({len(matched_words)}/{total_words} words)
+                    </div>
+                    """, unsafe_allow_html=True)
+            
             # Document information beautifully displayed
             doc_name = match.get('document', {}).get('filename', 'Unknown')
             page_num = match.get('page_number', 1)
@@ -460,8 +523,8 @@ def display_manual_search_results_beautiful(matches: List[Dict], target_sentence
             full_sentence = match.get('sentence', 'No sentence available')
             st.markdown("#### 📄 Complete Found Content")
             
-            # Highlight similar words in the found sentence
-            highlighted_sentence = highlight_similar_words_beautiful(full_sentence, target_sentence)
+            # Highlight meaningful words only
+            highlighted_sentence = highlight_meaningful_words_only(full_sentence, target_sentence)
             
             st.markdown(f"""
             <div style="
@@ -593,6 +656,13 @@ def show_alignment_feature_info_beautiful():
 # UTILITY FUNCTIONS
 # =============================================================================
 
+def get_meaningful_words(text: str) -> List[str]:
+    """Extract meaningful words (non-stop words) from text"""
+    words = re.findall(r'\b\w+\b', text.lower())
+    meaningful = [word for word in words 
+                 if word not in STOP_WORDS and len(word) > 1]
+    return meaningful
+
 def format_as_beautiful_paragraphs(text: str) -> str:
     """Format text as beautiful, properly spaced paragraphs"""
     
@@ -640,61 +710,44 @@ def format_as_beautiful_paragraphs(text: str) -> str:
     
     return ''.join(formatted_paragraphs) if formatted_paragraphs else text
 
-def highlight_text_beautiful(text: str, query: str) -> str:
-    """Apply beautiful highlighting to search terms"""
+def highlight_meaningful_words_only(text: str, query: str) -> str:
+    """Highlight only meaningful words from the query in the text"""
+    
+    # Get meaningful words from query (filter out stop words)
+    meaningful_words = get_meaningful_words(query)
+    
+    if not meaningful_words:
+        return text
     
     highlighted = text
-    query_words = [word for word in query.split() if len(word) > 2]
     
     # Sort by length (longest first) to avoid partial highlighting conflicts
-    query_words.sort(key=len, reverse=True)
+    meaningful_words.sort(key=len, reverse=True)
     
-    for word in query_words:
-        # Case-insensitive highlighting with beautiful styling
-        pattern = re.compile(re.escape(word), re.IGNORECASE)
-        highlighted = pattern.sub(
-            f'<span style="background: linear-gradient(135deg, #ffeb3b 0%, #ffc107 100%); '
-            f'padding: 3px 6px; border-radius: 4px; font-weight: bold; '
-            f'box-shadow: 0 1px 3px rgba(0,0,0,0.1);">{word}</span>', 
-            highlighted
-        )
-    
-    return highlighted
-
-def highlight_similar_words_beautiful(sentence: str, target_sentence: str) -> str:
-    """Highlight words in sentence that are similar to target sentence with beautiful styling"""
-    
-    # Extract meaningful words from target (excluding common words)
-    stop_words = {'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 
-                  'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the', 
-                  'to', 'was', 'will', 'with', 'but', 'they', 'have', 'had', 'what'}
-    
-    target_words = set(w.lower() for w in target_sentence.split() 
-                      if len(w) > 2 and w.lower() not in stop_words)
-    
-    highlighted = sentence
-    words = sentence.split()
-    
-    for word in words:
-        clean_word = re.sub(r'[^\w]', '', word.lower())
-        if clean_word in target_words and len(clean_word) > 2:
-            # Beautiful highlighting with gradient and shadow
-            highlighted = highlighted.replace(word, 
+    for word in meaningful_words:
+        if len(word) > 1:  # Skip very short words
+            # Case-insensitive highlighting with beautiful styling
+            pattern = re.compile(re.escape(word), re.IGNORECASE)
+            highlighted = pattern.sub(
                 f'<span style="background: linear-gradient(135deg, #ffeb3b 0%, #ffc107 100%); '
-                f'padding: 3px 8px; border-radius: 6px; font-weight: bold; '
-                f'box-shadow: 0 2px 4px rgba(255,193,7,0.3); '
-                f'border: 1px solid #ffc107;">{word}</span>')
+                f'padding: 3px 6px; border-radius: 4px; font-weight: bold; '
+                f'box-shadow: 0 1px 3px rgba(0,0,0,0.1);">{word}</span>', 
+                highlighted
+            )
     
     return highlighted
 
 def copy_results_beautiful(results: List[Dict], query: str):
-    """Copy results with beautiful formatting"""
+    """Copy results with beautiful formatting and filtering info"""
+    
+    meaningful_words = get_meaningful_words(query)
     
     output = f"""
 DAPHNE AI - SEARCH RESULTS REPORT
 ==================================
 
 Search Query: "{query}"
+Meaningful Words: {', '.join(meaningful_words) if meaningful_words else 'None'}
 Total Results: {len(results)}
 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
@@ -720,6 +773,13 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             context = result.get('context', '')
             
             output += f"Match {i} - {method} (Score: {score:.1f}) - Page {page}\n"
+            
+            # Show meaningful words found for smart search
+            if method == 'Smart' and 'meaningful_words_found' in result:
+                words_found = result['meaningful_words_found']
+                if words_found:
+                    output += f"Meaningful Words Found: {', '.join(words_found)}\n"
+            
             output += f"{'-' * 50}\n"
             
             # Include FULL context without truncation
@@ -742,7 +802,9 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     )
 
 def export_results_csv_beautiful(results: List[Dict], query: str):
-    """Export results with complete content"""
+    """Export results with complete content and filtering info"""
+    
+    meaningful_words = get_meaningful_words(query)
     
     csv_data = []
     
@@ -751,6 +813,7 @@ def export_results_csv_beautiful(results: List[Dict], query: str):
         row = {
             'Match_Number': i,
             'Query': query,
+            'Meaningful_Words_Used': ', '.join(meaningful_words),
             'Document': result['document']['filename'],
             'Match_Type': result.get('match_type', 'Unknown'),
             'Score': result.get('score', 0),
@@ -761,6 +824,17 @@ def export_results_csv_beautiful(results: List[Dict], query: str):
             'Word_Count': len(result.get('context', '').split()),
             'Character_Count': len(result.get('context', ''))
         }
+        
+        # Add meaningful words found for smart search
+        if result.get('match_type') == 'smart' and 'meaningful_words_found' in result:
+            row['Meaningful_Words_Found'] = ', '.join(result['meaningful_words_found'])
+            row['Words_Matched'] = len(result['meaningful_words_found'])
+            row['Total_Meaningful_Words'] = result.get('total_meaningful_words', 0)
+        else:
+            row['Meaningful_Words_Found'] = ''
+            row['Words_Matched'] = 0
+            row['Total_Meaningful_Words'] = 0
+        
         csv_data.append(row)
     
     df = pd.DataFrame(csv_data)
@@ -778,11 +852,13 @@ def export_results_csv_beautiful(results: List[Dict], query: str):
         mime="text/csv"
     )
     
-    st.success(f"✅ CSV ready for download with complete content! ({len(results)} results)")
+    st.success(f"✅ CSV ready for download with complete content and filtering info! ({len(results)} results)")
     
     # Show preview
     with st.expander("📊 CSV Preview"):
-        st.dataframe(df[['Match_Number', 'Document', 'Score', 'Page_Number', 'Word_Count']].head())
+        preview_cols = ['Match_Number', 'Document', 'Score', 'Page_Number', 'Words_Matched', 'Word_Count']
+        available_cols = [col for col in preview_cols if col in df.columns]
+        st.dataframe(df[available_cols].head())
 
 # Export all functions
 __all__ = [
@@ -793,8 +869,8 @@ __all__ = [
     'display_manual_search_results_beautiful',
     'show_alignment_feature_info_beautiful',
     'format_as_beautiful_paragraphs',
-    'highlight_text_beautiful',
-    'highlight_similar_words_beautiful',
+    'highlight_meaningful_words_only',
+    'get_meaningful_words',
     'copy_results_beautiful',
     'export_results_csv_beautiful'
 ]
