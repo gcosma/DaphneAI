@@ -1,7 +1,7 @@
-# modules/ui/search_components.py - Fixed version with proper error handling
+# modules/ui/search_components.py - Main Interface File
 """
-Fixed search components with comprehensive error handling for the "not enough values to unpack" error.
-This is a drop-in replacement that should resolve the alignment tab issues.
+Main search and alignment interfaces for DaphneAI
+This file contains the primary user interfaces and core functionality
 """
 
 import streamlit as st
@@ -11,9 +11,23 @@ import time
 from datetime import datetime
 from typing import Dict, List, Any
 import logging
+import difflib
+
+# Import the beautiful display functions from the separate file
+from .beautiful_display import (
+    display_search_results_beautiful,
+    display_alignment_results_beautiful,
+    display_manual_search_results_beautiful,
+    show_alignment_feature_info_beautiful,
+    format_as_beautiful_paragraphs
+)
 
 # Setup logging
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# MAIN INTERFACE FUNCTIONS
+# =============================================================================
 
 def render_search_interface(documents: List[Dict[str, Any]]):
     """Main search interface with error handling"""
@@ -81,8 +95,8 @@ def render_search_interface(documents: List[Dict[str, Any]]):
             
             search_time = time.time() - start_time
             
-            # Display results
-            display_search_results(
+            # Display results with beautiful formatting
+            display_search_results_beautiful(
                 results=results,
                 query=query,
                 search_time=search_time,
@@ -98,7 +112,7 @@ def render_recommendation_alignment_interface(documents: List[Dict[str, Any]]):
     
     if not documents:
         st.warning("📁 Please upload documents first")
-        show_alignment_info()
+        show_alignment_feature_info_beautiful()
         return
     
     # Simple tab structure to avoid unpacking errors
@@ -148,8 +162,11 @@ def render_auto_alignment_fixed(documents: List[Dict[str, Any]]):
                 # Find responses
                 responses = find_pattern_matches(documents, resp_patterns, "response")
                 
-                # Display results
-                display_alignment_analysis(recommendations, responses, documents)
+                # Create simple alignments
+                alignments = create_simple_alignments(recommendations, responses)
+                
+                # Display results with beautiful formatting
+                display_alignment_results_beautiful(alignments, show_ai_summaries=False)
                 
             except Exception as e:
                 logger.error(f"Alignment analysis error: {e}")
@@ -198,13 +215,17 @@ def render_manual_search_fixed(documents: List[Dict[str, Any]]):
                     similarity_threshold, max_matches
                 )
                 
-                display_manual_search_results(
-                    matches, search_sentence, show_scores
+                display_manual_search_results_beautiful(
+                    matches, search_sentence, 0.1, show_scores, search_type.lower()
                 )
                 
             except Exception as e:
                 logger.error(f"Manual search error: {e}")
                 st.error(f"Search error: {str(e)}")
+
+# =============================================================================
+# SEARCH EXECUTION FUNCTIONS
+# =============================================================================
 
 def execute_simple_search(documents: List[Dict], query: str, method: str, 
                          max_results: int = None, case_sensitive: bool = False) -> List[Dict]:
@@ -285,7 +306,8 @@ def smart_search_simple(text: str, search_text: str, query: str, search_query: s
                 'match_type': 'smart',
                 'page_number': max(1, pos // 2000 + 1),
                 'word_matches': word_matches,
-                'total_words': len(query_words)
+                'total_words': len(query_words),
+                'percentage_through': (pos / len(text)) * 100 if text else 0
             }
             
             matches.append(match)
@@ -314,7 +336,8 @@ def exact_search_simple(text: str, search_text: str, query: str, search_query: s
             'context': context,
             'score': 100.0,
             'match_type': 'exact',
-            'page_number': max(1, pos // 2000 + 1)
+            'page_number': max(1, pos // 2000 + 1),
+            'percentage_through': (pos / len(text)) * 100 if text else 0
         }
         
         matches.append(match)
@@ -358,7 +381,8 @@ def fuzzy_search_simple(text: str, search_text: str, query: str, search_query: s
                         'score': similarity * 100,
                         'match_type': 'fuzzy',
                         'page_number': max(1, pos // 2000 + 1),
-                        'similarity': similarity
+                        'similarity': similarity,
+                        'percentage_through': (pos / len(text)) * 100 if text else 0
                     }
                     
                     matches.append(match)
@@ -375,82 +399,9 @@ def fuzzy_search_simple(text: str, search_text: str, query: str, search_query: s
     
     return unique_matches
 
-def get_context_simple(sentences: List[str], index: int, window: int = 1) -> str:
-    """Get context around a sentence"""
-    
-    start = max(0, index - window)
-    end = min(len(sentences), index + window + 1)
-    
-    context_sentences = [s.strip() for s in sentences[start:end] if s.strip()]
-    return ' '.join(context_sentences)
-
-def display_search_results(results: List[Dict], query: str, search_time: float, 
-                          show_context: bool, highlight_matches: bool):
-    """Display search results"""
-    
-    if not results:
-        st.warning(f"No results found for '{query}'")
-        return
-    
-    # Group by document
-    doc_groups = {}
-    for result in results:
-        doc_name = result['document']['filename']
-        if doc_name not in doc_groups:
-            doc_groups[doc_name] = []
-        doc_groups[doc_name].append(result)
-    
-    # Summary
-    st.success(f"🎯 Found **{len(results)}** results in **{len(doc_groups)}** documents in {search_time:.3f} seconds")
-    
-    # Export options
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("📋 Copy Results"):
-            copy_results_simple(results, query)
-    with col2:
-        if st.button("📊 Export CSV"):
-            export_results_csv_simple(results, query)
-    
-    # Display results
-    for doc_name, doc_results in doc_groups.items():
-        with st.expander(f"📄 {doc_name} ({len(doc_results)} matches)", expanded=True):
-            
-            for i, result in enumerate(doc_results, 1):
-                
-                score = result.get('score', 0)
-                method = result.get('match_type', 'unknown')
-                page = result.get('page_number', 1)
-                
-                st.markdown(f"**Match {i}** - {method.title()} (Score: {score:.1f}) - Page {page}")
-                
-                if show_context:
-                    context = result.get('context', '')
-                    if highlight_matches and context:
-                        # Simple highlighting
-                        highlighted = highlight_text_simple(context, query)
-                        st.markdown(highlighted, unsafe_allow_html=True)
-                    else:
-                        st.markdown(f"📖 {context}")
-                
-                st.markdown("---")
-
-def highlight_text_simple(text: str, query: str) -> str:
-    """Simple text highlighting"""
-    
-    highlighted = text
-    query_words = query.split()
-    
-    for word in query_words:
-        if len(word) > 2:
-            # Case-insensitive replacement
-            pattern = re.compile(re.escape(word), re.IGNORECASE)
-            highlighted = pattern.sub(
-                f"<mark style='background-color: #FFEB3B; padding: 2px;'>{word}</mark>", 
-                highlighted
-            )
-    
-    return highlighted
+# =============================================================================
+# ALIGNMENT FUNCTIONS
+# =============================================================================
 
 def find_pattern_matches(documents: List[Dict], patterns: List[str], match_type: str) -> List[Dict]:
     """Find pattern matches in documents"""
@@ -482,13 +433,27 @@ def find_pattern_matches(documents: List[Dict], patterns: List[str], match_type:
                 
                 sentence = text[sentence_start:sentence_end].strip()
                 
+                # Get context
+                sentences = re.split(r'[.!?]+', text)
+                sentence_index = -1
+                for i, sent in enumerate(sentences):
+                    if sentence in sent:
+                        sentence_index = i
+                        break
+                
+                context = get_context_simple(sentences, sentence_index, 2) if sentence_index != -1 else sentence
+                
                 match = {
+                    'id': f"{match_type}_{len(matches) + 1}",
                     'document': doc,
                     'pattern': pattern,
                     'sentence': sentence,
+                    'context': context,
                     'position': pos,
                     'page_number': max(1, pos // 2000 + 1),
-                    'match_type': match_type
+                    'match_type': match_type,
+                    'recommendation_type': classify_content_type(sentence),
+                    'response_type': classify_content_type(sentence)
                 }
                 
                 matches.append(match)
@@ -496,85 +461,154 @@ def find_pattern_matches(documents: List[Dict], patterns: List[str], match_type:
     
     return matches
 
-def display_alignment_analysis(recommendations: List[Dict], responses: List[Dict], documents: List[Dict]):
-    """Display alignment analysis results"""
+def create_simple_alignments(recommendations: List[Dict], responses: List[Dict]) -> List[Dict]:
+    """Create simple alignments between recommendations and responses"""
     
-    st.markdown("### 📊 Analysis Summary")
+    alignments = []
     
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total Recommendations", len(recommendations))
-    
-    with col2:
-        st.metric("Total Responses", len(responses))
-    
-    with col3:
-        rec_docs = len(set(r['document']['filename'] for r in recommendations))
-        st.metric("Documents with Recommendations", rec_docs)
-    
-    with col4:
-        resp_docs = len(set(r['document']['filename'] for r in responses))
-        st.metric("Documents with Responses", resp_docs)
-    
-    # Show recommendations
-    if recommendations:
-        st.markdown("### 🎯 Recommendations Found")
+    for rec in recommendations:
+        # Find responses in the same document
+        rec_doc = rec['document']['filename']
+        related_responses = [r for r in responses if r['document']['filename'] == rec_doc]
         
-        for i, rec in enumerate(recommendations[:10], 1):  # First 10
-            doc_name = rec['document']['filename']
-            page = rec['page_number']
-            sentence = rec['sentence'][:100] + "..." if len(rec['sentence']) > 100 else rec['sentence']
+        # Simple similarity scoring
+        best_responses = []
+        for resp in related_responses:
+            similarity = calculate_simple_similarity(rec['sentence'], resp['sentence'])
+            if similarity > 0.2:
+                best_responses.append({
+                    'response': resp,
+                    'combined_score': similarity,
+                    'similarity_score': similarity,
+                    'topic_similarity': similarity
+                })
+        
+        # Sort by similarity
+        best_responses.sort(key=lambda x: x['combined_score'], reverse=True)
+        
+        alignment = {
+            'recommendation': rec,
+            'responses': best_responses[:3],  # Top 3
+            'alignment_confidence': best_responses[0]['combined_score'] if best_responses else 0,
+            'alignment_status': determine_alignment_status(best_responses)
+        }
+        
+        alignments.append(alignment)
+    
+    return alignments
+
+def find_similar_content(documents: List[Dict], target_sentence: str, search_type: str, 
+                        threshold: float, max_matches: int) -> List[Dict]:
+    """Find similar content to target sentence"""
+    
+    matches = []
+    target_words = set(target_sentence.lower().split())
+    
+    for doc in documents:
+        text = doc.get('text', '')
+        if not text:
+            continue
+        
+        sentences = re.split(r'[.!?]+', text)
+        
+        for i, sentence in enumerate(sentences):
+            if not sentence.strip() or len(sentence.strip()) < 20:
+                continue
             
-            with st.expander(f"Recommendation {i} - {doc_name} (Page {page})", expanded=i <= 3):
-                st.markdown(f"**Pattern:** {rec['pattern']}")
-                st.markdown(f"**Content:** {sentence}")
-    
-    # Show responses
-    if responses:
-        st.markdown("### ↩️ Responses Found")
-        
-        for i, resp in enumerate(responses[:10], 1):  # First 10
-            doc_name = resp['document']['filename']
-            page = resp['page_number']
-            sentence = resp['sentence'][:100] + "..." if len(resp['sentence']) > 100 else resp['sentence']
+            sentence_words = set(sentence.lower().split())
             
-            with st.expander(f"Response {i} - {doc_name} (Page {page})", expanded=i <= 3):
-                st.markdown(f"**Pattern:** {resp['pattern']}")
-                st.markdown(f"**Content:** {sentence}")
-    
-    # Simple alignment attempt
-    if recommendations and responses:
-        st.markdown("### 🔗 Simple Alignment Analysis")
-        
-        # Group by document
-        rec_by_doc = {}
-        resp_by_doc = {}
-        
-        for rec in recommendations:
-            doc = rec['document']['filename']
-            if doc not in rec_by_doc:
-                rec_by_doc[doc] = []
-            rec_by_doc[doc].append(rec)
-        
-        for resp in responses:
-            doc = resp['document']['filename']
-            if doc not in resp_by_doc:
-                resp_by_doc[doc] = []
-            resp_by_doc[doc].append(resp)
-        
-        # Show documents with both
-        common_docs = set(rec_by_doc.keys()) & set(resp_by_doc.keys())
-        
-        if common_docs:
-            st.success(f"Found {len(common_docs)} documents with both recommendations and responses")
+            # Calculate similarity
+            intersection = len(target_words & sentence_words)
+            union = len(target_words | sentence_words)
+            similarity = intersection / union if union > 0 else 0
             
-            for doc in common_docs:
-                st.markdown(f"**📄 {doc}:**")
-                st.write(f"  • {len(rec_by_doc[doc])} recommendations")
-                st.write(f"  • {len(resp_by_doc[doc])} responses")
-        else:
-            st.warning("No documents contain both recommendations and responses")
+            if similarity >= threshold:
+                
+                # Filter by type if specified
+                if search_type == "Recommendations":
+                    if not any(word in sentence.lower() for word in ['recommend', 'suggest', 'advise']):
+                        continue
+                elif search_type == "Responses":
+                    if not any(word in sentence.lower() for word in ['accept', 'reject', 'agree', 'implement']):
+                        continue
+                
+                # Get context
+                context = get_context_simple(sentences, i, 2)
+                
+                match = {
+                    'sentence': sentence.strip(),
+                    'context': context,
+                    'similarity_score': similarity,
+                    'document': doc,
+                    'position': text.find(sentence),
+                    'page_number': max(1, text.find(sentence) // 2000 + 1) if sentence in text else 1,
+                    'content_type': classify_content_type(sentence),
+                    'matched_patterns': []
+                }
+                
+                matches.append(match)
+    
+    # Sort by similarity and limit
+    matches.sort(key=lambda x: x['similarity_score'], reverse=True)
+    return matches[:max_matches]
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+
+def get_context_simple(sentences: List[str], index: int, window: int = 1) -> str:
+    """Get context around a sentence"""
+    
+    start = max(0, index - window)
+    end = min(len(sentences), index + window + 1)
+    
+    context_sentences = [s.strip() for s in sentences[start:end] if s.strip()]
+    return ' '.join(context_sentences)
+
+def calculate_simple_similarity(text1: str, text2: str) -> float:
+    """Calculate simple word overlap similarity"""
+    
+    words1 = set(w.lower() for w in text1.split() if len(w) > 2)
+    words2 = set(w.lower() for w in text2.split() if len(w) > 2)
+    
+    if not words1 or not words2:
+        return 0.0
+    
+    intersection = len(words1 & words2)
+    union = len(words1 | words2)
+    
+    return intersection / union if union > 0 else 0.0
+
+def determine_alignment_status(responses: List[Dict]) -> str:
+    """Determine alignment status"""
+    
+    if not responses:
+        return "No Response Found"
+    
+    best_score = responses[0]['combined_score']
+    
+    if best_score > 0.7:
+        return "Strong Alignment"
+    elif best_score > 0.5:
+        return "Good Alignment"
+    elif best_score > 0.3:
+        return "Weak Alignment"
+    else:
+        return "Poor Alignment"
+
+def classify_content_type(sentence: str) -> str:
+    """Classify content type"""
+    
+    sentence_lower = sentence.lower()
+    
+    if any(word in sentence_lower for word in ['urgent', 'immediate', 'critical']):
+        return 'Urgent'
+    elif any(word in sentence_lower for word in ['policy', 'framework', 'guideline']):
+        return 'Policy'
+    elif any(word in sentence_lower for word in ['financial', 'budget', 'cost']):
+        return 'Financial'
+    else:
+        return 'General'
 
 def show_basic_pattern_analysis(documents: List[Dict], rec_patterns: List[str], resp_patterns: List[str]):
     """Show basic pattern analysis as fallback"""
@@ -613,162 +647,9 @@ def show_basic_pattern_analysis(documents: List[Dict], rec_patterns: List[str], 
             if count > 0:
                 st.write(f"• '{pattern}': {count}")
 
-def find_similar_content(documents: List[Dict], target_sentence: str, search_type: str, 
-                        threshold: float, max_matches: int) -> List[Dict]:
-    """Find similar content to target sentence"""
-    
-    matches = []
-    target_words = set(target_sentence.lower().split())
-    
-    for doc in documents:
-        text = doc.get('text', '')
-        if not text:
-            continue
-        
-        sentences = re.split(r'[.!?]+', text)
-        
-        for i, sentence in enumerate(sentences):
-            if not sentence.strip() or len(sentence.strip()) < 20:
-                continue
-            
-            sentence_words = set(sentence.lower().split())
-            
-            # Calculate similarity
-            intersection = len(target_words & sentence_words)
-            union = len(target_words | sentence_words)
-            similarity = intersection / union if union > 0 else 0
-            
-            if similarity >= threshold:
-                
-                # Filter by type if specified
-                if search_type == "Recommendations":
-                    if not any(word in sentence.lower() for word in ['recommend', 'suggest', 'advise']):
-                        continue
-                elif search_type == "Responses":
-                    if not any(word in sentence.lower() for word in ['accept', 'reject', 'agree', 'implement']):
-                        continue
-                
-                match = {
-                    'sentence': sentence.strip(),
-                    'similarity': similarity,
-                    'document': doc,
-                    'position': text.find(sentence),
-                    'page_number': max(1, text.find(sentence) // 2000 + 1) if sentence in text else 1
-                }
-                
-                matches.append(match)
-    
-    # Sort by similarity and limit
-    matches.sort(key=lambda x: x['similarity'], reverse=True)
-    return matches[:max_matches]
-
-def display_manual_search_results(matches: List[Dict], target_sentence: str, show_scores: bool):
-    """Display manual search results"""
-    
-    if not matches:
-        st.warning("No similar content found")
-        return
-    
-    st.success(f"Found {len(matches)} similar sentences")
-    
-    st.markdown("### 📝 Your Original Sentence:")
-    st.info(target_sentence)
-    
-    st.markdown("### 🔍 Similar Content Found:")
-    
-    for i, match in enumerate(matches, 1):
-        similarity = match['similarity']
-        doc_name = match['document']['filename']
-        page = match['page_number']
-        
-        confidence = "🟢 High" if similarity > 0.7 else "🟡 Medium" if similarity > 0.4 else "🔴 Low"
-        score_text = f" (Score: {similarity:.3f})" if show_scores else ""
-        
-        with st.expander(f"{confidence} Match {i} - {doc_name} (Page {page}){score_text}", 
-                        expanded=i <= 3):
-            
-            sentence = match['sentence']
-            st.markdown(f"**Found:** {sentence}")
-            
-            if show_scores:
-                st.caption(f"Similarity score: {similarity:.3f}")
-
-def copy_results_simple(results: List[Dict], query: str):
-    """Simple results copying"""
-    
-    output = f"Search Results for: {query}\n"
-    output += f"Total Results: {len(results)}\n"
-    output += "=" * 50 + "\n\n"
-    
-    for i, result in enumerate(results, 1):
-        doc_name = result['document']['filename']
-        score = result.get('score', 0)
-        context = result.get('context', '')[:200]
-        
-        output += f"Result {i}:\n"
-        output += f"Document: {doc_name}\n"
-        output += f"Score: {score:.1f}\n"
-        output += f"Context: {context}...\n\n"
-    
-    st.code(output, language="text")
-    st.success("Results displayed above! Copy with Ctrl+A, Ctrl+C")
-
-def export_results_csv_simple(results: List[Dict], query: str):
-    """Simple CSV export"""
-    
-    csv_data = []
-    
-    for i, result in enumerate(results, 1):
-        csv_data.append({
-            'Match': i,
-            'Query': query,
-            'Document': result['document']['filename'],
-            'Score': result.get('score', 0),
-            'Page': result.get('page_number', 1),
-            'Context': result.get('context', '')[:500]
-        })
-    
-    df = pd.DataFrame(csv_data)
-    csv = df.to_csv(index=False)
-    
-    st.download_button(
-        label="📥 Download CSV",
-        data=csv,
-        file_name=f"search_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv"
-    )
-
-def show_alignment_info():
-    """Show information about alignment features"""
-    
-    st.markdown("""
-    ### 🎯 What This Feature Does:
-    
-    **🔍 Automatically finds:**
-    - All recommendations in your documents
-    - Corresponding responses to those recommendations
-    - Aligns them using similarity matching
-    
-    **📊 Provides:**
-    - Side-by-side view of recommendation + response
-    - Confidence scores for alignments
-    - Export options for further analysis
-    
-    **💡 Perfect for:**
-    - Government inquiry reports
-    - Policy documents and responses
-    - Committee recommendations and outcomes
-    - Audit findings and management responses
-    
-    ### 🚀 How to Use:
-    1. Upload your documents in the **Upload** tab
-    2. Return here to analyze recommendations and responses
-    3. Configure search patterns for your specific documents
-    4. Let the system find and align recommendation-response pairs
-    5. Review results and export findings
-    """)
-
-# Additional utility functions for compatibility
+# =============================================================================
+# COMPATIBILITY FUNCTIONS
+# =============================================================================
 
 def check_rag_availability() -> bool:
     """Check if AI features are available"""
