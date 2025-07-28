@@ -267,52 +267,6 @@ def execute_simple_search(documents: List[Dict], query: str, method: str,
     
     return results
 
-def smart_search_simple(text: str, search_text: str, query: str, search_query: str) -> List[Dict]:
-    """Simple smart search"""
-    
-    matches = []
-    
-    # Split into words
-    query_words = [w for w in search_query.split() if len(w) > 2]
-    
-    if not query_words:
-        return matches
-    
-    # Find sentences containing query words
-    sentences = re.split(r'[.!?]+', text)
-    
-    for i, sentence in enumerate(sentences):
-        if not sentence.strip():
-            continue
-        
-        sentence_lower = sentence.lower()
-        word_matches = sum(1 for word in query_words if word in sentence_lower)
-        
-        if word_matches > 0:
-            # Calculate score
-            score = (word_matches / len(query_words)) * 100
-            
-            # Find position
-            pos = text.find(sentence.strip())
-            if pos == -1:
-                pos = i * 100  # Estimate
-            
-            # Create match
-            match = {
-                'position': pos,
-                'matched_text': sentence.strip(),
-                'context': get_context_simple(sentences, i),
-                'score': score,
-                'match_type': 'smart',
-                'page_number': max(1, pos // 2000 + 1),
-                'word_matches': word_matches,
-                'total_words': len(query_words),
-                'percentage_through': (pos / len(text)) * 100 if text else 0
-            }
-            
-            matches.append(match)
-    
-    return matches
 
 def exact_search_simple(text: str, search_text: str, query: str, search_query: str) -> List[Dict]:
     """Simple exact search"""
@@ -345,59 +299,7 @@ def exact_search_simple(text: str, search_text: str, query: str, search_query: s
     
     return matches
 
-def fuzzy_search_simple(text: str, search_text: str, query: str, search_query: str) -> List[Dict]:
-    """Simple fuzzy search"""
-    
-    matches = []
-    words = text.split()
-    query_words = search_query.split()
-    
-    for query_word in query_words:
-        if len(query_word) < 3:
-            continue
-        
-        for i, word in enumerate(words):
-            word_lower = word.lower()
-            
-            # Simple similarity check
-            if query_word in word_lower or word_lower in query_word:
-                similarity = len(set(query_word) & set(word_lower)) / len(set(query_word) | set(word_lower))
-                
-                if similarity > 0.5:
-                    # Find position
-                    pos = len(' '.join(words[:i]))
-                    if i > 0:
-                        pos += 1
-                    
-                    # Extract context
-                    context_start = max(0, i - 10)
-                    context_end = min(len(words), i + 10)
-                    context = ' '.join(words[context_start:context_end])
-                    
-                    match = {
-                        'position': pos,
-                        'matched_text': word,
-                        'context': context,
-                        'score': similarity * 100,
-                        'match_type': 'fuzzy',
-                        'page_number': max(1, pos // 2000 + 1),
-                        'similarity': similarity,
-                        'percentage_through': (pos / len(text)) * 100 if text else 0
-                    }
-                    
-                    matches.append(match)
-    
-    # Remove duplicates and sort
-    unique_matches = []
-    seen_positions = set()
-    
-    for match in sorted(matches, key=lambda x: x['score'], reverse=True):
-        pos = match['position']
-        if pos not in seen_positions:
-            unique_matches.append(match)
-            seen_positions.add(pos)
-    
-    return unique_matches
+
 
 # =============================================================================
 # ALIGNMENT FUNCTIONS
@@ -497,60 +399,7 @@ def create_simple_alignments(recommendations: List[Dict], responses: List[Dict])
     
     return alignments
 
-def find_similar_content(documents: List[Dict], target_sentence: str, search_type: str, 
-                        threshold: float, max_matches: int) -> List[Dict]:
-    """Find similar content to target sentence"""
-    
-    matches = []
-    target_words = set(target_sentence.lower().split())
-    
-    for doc in documents:
-        text = doc.get('text', '')
-        if not text:
-            continue
-        
-        sentences = re.split(r'[.!?]+', text)
-        
-        for i, sentence in enumerate(sentences):
-            if not sentence.strip() or len(sentence.strip()) < 20:
-                continue
-            
-            sentence_words = set(sentence.lower().split())
-            
-            # Calculate similarity
-            intersection = len(target_words & sentence_words)
-            union = len(target_words | sentence_words)
-            similarity = intersection / union if union > 0 else 0
-            
-            if similarity >= threshold:
-                
-                # Filter by type if specified
-                if search_type == "Recommendations":
-                    if not any(word in sentence.lower() for word in ['recommend', 'suggest', 'advise']):
-                        continue
-                elif search_type == "Responses":
-                    if not any(word in sentence.lower() for word in ['accept', 'reject', 'agree', 'implement']):
-                        continue
-                
-                # Get context
-                context = get_context_simple(sentences, i, 2)
-                
-                match = {
-                    'sentence': sentence.strip(),
-                    'context': context,
-                    'similarity_score': similarity,
-                    'document': doc,
-                    'position': text.find(sentence),
-                    'page_number': max(1, text.find(sentence) // 2000 + 1) if sentence in text else 1,
-                    'content_type': classify_content_type(sentence),
-                    'matched_patterns': []
-                }
-                
-                matches.append(match)
-    
-    # Sort by similarity and limit
-    matches.sort(key=lambda x: x['similarity_score'], reverse=True)
-    return matches[:max_matches]
+
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -647,6 +496,168 @@ def show_basic_pattern_analysis(documents: List[Dict], rec_patterns: List[str], 
             if count > 0:
                 st.write(f"• '{pattern}': {count}")
 
+def smart_search_simple(text: str, search_text: str, query: str, search_query: str) -> List[Dict]:
+    """Smart search WITHOUT stop word filtering - searches for ALL words"""
+    
+    matches = []
+    
+    # Split into words - KEEP ALL WORDS, no filtering
+    query_words = [w.strip() for w in search_query.split() if w.strip()]
+    
+    if not query_words:
+        return matches
+    
+    # Find sentences containing query words
+    sentences = re.split(r'[.!?]+', text)
+    
+    for i, sentence in enumerate(sentences):
+        if not sentence.strip():
+            continue
+        
+        sentence_lower = sentence.lower()
+        
+        # Count ALL word matches - no stop word filtering
+        word_matches = sum(1 for word in query_words if word in sentence_lower)
+        
+        if word_matches > 0:
+            # Calculate score
+            score = (word_matches / len(query_words)) * 100
+            
+            # Find position
+            pos = text.find(sentence.strip())
+            if pos == -1:
+                pos = i * 100  # Estimate
+            
+            # Create match
+            match = {
+                'position': pos,
+                'matched_text': sentence.strip(),
+                'context': get_context_simple(sentences, i),
+                'score': score,
+                'match_type': 'smart',
+                'page_number': max(1, pos // 2000 + 1),
+                'word_matches': word_matches,
+                'total_words': len(query_words),
+                'percentage_through': (pos / len(text)) * 100 if text else 0
+            }
+            
+            matches.append(match)
+    
+    return matches
+
+def fuzzy_search_simple(text: str, search_text: str, query: str, search_query: str) -> List[Dict]:
+    """Fuzzy search WITHOUT stop word filtering"""
+    
+    matches = []
+    words = text.split()
+    
+    # Split query words - KEEP ALL WORDS
+    query_words = [w.strip() for w in search_query.split() if w.strip()]
+    
+    for query_word in query_words:
+        if len(query_word) < 2:  # Only skip very short words (1 character)
+            continue
+        
+        for i, word in enumerate(words):
+            word_lower = word.lower()
+            
+            # Simple similarity check
+            if query_word in word_lower or word_lower in query_word:
+                similarity = len(set(query_word) & set(word_lower)) / len(set(query_word) | set(word_lower))
+                
+                if similarity > 0.5:
+                    # Find position
+                    pos = len(' '.join(words[:i]))
+                    if i > 0:
+                        pos += 1
+                    
+                    # Extract context
+                    context_start = max(0, i - 10)
+                    context_end = min(len(words), i + 10)
+                    context = ' '.join(words[context_start:context_end])
+                    
+                    match = {
+                        'position': pos,
+                        'matched_text': word,
+                        'context': context,
+                        'score': similarity * 100,
+                        'match_type': 'fuzzy',
+                        'page_number': max(1, pos // 2000 + 1),
+                        'similarity': similarity,
+                        'percentage_through': (pos / len(text)) * 100 if text else 0
+                    }
+                    
+                    matches.append(match)
+    
+    # Remove duplicates and sort
+    unique_matches = []
+    seen_positions = set()
+    
+    for match in sorted(matches, key=lambda x: x['score'], reverse=True):
+        pos = match['position']
+        if pos not in seen_positions:
+            unique_matches.append(match)
+            seen_positions.add(pos)
+    
+    return unique_matches
+
+def find_similar_content(documents: List[Dict], target_sentence: str, search_type: str, 
+                        threshold: float, max_matches: int) -> List[Dict]:
+    """Find similar content WITHOUT stop word filtering"""
+    
+    matches = []
+    
+    # Split target sentence - KEEP ALL WORDS
+    target_words = set(w.lower().strip() for w in target_sentence.split() if w.strip())
+    
+    for doc in documents:
+        text = doc.get('text', '')
+        if not text:
+            continue
+        
+        sentences = re.split(r'[.!?]+', text)
+        
+        for i, sentence in enumerate(sentences):
+            if not sentence.strip() or len(sentence.strip()) < 20:
+                continue
+            
+            # Split sentence words - KEEP ALL WORDS
+            sentence_words = set(w.lower().strip() for w in sentence.split() if w.strip())
+            
+            # Calculate similarity using ALL words
+            intersection = len(target_words & sentence_words)
+            union = len(target_words | sentence_words)
+            similarity = intersection / union if union > 0 else 0
+            
+            if similarity >= threshold:
+                
+                # Filter by type if specified
+                if search_type == "Recommendations":
+                    if not any(word in sentence.lower() for word in ['recommend', 'suggest', 'advise']):
+                        continue
+                elif search_type == "Responses":
+                    if not any(word in sentence.lower() for word in ['accept', 'reject', 'agree', 'implement']):
+                        continue
+                
+                # Get context
+                context = get_context_simple(sentences, i, 2)
+                
+                match = {
+                    'sentence': sentence.strip(),
+                    'context': context,
+                    'similarity_score': similarity,
+                    'document': doc,
+                    'position': text.find(sentence),
+                    'page_number': max(1, text.find(sentence) // 2000 + 1) if sentence in text else 1,
+                    'content_type': classify_content_type(sentence),
+                    'matched_patterns': []
+                }
+                
+                matches.append(match)
+    
+    # Sort by similarity and limit
+    matches.sort(key=lambda x: x['similarity_score'], reverse=True)
+    return matches[:max_matches]
 # =============================================================================
 # COMPATIBILITY FUNCTIONS
 # =============================================================================
