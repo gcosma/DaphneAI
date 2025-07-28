@@ -253,47 +253,28 @@ def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summ
         page_num = rec.get('page_number', 1)
         st.info(f"📄 **Document:** {doc_name} | **Page:** {page_num}")
         
-        # Display the FULL recommendation sentence
+        # Display the FULL recommendation sentence - FIXED FORMATTING
         full_sentence = rec.get('sentence', 'No sentence available')
+        clean_sentence = clean_html_artifacts(full_sentence)
         
-        # Beautiful highlighted display of the full content
-        st.markdown(f"""
-        <div style="
-            background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
-            border-left: 4px solid #f39c12;
-            padding: 20px;
-            border-radius: 8px;
-            margin: 10px 0;
-            font-size: 16px;
-            line-height: 1.6;
-        ">
-            <strong>📝 Full Recommendation:</strong><br><br>
-            {full_sentence}
-        </div>
-        """, unsafe_allow_html=True)
+        # Use clean Streamlit formatting instead of HTML
+        st.markdown("**📝 Full Recommendation:**")
+        with st.container():
+            st.markdown(f"> {clean_sentence}")
         
-        # Show FULL context as beautiful paragraphs
+        # Add some spacing
+        st.markdown("")
+        
+        # Show FULL context as beautiful paragraphs - FIXED FORMATTING
         full_context = rec.get('context', 'No context available')
         if full_context and full_context != full_sentence:
             st.markdown("#### 📖 Complete Context")
             
-            # Format context as beautiful paragraphs
-            formatted_context = format_as_beautiful_paragraphs(full_context)
+            # Format context without HTML bleeding
+            clean_context = clean_html_artifacts(full_context)
+            formatted_context = format_text_as_clean_paragraphs(clean_context)
             
-            st.markdown(f"""
-            <div style="
-                background: #f8f9fa;
-                border: 1px solid #dee2e6;
-                padding: 20px;
-                border-radius: 8px;
-                margin: 10px 0;
-                font-size: 15px;
-                line-height: 1.7;
-                color: #495057;
-            ">
-                {formatted_context}
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(formatted_context)
         
         # Responses section with full beautiful content
         if responses:
@@ -320,40 +301,28 @@ def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summ
                 resp_doc_name = resp.get('document', {}).get('filename', 'Unknown Document')
                 resp_page_num = resp.get('page_number', 1)
                 
-                # Display FULL response content beautifully
+                # Display FULL response content beautifully - FIXED FORMATTING
                 full_resp_sentence = resp.get('sentence', 'No sentence available')
                 full_resp_context = resp.get('context', 'No context available')
                 
-                st.markdown(f"""
-                <div style="
-                    background: {bg_gradient};
-                    border-left: 4px solid {border_color};
-                    padding: 20px;
-                    border-radius: 8px;
-                    margin: 15px 0;
-                ">
-                    <h5 style="margin: 0 0 10px 0; color: #333;">
-                        📄 Response {j} - {confidence_text} ({similarity:.2f})
-                    </h5>
-                    <p style="margin: 5px 0; font-weight: 500; color: #666;">
-                        <strong>Document:</strong> {resp_doc_name} | <strong>Page:</strong> {resp_page_num}
-                    </p>
+                # Clean the text to remove HTML artifacts
+                clean_resp_sentence = clean_html_artifacts(full_resp_sentence)
+                clean_resp_context = clean_html_artifacts(full_resp_context)
+                
+                # Use Streamlit components instead of raw HTML to avoid bleeding
+                st.markdown(f"**📄 Response {j} - {confidence_text} ({similarity:.2f})**")
+                st.info(f"📄 **Document:** {resp_doc_name} | **Page:** {resp_page_num}")
+                
+                # Response content in a clean container
+                with st.container():
+                    st.markdown("**📝 Full Response:**")
+                    st.markdown(f"> {clean_resp_sentence}")
                     
-                    <div style="margin: 15px 0;">
-                        <strong>📝 Full Response:</strong><br><br>
-                        <span style="font-size: 16px; line-height: 1.6;">{full_resp_sentence}</span>
-                    </div>
-                    
-                    {f'''
-                    <div style="margin: 15px 0;">
-                        <strong>📖 Complete Context:</strong><br><br>
-                        <span style="font-size: 15px; line-height: 1.7; color: #555;">
-                            {format_as_beautiful_paragraphs(full_resp_context)}
-                        </span>
-                    </div>
-                    ''' if full_resp_context and full_resp_context != full_resp_sentence else ''}
-                </div>
-                """, unsafe_allow_html=True)
+                    if clean_resp_context and clean_resp_context != clean_resp_sentence:
+                        st.markdown("**📖 Complete Context:**")
+                        # Format context without HTML
+                        formatted_context = format_text_as_clean_paragraphs(clean_resp_context)
+                        st.markdown(formatted_context)
                 
                 if j < len(responses):
                     st.markdown("---")
@@ -656,6 +625,68 @@ def show_alignment_feature_info_beautiful():
 # UTILITY FUNCTIONS
 # =============================================================================
 
+def clean_html_artifacts(text: str) -> str:
+    """Remove HTML artifacts and clean up text display"""
+    if not text:
+        return "No content available"
+    
+    # Remove HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+    
+    # Clean up common HTML entities
+    text = text.replace('&nbsp;', ' ')
+    text = text.replace('&amp;', '&')
+    text = text.replace('&lt;', '<')
+    text = text.replace('&gt;', '>')
+    text = text.replace('&quot;', '"')
+    
+    # Remove extra whitespace
+    text = ' '.join(text.split())
+    
+    return text.strip()
+
+def format_text_as_clean_paragraphs(text: str) -> str:
+    """Format text as clean paragraphs without HTML styling"""
+    
+    if not text:
+        return "*No content available*"
+    
+    # Clean the text first
+    clean_text = clean_html_artifacts(text)
+    
+    # Split into sentences
+    sentences = re.split(r'(?<=[.!?])\s+', clean_text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    
+    if not sentences:
+        return clean_text
+    
+    # Group into paragraphs (3-4 sentences each)
+    paragraphs = []
+    current_paragraph = []
+    
+    for sentence in sentences:
+        current_paragraph.append(sentence)
+        
+        # Break on natural indicators or when we have enough sentences
+        if (len(current_paragraph) >= 3 and 
+            any(indicator in sentence.lower() for indicator in 
+                ['however', 'furthermore', 'additionally', 'therefore', 'moreover', 'meanwhile'])):
+            paragraphs.append(' '.join(current_paragraph))
+            current_paragraph = []
+        elif len(current_paragraph) >= 4:
+            paragraphs.append(' '.join(current_paragraph))
+            current_paragraph = []
+    
+    # Add remaining sentences
+    if current_paragraph:
+        paragraphs.append(' '.join(current_paragraph))
+    
+    # Format as clean markdown paragraphs
+    formatted_text = '\n\n'.join(f"> {paragraph}" for paragraph in paragraphs if paragraph.strip())
+    
+    return formatted_text if formatted_text else f"> {clean_text}"
+
 def get_meaningful_words(text: str) -> List[str]:
     """Extract meaningful words (non-stop words) from text"""
     words = re.findall(r'\b\w+\b', text.lower())
@@ -664,22 +695,22 @@ def get_meaningful_words(text: str) -> List[str]:
     return meaningful
 
 def format_as_beautiful_paragraphs(text: str) -> str:
-    """Format text as beautiful, properly spaced paragraphs"""
+    """Format text as beautiful, properly spaced paragraphs - CLEANED VERSION"""
     
     if not text:
         return "No content available"
     
-    # Clean up the text
-    text = text.strip()
+    # Clean HTML artifacts first
+    clean_text = clean_html_artifacts(text)
     
     # Split into sentences and group into paragraphs
-    sentences = re.split(r'(?<=[.!?])\s+', text)
+    sentences = re.split(r'(?<=[.!?])\s+', clean_text)
     
     # Remove empty sentences
     sentences = [s.strip() for s in sentences if s.strip()]
     
     if not sentences:
-        return text
+        return clean_text
     
     # Group sentences into paragraphs (every 3-4 sentences or at natural breaks)
     paragraphs = []
@@ -702,13 +733,13 @@ def format_as_beautiful_paragraphs(text: str) -> str:
     if current_paragraph:
         paragraphs.append(' '.join(current_paragraph))
     
-    # Format as HTML paragraphs with beautiful spacing
+    # Format as clean text paragraphs (no HTML to avoid bleeding)
     formatted_paragraphs = []
     for paragraph in paragraphs:
         if paragraph.strip():
-            formatted_paragraphs.append(f'<p style="margin-bottom: 15px; text-align: justify;">{paragraph.strip()}</p>')
+            formatted_paragraphs.append(paragraph.strip())
     
-    return ''.join(formatted_paragraphs) if formatted_paragraphs else text
+    return '\n\n'.join(formatted_paragraphs) if formatted_paragraphs else clean_text
 
 def highlight_meaningful_words_only(text: str, query: str) -> str:
     """Highlight only meaningful words from the query in the text"""
@@ -860,7 +891,7 @@ def export_results_csv_beautiful(results: List[Dict], query: str):
         available_cols = [col for col in preview_cols if col in df.columns]
         st.dataframe(df[available_cols].head())
 
-# Export all functions
+# Export all functions - UPDATED
 __all__ = [
     'display_search_results_beautiful',
     'display_single_search_result_beautiful', 
@@ -872,5 +903,7 @@ __all__ = [
     'highlight_meaningful_words_only',
     'get_meaningful_words',
     'copy_results_beautiful',
-    'export_results_csv_beautiful'
+    'export_results_csv_beautiful',
+    'clean_html_artifacts',
+    'format_text_as_clean_paragraphs'
 ]
