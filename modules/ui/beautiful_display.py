@@ -672,13 +672,21 @@ def highlight_recommendation_terms(text: str) -> str:
     
     for term in highlight_terms:
         if len(term) > 3:
-            pattern = re.compile(r'\b' + re.escape(term) + r'\b', re.IGNORECASE)
-            
-            def replace_func(match):
-                matched_word = match.group()
-                return f'**:yellow[{matched_word}]**'
-            
-            highlighted = pattern.sub(replace_func, highlighted)
+            try:
+                # Create pattern for word boundaries
+                pattern = re.compile(r'\b' + re.escape(term) + r'\w*', re.IGNORECASE)
+                
+                # Find all matches first
+                matches = pattern.findall(highlighted)
+                
+                # Replace each unique match
+                for match in set(matches):
+                    if match.lower().startswith(term.lower()):
+                        highlighted = highlighted.replace(match, f'**:yellow[{match}]**')
+                        
+            except re.error:
+                # Skip if regex fails
+                continue
     
     return highlighted
 
@@ -694,14 +702,22 @@ def highlight_meaningful_words_only(text: str, query: str) -> str:
     meaningful_words.sort(key=len, reverse=True)
     
     for word in meaningful_words:
-        if len(word) > 1:
-            pattern = re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE)
-            
-            def replace_func(match):
-                matched_word = match.group()
-                return f'**:yellow[{matched_word}]**'
-            
-            highlighted = pattern.sub(replace_func, highlighted)
+        if len(word) > 2:  # Only words longer than 2 characters
+            try:
+                # Create pattern for word boundaries
+                pattern = re.compile(r'\b' + re.escape(word) + r'\w*', re.IGNORECASE)
+                
+                # Find all matches first
+                matches = pattern.findall(highlighted)
+                
+                # Replace each unique match
+                for match in set(matches):
+                    if match.lower().startswith(word.lower()):
+                        highlighted = highlighted.replace(match, f'**:yellow[{match}]**')
+                        
+            except re.error:
+                # Skip if regex fails
+                continue
     
     return highlighted
 
