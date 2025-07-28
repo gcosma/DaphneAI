@@ -1,7 +1,7 @@
-# modules/ui/beautiful_display.py - COMPLETE WORKING VERSION
+# modules/ui/beautiful_display.py - COMPLETE REVISED VERSION WITH FIXED HIGHLIGHTING
 """
 Beautiful display functions for DaphneAI search results and alignments.
-SYNTAX VERIFIED - No errors, complete and working.
+FULLY REVISED - All highlighting syntax fixed for Streamlit compatibility.
 """
 
 import streamlit as st
@@ -24,6 +24,158 @@ STOP_WORDS = {
     'new', 'where', 'much', 'take', 'know', 'just', 'see', 'after', 
     'very', 'well', 'here', 'should', 'old', 'still'
 }
+
+# =============================================================================
+# FIXED UTILITY FUNCTIONS FOR HIGHLIGHTING
+# =============================================================================
+
+def get_meaningful_words(text: str) -> List[str]:
+    """Extract meaningful words (non-stop words) from text"""
+    words = re.findall(r'\b\w+\b', text.lower())
+    meaningful = [word for word in words 
+                 if word not in STOP_WORDS and len(word) > 1]
+    return meaningful
+
+def clean_html_artifacts(text: str) -> str:
+    """Remove HTML artifacts and clean up text"""
+    if not text:
+        return "No content available"
+    
+    # Remove HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+    
+    # Clean up HTML entities
+    text = text.replace('&nbsp;', ' ')
+    text = text.replace('&amp;', '&')
+    text = text.replace('&lt;', '<')
+    text = text.replace('&gt;', '>')
+    text = text.replace('&quot;', '"')
+    
+    # Remove extra whitespace
+    text = ' '.join(text.split())
+    
+    return text.strip()
+
+def format_text_as_clean_paragraphs(text: str) -> str:
+    """Format text as clean paragraphs"""
+    
+    if not text:
+        return "*No content available*"
+    
+    # Clean the text first
+    clean_text = clean_html_artifacts(text)
+    
+    # Split into sentences
+    sentences = re.split(r'(?<=[.!?])\s+', clean_text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    
+    if not sentences:
+        return clean_text
+    
+    # Group into paragraphs
+    paragraphs = []
+    current_paragraph = []
+    
+    for sentence in sentences:
+        current_paragraph.append(sentence)
+        
+        # Break on natural indicators or when we have enough sentences
+        if len(current_paragraph) >= 3:
+            if any(indicator in sentence.lower() for indicator in 
+                   ['however', 'furthermore', 'additionally', 'therefore', 'moreover', 'meanwhile']):
+                paragraphs.append(' '.join(current_paragraph))
+                current_paragraph = []
+        
+        if len(current_paragraph) >= 4:
+            paragraphs.append(' '.join(current_paragraph))
+            current_paragraph = []
+    
+    # Add remaining sentences
+    if current_paragraph:
+        paragraphs.append(' '.join(current_paragraph))
+    
+    # Format as clean paragraphs
+    formatted_text = '\n\n'.join(f"> {paragraph}" for paragraph in paragraphs if paragraph.strip())
+    
+    return formatted_text if formatted_text else f"> {clean_text}"
+
+# =============================================================================
+# FIXED HIGHLIGHTING FUNCTIONS
+# =============================================================================
+
+def highlight_recommendation_terms_fixed(text: str) -> str:
+    """FIXED: Highlight government terms with correct Streamlit syntax"""
+    
+    highlight_terms = [
+        'recommend', 'recommendation', 'recommendations', 'suggest', 'advise', 'propose',
+        'accept', 'reject', 'agree', 'disagree', 'implement', 'implementation', 
+        'consider', 'approved', 'declined', 'response', 'reply', 'answer',
+        'policy', 'framework', 'guideline', 'protocol', 'strategy',
+        'committee', 'department', 'ministry', 'government', 'authority',
+        'urgent', 'immediate', 'critical', 'priority', 'essential',
+        'budget', 'funding', 'financial', 'cost', 'expenditure',
+        'review', 'analysis', 'assessment', 'evaluation', 'inquiry'
+    ]
+    
+    highlighted = text
+    highlight_terms.sort(key=len, reverse=True)
+    
+    for term in highlight_terms:
+        if len(term) > 3:
+            try:
+                # Create pattern for word boundaries
+                pattern = re.compile(r'\b' + re.escape(term) + r'\w*', re.IGNORECASE)
+                
+                # Find all matches first
+                matches = pattern.findall(highlighted)
+                
+                # Replace each unique match - FIXED: Use correct Streamlit syntax
+                for match in set(matches):
+                    if match.lower().startswith(term.lower()):
+                        # FIXED: Use :yellow-background[] syntax instead of **:yellow[]**
+                        highlighted = highlighted.replace(match, f':yellow-background[{match}]')
+                        
+            except re.error:
+                # Skip invalid patterns
+                continue
+    
+    return highlighted
+
+def highlight_meaningful_words_fixed(text: str, query: str) -> str:
+    """FIXED: Highlight meaningful words from query with correct Streamlit syntax"""
+    
+    meaningful_words = get_meaningful_words(query)
+    
+    if not meaningful_words:
+        return text
+    
+    highlighted = text
+    meaningful_words.sort(key=len, reverse=True)
+    
+    for word in meaningful_words:
+        if len(word) > 2:  # Only words longer than 2 characters
+            try:
+                # Create pattern for word boundaries
+                pattern = re.compile(r'\b' + re.escape(word) + r'\w*', re.IGNORECASE)
+                
+                # Find all matches first
+                matches = pattern.findall(highlighted)
+                
+                # Replace each unique match - FIXED: Use correct Streamlit syntax
+                for match in set(matches):
+                    if match.lower().startswith(word.lower()):
+                        # FIXED: Use :yellow-background[] syntax instead of **:yellow[]**
+                        highlighted = highlighted.replace(match, f':yellow-background[{match}]')
+                        
+            except re.error:
+                # Skip invalid patterns
+                continue
+    
+    return highlighted
+
+# =============================================================================
+# MAIN DISPLAY FUNCTIONS
+# =============================================================================
 
 def display_search_results_beautiful(results: List[Dict], query: str, search_time: float, 
                                    show_context: bool, highlight_matches: bool):
@@ -104,7 +256,7 @@ def display_search_results_beautiful(results: List[Dict], query: str, search_tim
 
 def display_single_search_result_beautiful(result: Dict, index: int, query: str, 
                                          show_context: bool, highlight_matches: bool):
-    """Display a single search result"""
+    """Display a single search result with FIXED highlighting"""
     
     method = result.get('match_type', 'unknown')
     score = result.get('score', 0)
@@ -160,16 +312,17 @@ def display_single_search_result_beautiful(result: Dict, index: int, query: str,
             </div>
             """, unsafe_allow_html=True)
     
-    # Display context
+    # Display context with FIXED highlighting
     if show_context:
         full_context = result.get('context', '')
         if full_context:
             
             st.markdown("**📖 Complete Context:**")
             
-            # Apply highlighting if requested
+            # FIXED: Apply highlighting with correct syntax
             if highlight_matches:
-                highlighted_context = highlight_meaningful_words_only(full_context, query)
+                # Use the fixed highlighting function
+                highlighted_context = highlight_meaningful_words_fixed(full_context, query)
                 clean_content = clean_html_artifacts(highlighted_context)
                 formatted_content = format_text_as_clean_paragraphs(clean_content)
             else:
@@ -183,7 +336,7 @@ def display_single_search_result_beautiful(result: Dict, index: int, query: str,
             st.caption(f"💡 This content appears around page {page}, {percentage:.1f}% through the document")
 
 def display_alignment_results_beautiful(alignments: List[Dict], show_ai_summaries: bool):
-    """Display alignment results"""
+    """Display alignment results with FIXED highlighting"""
     
     if not alignments:
         st.warning("No recommendations found in the uploaded documents")
@@ -216,7 +369,7 @@ def display_alignment_results_beautiful(alignments: List[Dict], show_ai_summarie
         display_single_alignment_beautiful(alignment, i, show_ai_summaries)
 
 def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summaries: bool):
-    """Display a single alignment"""
+    """Display a single alignment with FIXED highlighting"""
     
     rec = alignment.get('recommendation', {})
     responses = alignment.get('responses', [])
@@ -238,32 +391,33 @@ def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summ
         page_num = rec.get('page_number', 1)
         st.info(f"📄 **Document:** {doc_name} | **Page:** {page_num}")
         
-        # Display recommendation
+        # Display recommendation with FIXED highlighting
         full_sentence = rec.get('sentence', 'No sentence available')
         clean_sentence = clean_html_artifacts(full_sentence)
         
         st.markdown("**📝 Full Recommendation:**")
         with st.container():
             if len(clean_sentence.split()) > 5:
-                highlighted_sentence = highlight_recommendation_terms(clean_sentence)
+                # Use FIXED highlighting function
+                highlighted_sentence = highlight_recommendation_terms_fixed(clean_sentence)
                 st.markdown(f"> {highlighted_sentence}")
             else:
                 st.markdown(f"> {clean_sentence}")
         
         st.markdown("")
         
-        # Show context
+        # Show context with FIXED highlighting
         full_context = rec.get('context', 'No context available')
         if full_context and full_context != full_sentence:
             st.markdown("#### 📖 Complete Context")
             
             clean_context = clean_html_artifacts(full_context)
-            highlighted_context = highlight_recommendation_terms(clean_context)
+            highlighted_context = highlight_recommendation_terms_fixed(clean_context)
             formatted_context = format_text_as_clean_paragraphs(highlighted_context)
             
             st.markdown(formatted_context)
         
-        # Responses section
+        # Responses section with FIXED highlighting
         if responses:
             st.markdown("#### ↩️ Related Responses")
             
@@ -282,7 +436,7 @@ def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summ
                 resp_doc_name = resp.get('document', {}).get('filename', 'Unknown Document')
                 resp_page_num = resp.get('page_number', 1)
                 
-                # Display response
+                # Display response with FIXED highlighting
                 full_resp_sentence = resp.get('sentence', 'No sentence available')
                 full_resp_context = resp.get('context', 'No context available')
                 
@@ -294,8 +448,10 @@ def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summ
                 
                 with st.container():
                     st.markdown("**📝 Full Response:**")
-                    if any(word.lower() in clean_resp_sentence.lower() for word in get_meaningful_words(str(rec.get('sentence', '')))):
-                        highlighted_response = highlight_meaningful_words_only(clean_resp_sentence, str(rec.get('sentence', '')))
+                    # Check if response relates to recommendation terms
+                    rec_sentence = str(rec.get('sentence', ''))
+                    if any(word.lower() in clean_resp_sentence.lower() for word in get_meaningful_words(rec_sentence)):
+                        highlighted_response = highlight_meaningful_words_fixed(clean_resp_sentence, rec_sentence)
                         st.markdown(f"> {highlighted_response}")
                     else:
                         st.markdown(f"> {clean_resp_sentence}")
@@ -324,7 +480,7 @@ def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summ
 
 def display_manual_search_results_beautiful(matches: List[Dict], target_sentence: str, 
                                           search_time: float, show_scores: bool, search_mode: str):
-    """Display manual search results"""
+    """Display manual search results with FIXED highlighting"""
     
     if not matches:
         st.markdown(f"""
@@ -442,23 +598,23 @@ def display_manual_search_results_beautiful(matches: List[Dict], target_sentence
             
             st.info(f"📄 **File:** {doc_name} | **Page:** {page_num} | **Type:** {content_type}")
             
-            # Display found sentence
+            # Display found sentence with FIXED highlighting
             full_sentence = match.get('sentence', 'No sentence available')
             st.markdown("#### 📄 Complete Found Content")
             
             if show_scores:  
-                highlighted_sentence = highlight_meaningful_words_only(full_sentence, target_sentence)
+                highlighted_sentence = highlight_meaningful_words_fixed(full_sentence, target_sentence)
                 st.markdown(highlighted_sentence)
             else:
                 st.markdown(f"> {full_sentence}")
             
-            # Display context
+            # Display context with FIXED highlighting
             full_context = match.get('context', '')
             if full_context and full_context != full_sentence:
                 st.markdown("#### 📖 Complete Context")
                 
                 if show_scores:
-                    highlighted_context = highlight_meaningful_words_only(full_context, target_sentence)
+                    highlighted_context = highlight_meaningful_words_fixed(full_context, target_sentence)
                     clean_context = clean_html_artifacts(highlighted_context)
                     formatted_context = format_text_as_clean_paragraphs(clean_context)
                 else:
@@ -533,193 +689,8 @@ def show_alignment_feature_info_beautiful():
         """, unsafe_allow_html=True)
 
 # =============================================================================
-# UTILITY FUNCTIONS
+# EXPORT AND UTILITY FUNCTIONS
 # =============================================================================
-
-def get_meaningful_words(text: str) -> List[str]:
-    """Extract meaningful words (non-stop words) from text"""
-    words = re.findall(r'\b\w+\b', text.lower())
-    meaningful = [word for word in words 
-                 if word not in STOP_WORDS and len(word) > 1]
-    return meaningful
-
-def clean_html_artifacts(text: str) -> str:
-    """Remove HTML artifacts and clean up text"""
-    if not text:
-        return "No content available"
-    
-    # Remove HTML tags
-    text = re.sub(r'<[^>]+>', '', text)
-    
-    # Clean up HTML entities
-    text = text.replace('&nbsp;', ' ')
-    text = text.replace('&amp;', '&')
-    text = text.replace('&lt;', '<')
-    text = text.replace('&gt;', '>')
-    text = text.replace('&quot;', '"')
-    
-    # Remove extra whitespace
-    text = ' '.join(text.split())
-    
-    return text.strip()
-
-def format_text_as_clean_paragraphs(text: str) -> str:
-    """Format text as clean paragraphs"""
-    
-    if not text:
-        return "*No content available*"
-    
-    # Clean the text first
-    clean_text = clean_html_artifacts(text)
-    
-    # Split into sentences
-    sentences = re.split(r'(?<=[.!?])\s+', clean_text)
-    sentences = [s.strip() for s in sentences if s.strip()]
-    
-    if not sentences:
-        return clean_text
-    
-    # Group into paragraphs
-    paragraphs = []
-    current_paragraph = []
-    
-    for sentence in sentences:
-        current_paragraph.append(sentence)
-        
-        # Break on natural indicators or when we have enough sentences
-        if len(current_paragraph) >= 3:
-            if any(indicator in sentence.lower() for indicator in 
-                   ['however', 'furthermore', 'additionally', 'therefore', 'moreover', 'meanwhile']):
-                paragraphs.append(' '.join(current_paragraph))
-                current_paragraph = []
-        
-        if len(current_paragraph) >= 4:
-            paragraphs.append(' '.join(current_paragraph))
-            current_paragraph = []
-    
-    # Add remaining sentences
-    if current_paragraph:
-        paragraphs.append(' '.join(current_paragraph))
-    
-    # Format as clean paragraphs
-    formatted_text = '\n\n'.join(f"> {paragraph}" for paragraph in paragraphs if paragraph.strip())
-    
-    return formatted_text if formatted_text else f"> {clean_text}"
-
-def format_as_beautiful_paragraphs(text: str) -> str:
-    """Format text as beautiful, properly spaced paragraphs"""
-    
-    if not text:
-        return "No content available"
-    
-    # Clean up the text
-    text = text.strip()
-    
-    # Split into sentences and group into paragraphs
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    
-    # Remove empty sentences
-    sentences = [s.strip() for s in sentences if s.strip()]
-    
-    if not sentences:
-        return text
-    
-    # Group sentences into paragraphs (every 3-4 sentences or at natural breaks)
-    paragraphs = []
-    current_paragraph = []
-    
-    for sentence in sentences:
-        current_paragraph.append(sentence)
-        
-        # Natural paragraph breaks
-        if (len(current_paragraph) >= 3 and 
-            any(indicator in sentence.lower() for indicator in 
-                ['however', 'furthermore', 'additionally', 'in conclusion', 'therefore', 'moreover'])):
-            paragraphs.append(' '.join(current_paragraph))
-            current_paragraph = []
-        elif len(current_paragraph) >= 4:  # Max 4 sentences per paragraph
-            paragraphs.append(' '.join(current_paragraph))
-            current_paragraph = []
-    
-    # Add remaining sentences
-    if current_paragraph:
-        paragraphs.append(' '.join(current_paragraph))
-    
-    # Format as paragraphs with beautiful spacing
-    formatted_paragraphs = []
-    for paragraph in paragraphs:
-        if paragraph.strip():
-            formatted_paragraphs.append(f'> {paragraph.strip()}')
-    
-    return '\n\n'.join(formatted_paragraphs) if formatted_paragraphs else text
-
-def highlight_recommendation_terms(text: str) -> str:
-    """Highlight government terms"""
-    
-    highlight_terms = [
-        'recommend', 'recommendation', 'recommendations', 'suggest', 'advise', 'propose',
-        'accept', 'reject', 'agree', 'disagree', 'implement', 'implementation', 
-        'consider', 'approved', 'declined', 'response', 'reply', 'answer',
-        'policy', 'framework', 'guideline', 'protocol', 'strategy',
-        'committee', 'department', 'ministry', 'government', 'authority',
-        'urgent', 'immediate', 'critical', 'priority', 'essential',
-        'budget', 'funding', 'financial', 'cost', 'expenditure',
-        'review', 'analysis', 'assessment', 'evaluation', 'inquiry'
-    ]
-    
-    highlighted = text
-    highlight_terms.sort(key=len, reverse=True)
-    
-    for term in highlight_terms:
-        if len(term) > 3:
-            try:
-                # Create pattern for word boundaries
-                pattern = re.compile(r'\b' + re.escape(term) + r'\w*', re.IGNORECASE)
-                
-                # Find all matches first
-                matches = pattern.findall(highlighted)
-                
-                # Replace each unique match
-                for match in set(matches):
-                    if match.lower().startswith(term.lower()):
-                        highlighted = highlighted.replace(match, f'**:yellow[{match}]**')
-                        
-            except re.error:
-                # Skip if regex fails
-                continue
-    
-    return highlighted
-
-def highlight_meaningful_words_only(text: str, query: str) -> str:
-    """Highlight meaningful words from query"""
-    
-    meaningful_words = get_meaningful_words(query)
-    
-    if not meaningful_words:
-        return text
-    
-    highlighted = text
-    meaningful_words.sort(key=len, reverse=True)
-    
-    for word in meaningful_words:
-        if len(word) > 2:  # Only words longer than 2 characters
-            try:
-                # Create pattern for word boundaries
-                pattern = re.compile(r'\b' + re.escape(word) + r'\w*', re.IGNORECASE)
-                
-                # Find all matches first
-                matches = pattern.findall(highlighted)
-                
-                # Replace each unique match
-                for match in set(matches):
-                    if match.lower().startswith(word.lower()):
-                        highlighted = highlighted.replace(match, f'**:yellow[{match}]**')
-                        
-            except re.error:
-                # Skip if regex fails
-                continue
-    
-    return highlighted
 
 def copy_results_beautiful(results: List[Dict], query: str):
     """Copy results with formatting"""
@@ -823,6 +794,245 @@ def export_results_csv_beautiful(results: List[Dict], query: str):
     with st.expander("📊 CSV Preview"):
         st.dataframe(df[['Match_Number', 'Document', 'Score', 'Page_Number', 'Word_Count']].head())
 
+def format_as_beautiful_paragraphs(text: str) -> str:
+    """Format text as beautiful, properly spaced paragraphs"""
+    
+    if not text:
+        return "No content available"
+    
+    # Clean up the text
+    text = text.strip()
+    
+    # Split into sentences and group into paragraphs
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    
+    # Remove empty sentences
+    sentences = [s.strip() for s in sentences if s.strip()]
+    
+    if not sentences:
+        return text
+    
+    # Group sentences into paragraphs (every 3-4 sentences or at natural breaks)
+    paragraphs = []
+    current_paragraph = []
+    
+    for sentence in sentences:
+        current_paragraph.append(sentence)
+        
+        # Natural paragraph breaks
+        if (len(current_paragraph) >= 3 and 
+            any(indicator in sentence.lower() for indicator in 
+                ['however', 'furthermore', 'additionally', 'in conclusion', 'therefore', 'moreover'])):
+            paragraphs.append(' '.join(current_paragraph))
+            current_paragraph = []
+        elif len(current_paragraph) >= 4:  # Max 4 sentences per paragraph
+            paragraphs.append(' '.join(current_paragraph))
+            current_paragraph = []
+    
+    # Add remaining sentences
+    if current_paragraph:
+        paragraphs.append(' '.join(current_paragraph))
+    
+    # Format as paragraphs with beautiful spacing
+    formatted_paragraphs = []
+    for paragraph in paragraphs:
+        if paragraph.strip():
+            formatted_paragraphs.append(f'> {paragraph.strip()}')
+    
+    return '\n\n'.join(formatted_paragraphs) if formatted_paragraphs else text
+
+# =============================================================================
+# TESTING AND DEBUGGING FUNCTIONS
+# =============================================================================
+
+def test_highlighting_syntax():
+    """Test highlighting to ensure it works correctly"""
+    
+    st.markdown("### 🧪 Highlighting Test")
+    
+    test_text = "The committee recommends implementing new policies for government agencies and departments."
+    test_query = "recommend policy government"
+    
+    st.markdown("**Original text:**")
+    st.code(test_text)
+    
+    st.markdown("**Query:**")
+    st.code(test_query)
+    
+    st.markdown("**Meaningful words extracted:**")
+    meaningful_words = get_meaningful_words(test_query)
+    st.write(meaningful_words)
+    
+    st.markdown("**With Streamlit highlighting:**")
+    highlighted = highlight_meaningful_words_fixed(test_text, test_query)
+    st.markdown(highlighted)
+    
+    st.markdown("**With government terms highlighting:**")
+    gov_highlighted = highlight_recommendation_terms_fixed(test_text)
+    st.markdown(gov_highlighted)
+    
+    # Test different color options
+    st.markdown("### 🎨 Color Options Test")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**Yellow Background:**")
+        st.markdown(":yellow-background[This text has yellow background]")
+    
+    with col2:
+        st.markdown("**Blue Background:**")
+        st.markdown(":blue-background[This text has blue background]")
+    
+    with col3:
+        st.markdown("**Green Background:**")
+        st.markdown(":green-background[This text has green background]")
+
+def debug_highlighting_issues(text: str, query: str):
+    """Debug highlighting issues for troubleshooting"""
+    
+    st.markdown("### 🔧 Highlighting Debug Info")
+    
+    # Show step by step process
+    st.markdown("**1. Original Text:**")
+    st.code(text)
+    
+    st.markdown("**2. Query:**")
+    st.code(query)
+    
+    st.markdown("**3. Meaningful Words:**")
+    meaningful_words = get_meaningful_words(query)
+    st.write(meaningful_words)
+    
+    st.markdown("**4. Pattern Matching:**")
+    for word in meaningful_words[:3]:  # Show first 3 words
+        pattern = r'\b' + re.escape(word) + r'\w*'
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        st.write(f"Word '{word}' pattern '{pattern}' found: {matches}")
+    
+    st.markdown("**5. Final Highlighted Result:**")
+    highlighted = highlight_meaningful_words_fixed(text, query)
+    st.markdown(highlighted)
+    
+    st.markdown("**6. Character-by-character comparison:**")
+    if highlighted != text:
+        st.success("✅ Highlighting was applied!")
+        st.code(f"Original:    {text}")
+        st.code(f"Highlighted: {highlighted}")
+    else:
+        st.warning("⚠️ No highlighting was applied - no matches found")
+
+# =============================================================================
+# ALTERNATIVE HIGHLIGHTING METHODS (FALLBACK OPTIONS)
+# =============================================================================
+
+def highlight_with_html_fallback(text: str, query: str) -> str:
+    """Alternative highlighting using HTML for fallback if Streamlit colors don't work"""
+    
+    meaningful_words = get_meaningful_words(query)
+    
+    if not meaningful_words:
+        return text
+    
+    highlighted = text
+    meaningful_words.sort(key=len, reverse=True)
+    
+    for word in meaningful_words:
+        if len(word) > 2:
+            try:
+                pattern = re.compile(r'\b' + re.escape(word) + r'\w*', re.IGNORECASE)
+                matches = pattern.findall(highlighted)
+                
+                for match in set(matches):
+                    if match.lower().startswith(word.lower()):
+                        # HTML highlighting with inline styles
+                        highlighted = highlighted.replace(
+                            match, 
+                            f'<mark style="background-color: #FFEB3B; padding: 2px; border-radius: 2px; font-weight: bold;">{match}</mark>'
+                        )
+                        
+            except re.error:
+                continue
+    
+    return highlighted
+
+def highlight_with_bold_fallback(text: str, query: str) -> str:
+    """Simple bold highlighting as last resort fallback"""
+    
+    meaningful_words = get_meaningful_words(query)
+    
+    if not meaningful_words:
+        return text
+    
+    highlighted = text
+    meaningful_words.sort(key=len, reverse=True)
+    
+    for word in meaningful_words:
+        if len(word) > 2:
+            try:
+                pattern = re.compile(r'\b' + re.escape(word) + r'\w*', re.IGNORECASE)
+                matches = pattern.findall(highlighted)
+                
+                for match in set(matches):
+                    if match.lower().startswith(word.lower()):
+                        # Simple bold highlighting
+                        highlighted = highlighted.replace(match, f'**{match}**')
+                        
+            except re.error:
+                continue
+    
+    return highlighted
+
+def smart_highlight_with_fallbacks(text: str, query: str) -> tuple[str, bool]:
+    """
+    Smart highlighting that tries multiple methods and returns success status
+    Returns: (highlighted_text, uses_html)
+    """
+    
+    # Try Streamlit color highlighting first
+    streamlit_highlighted = highlight_meaningful_words_fixed(text, query)
+    
+    # Check if highlighting worked (text changed)
+    if streamlit_highlighted != text:
+        return streamlit_highlighted, False
+    
+    # If no highlighting occurred, try HTML fallback
+    html_highlighted = highlight_with_html_fallback(text, query)
+    
+    if html_highlighted != text:
+        return html_highlighted, True
+    
+    # Last resort: bold highlighting
+    bold_highlighted = highlight_with_bold_fallback(text, query)
+    return bold_highlighted, False
+
+# =============================================================================
+# ENHANCED DISPLAY FUNCTIONS WITH SMART HIGHLIGHTING
+# =============================================================================
+
+def display_context_with_smart_highlighting(context: str, query: str, highlight_matches: bool):
+    """Display context with smart highlighting that uses fallbacks"""
+    
+    if not context:
+        st.markdown("*No context available*")
+        return
+    
+    if highlight_matches:
+        # Use smart highlighting with fallbacks
+        highlighted_context, uses_html = smart_highlight_with_fallbacks(context, query)
+        clean_content = clean_html_artifacts(highlighted_context)
+        formatted_content = format_text_as_clean_paragraphs(clean_content)
+        
+        # Display with appropriate method
+        if uses_html:
+            st.markdown(formatted_content, unsafe_allow_html=True)
+        else:
+            st.markdown(formatted_content)
+    else:
+        clean_content = clean_html_artifacts(context)
+        formatted_content = format_text_as_clean_paragraphs(clean_content)
+        st.markdown(formatted_content)
+
 # Export all functions
 __all__ = [
     'display_search_results_beautiful',
@@ -832,11 +1042,15 @@ __all__ = [
     'display_manual_search_results_beautiful',
     'show_alignment_feature_info_beautiful',
     'format_as_beautiful_paragraphs',
-    'highlight_recommendation_terms',
-    'highlight_meaningful_words_only',
+    'highlight_recommendation_terms_fixed',
+    'highlight_meaningful_words_fixed',
     'copy_results_beautiful',
     'export_results_csv_beautiful',
     'get_meaningful_words',
     'clean_html_artifacts',
-    'format_text_as_clean_paragraphs'
+    'format_text_as_clean_paragraphs',
+    'test_highlighting_syntax',
+    'debug_highlighting_issues',
+    'smart_highlight_with_fallbacks',
+    'display_context_with_smart_highlighting'
 ]
