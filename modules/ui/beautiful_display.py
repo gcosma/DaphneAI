@@ -165,32 +165,19 @@ def display_single_search_result_beautiful(result: Dict, index: int, query: str,
         full_context = result.get('context', '')
         if full_context:
             
-            # Apply highlighting if requested (only meaningful words)
+            # Apply highlighting if requested (only meaningful words) - FIXED
             if highlight_matches:
                 display_content = highlight_meaningful_words_only(full_context, query)
             else:
                 display_content = full_context
             
-            # Format as beautiful paragraphs
-            formatted_content = format_as_beautiful_paragraphs(display_content)
+            # Clean and format the content
+            clean_content = clean_html_artifacts(display_content)
+            formatted_content = format_text_as_clean_paragraphs(clean_content)
             
-            st.markdown(f"""
-            <div style="
-                background: white;
-                border: 2px solid #e9ecef;
-                padding: 25px;
-                border-radius: 10px;
-                margin: 15px 0;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-            ">
-                <h5 style="margin: 0 0 15px 0; color: #495057; border-bottom: 2px solid #e9ecef; padding-bottom: 8px;">
-                    📖 Complete Context
-                </h5>
-                <div style="font-size: 16px; line-height: 1.8; color: #333;">
-                    {formatted_content}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            # Display with highlighting preserved
+            st.markdown("**📖 Complete Context:**")
+            st.markdown(formatted_content)
             
             # Additional match details
             percentage = result.get('percentage_through', 0)
@@ -253,26 +240,33 @@ def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summ
         page_num = rec.get('page_number', 1)
         st.info(f"📄 **Document:** {doc_name} | **Page:** {page_num}")
         
-        # Display the FULL recommendation sentence - FIXED FORMATTING
+        # Display the FULL recommendation sentence - WITH HIGHLIGHTING
         full_sentence = rec.get('sentence', 'No sentence available')
         clean_sentence = clean_html_artifacts(full_sentence)
         
-        # Use clean Streamlit formatting instead of HTML
+        # Use clean Streamlit formatting with highlighting for meaningful words
         st.markdown("**📝 Full Recommendation:**")
         with st.container():
-            st.markdown(f"> {clean_sentence}")
+            # Check if this looks like a real recommendation (has meaningful content)
+            if len(clean_sentence.split()) > 5:  # More than just metadata
+                # Try to highlight meaningful terms commonly found in recommendations
+                highlighted_sentence = highlight_recommendation_terms(clean_sentence)
+                st.markdown(f"> {highlighted_sentence}")
+            else:
+                st.markdown(f"> {clean_sentence}")
         
         # Add some spacing
         st.markdown("")
         
-        # Show FULL context as beautiful paragraphs - FIXED FORMATTING
+        # Show FULL context as beautiful paragraphs - WITH HIGHLIGHTING
         full_context = rec.get('context', 'No context available')
         if full_context and full_context != full_sentence:
             st.markdown("#### 📖 Complete Context")
             
-            # Format context without HTML bleeding
+            # Format context with highlighting for key terms
             clean_context = clean_html_artifacts(full_context)
-            formatted_context = format_text_as_clean_paragraphs(clean_context)
+            highlighted_context = highlight_recommendation_terms(clean_context)
+            formatted_context = format_text_as_clean_paragraphs(highlighted_context)
             
             st.markdown(formatted_context)
         
@@ -313,14 +307,19 @@ def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summ
                 st.markdown(f"**📄 Response {j} - {confidence_text} ({similarity:.2f})**")
                 st.info(f"📄 **Document:** {resp_doc_name} | **Page:** {resp_page_num}")
                 
-                # Response content in a clean container
+                # Response content in a clean container - WITH HIGHLIGHTING
                 with st.container():
                     st.markdown("**📝 Full Response:**")
-                    st.markdown(f"> {clean_resp_sentence}")
+                    # Apply highlighting to response if it contains meaningful words
+                    if any(word.lower() in clean_resp_sentence.lower() for word in get_meaningful_words(str(rec.get('sentence', '')))):
+                        highlighted_response = highlight_meaningful_words_only(clean_resp_sentence, str(rec.get('sentence', '')))
+                        st.markdown(f"> {highlighted_response}")
+                    else:
+                        st.markdown(f"> {clean_resp_sentence}")
                     
                     if clean_resp_context and clean_resp_context != clean_resp_sentence:
                         st.markdown("**📖 Complete Context:**")
-                        # Format context without HTML
+                        # Format context without HTML but with potential highlighting
                         formatted_context = format_text_as_clean_paragraphs(clean_resp_context)
                         st.markdown(formatted_context)
                 
@@ -741,8 +740,34 @@ def format_as_beautiful_paragraphs(text: str) -> str:
     
     return '\n\n'.join(formatted_paragraphs) if formatted_paragraphs else clean_text
 
-def highlight_meaningful_words_only(text: str, query: str) -> str:
-    """Highlight only meaningful words from the query in the text"""
+def highlight_recommendation_terms(text: str) -> str:
+    """Highlight common recommendation and response terms"""
+    
+    # Common terms found in government recommendations and responses
+    highlight_terms = [
+        'recommend', 'recommendation', 'recommendations', 'suggest', 'advise', 'propose',
+        'accept', 'reject', 'agree', 'disagree', 'implement', 'implementation', 
+        'consider', 'approved', 'declined', 'response', 'reply', 'answer',
+        'policy', 'framework', 'guideline', 'protocol', 'strategy',
+        'committee', 'department', 'ministry', 'government', 'authority',
+        'urgent', 'immediate', 'critical', 'priority', 'essential',
+        'budget', 'funding', 'financial', 'cost', 'expenditure',
+        'review', 'analysis', 'assessment', 'evaluation', 'inquiry'
+    ]
+    
+    highlighted = text
+    
+    # Sort by length (longest first) to avoid partial highlighting conflicts
+    highlight_terms.sort(key=len, reverse=True)
+    
+    for term in highlight_terms:
+        if len(term) > 3:  # Only highlight meaningful terms
+            # Case-insensitive highlighting using markdown
+            pattern = re.compile(r'\b' + re.escape(term) + r'\b', re.IGNORECASE)
+            highlighted = pattern.sub(f'**:yellow[{term}]**', highlighted)
+    
+    return highlighted
+    """Highlight only meaningful words from the query in the text using Streamlit markdown"""
     
     # Get meaningful words from query (filter out stop words)
     meaningful_words = get_meaningful_words(query)
@@ -757,14 +782,30 @@ def highlight_meaningful_words_only(text: str, query: str) -> str:
     
     for word in meaningful_words:
         if len(word) > 1:  # Skip very short words
-            # Case-insensitive highlighting with beautiful styling
-            pattern = re.compile(re.escape(word), re.IGNORECASE)
-            highlighted = pattern.sub(
-                f'<span style="background: linear-gradient(135deg, #ffeb3b 0%, #ffc107 100%); '
-                f'padding: 3px 6px; border-radius: 4px; font-weight: bold; '
-                f'box-shadow: 0 1px 3px rgba(0,0,0,0.1);">{word}</span>', 
-                highlighted
-            )
+            # Case-insensitive highlighting using markdown bold + color
+            pattern = re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE)
+            highlighted = pattern.sub(f'**:yellow[{word}]**', highlighted)
+    
+    return highlighted
+
+def highlight_meaningful_words_only(text: str, query: str) -> str:
+    """Alternative highlighting using Streamlit color syntax"""
+    
+    meaningful_words = get_meaningful_words(query)
+    
+    if not meaningful_words:
+        return text
+    
+    highlighted = text
+    
+    # Sort by length (longest first)
+    meaningful_words.sort(key=len, reverse=True)
+    
+    for word in meaningful_words:
+        if len(word) > 1:
+            # Use Streamlit's color syntax for highlighting
+            pattern = re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE)
+            highlighted = pattern.sub(f':yellow-background[**{word}**]', highlighted)
     
     return highlighted
 
