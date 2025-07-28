@@ -1,9 +1,7 @@
 # modules/ui/beautiful_display.py - COMPLETE WITH FIXED HIGHLIGHTING
 """
 Beautiful display functions for DaphneAI search results and alignments.
-This file contains all the formatting and presentation logic with complete paragraphs.
-Properly handles stop word filtering for clean, meaningful results.
-FIXED: Restored highlighting with clean Streamlit-native formatting.
+COMPLETE VERSION with properly working highlighting that shows actual words.
 """
 
 import streamlit as st
@@ -281,7 +279,222 @@ def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summ
                 # Color code by similarity
                 if similarity > 0.7:
                     confidence_text = "High Confidence"
-                elif similarity > 0.5:
+                elif len(current_paragraph) >= 4:  # Max 4 sentences per paragraph
+            paragraphs.append(' '.join(current_paragraph))
+            current_paragraph = []
+    
+    # Add remaining sentences
+    if current_paragraph:
+        paragraphs.append(' '.join(current_paragraph))
+    
+    # Format as clean text paragraphs (no HTML to avoid bleeding)
+    formatted_paragraphs = []
+    for paragraph in paragraphs:
+        if paragraph.strip():
+            formatted_paragraphs.append(paragraph.strip())
+    
+    return '\n\n'.join(formatted_paragraphs) if formatted_paragraphs else clean_text
+
+def highlight_recommendation_terms(text: str) -> str:
+    """Highlight common recommendation and response terms - FIXED VERSION"""
+    
+    # Common terms found in government recommendations and responses
+    highlight_terms = [
+        'recommend', 'recommendation', 'recommendations', 'suggest', 'advise', 'propose',
+        'accept', 'reject', 'agree', 'disagree', 'implement', 'implementation', 
+        'consider', 'approved', 'declined', 'response', 'reply', 'answer',
+        'policy', 'framework', 'guideline', 'protocol', 'strategy',
+        'committee', 'department', 'ministry', 'government', 'authority',
+        'urgent', 'immediate', 'critical', 'priority', 'essential',
+        'budget', 'funding', 'financial', 'cost', 'expenditure',
+        'review', 'analysis', 'assessment', 'evaluation', 'inquiry'
+    ]
+    
+    highlighted = text
+    
+    # Sort by length (longest first) to avoid partial highlighting conflicts
+    highlight_terms.sort(key=len, reverse=True)
+    
+    for term in highlight_terms:
+        if len(term) > 3:  # Only highlight meaningful terms
+            # Case-insensitive highlighting using markdown - FIXED
+            pattern = re.compile(r'\b' + re.escape(term) + r'\b', re.IGNORECASE)
+            
+            def replace_func(match):
+                matched_word = match.group()
+                return f'**:yellow[{matched_word}]**'
+            
+            highlighted = pattern.sub(replace_func, highlighted)
+    
+    return highlighted
+
+def highlight_meaningful_words_only(text: str, query: str) -> str:
+    """Highlight only meaningful words from the query in the text - FIXED VERSION"""
+    
+    # Get meaningful words from query (filter out stop words)
+    meaningful_words = get_meaningful_words(query)
+    
+    if not meaningful_words:
+        return text
+    
+    highlighted = text
+    
+    # Sort by length (longest first) to avoid partial highlighting conflicts
+    meaningful_words.sort(key=len, reverse=True)
+    
+    for word in meaningful_words:
+        if len(word) > 1:  # Skip very short words
+            # Case-insensitive highlighting using markdown bold + color - FIXED
+            pattern = re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE)
+            
+            def replace_func(match):
+                matched_word = match.group()
+                return f'**:yellow[{matched_word}]**'
+            
+            highlighted = pattern.sub(replace_func, highlighted)
+    
+    return highlighted
+
+def copy_results_beautiful(results: List[Dict], query: str):
+    """Copy results with beautiful formatting and filtering info"""
+    
+    meaningful_words = get_meaningful_words(query)
+    
+    output = f"""
+DAPHNE AI - SEARCH RESULTS REPORT
+==================================
+
+Search Query: "{query}"
+Meaningful Words: {', '.join(meaningful_words) if meaningful_words else 'None'}
+Total Results: {len(results)}
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+"""
+    
+    # Group by document
+    doc_groups = {}
+    for result in results:
+        doc_name = result['document']['filename']
+        if doc_name not in doc_groups:
+            doc_groups[doc_name] = []
+        doc_groups[doc_name].append(result)
+    
+    for doc_name, doc_results in doc_groups.items():
+        output += f"\n📄 DOCUMENT: {doc_name}\n"
+        output += f"{'=' * (len(doc_name) + 15)}\n"
+        output += f"Total Matches: {len(doc_results)}\n\n"
+        
+        for i, result in enumerate(doc_results, 1):
+            score = result.get('score', 0)
+            method = result.get('match_type', 'unknown').title()
+            page = result.get('page_number', 1)
+            context = result.get('context', '')
+            
+            output += f"Match {i} - {method} (Score: {score:.1f}) - Page {page}\n"
+            
+            # Show meaningful words found for smart search
+            if method == 'Smart' and 'meaningful_words_found' in result:
+                words_found = result['meaningful_words_found']
+                if words_found:
+                    output += f"Meaningful Words Found: {', '.join(words_found)}\n"
+            
+            output += f"{'-' * 50}\n"
+            
+            # Include FULL context without truncation
+            output += f"Content:\n{context}\n\n"
+    
+    # Display in a beautiful code block
+    st.markdown("### 📋 Complete Results Report")
+    st.code(output, language="text")
+    st.success("✅ Complete results displayed above! Use Ctrl+A, Ctrl+C to copy to clipboard")
+    
+    # Also provide download option
+    safe_query = "".join(c for c in query if c.isalnum() or c in (' ', '-', '_')).strip()
+    safe_query = safe_query.replace(' ', '_')[:20]
+    
+    st.download_button(
+        label="📥 Download Complete Report",
+        data=output,
+        file_name=f"daphne_search_results_{safe_query}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+        mime="text/plain"
+    )
+
+def export_results_csv_beautiful(results: List[Dict], query: str):
+    """Export results with complete content and filtering info"""
+    
+    meaningful_words = get_meaningful_words(query)
+    
+    csv_data = []
+    
+    for i, result in enumerate(results, 1):
+        # Include FULL content without truncation
+        row = {
+            'Match_Number': i,
+            'Query': query,
+            'Meaningful_Words_Used': ', '.join(meaningful_words),
+            'Document': result['document']['filename'],
+            'Match_Type': result.get('match_type', 'Unknown'),
+            'Score': result.get('score', 0),
+            'Page_Number': result.get('page_number', 1),
+            'Position': result.get('position', 0),
+            'Percentage_Through': result.get('percentage_through', 0),
+            'Complete_Context': result.get('context', ''),  # FULL context
+            'Word_Count': len(result.get('context', '').split()),
+            'Character_Count': len(result.get('context', ''))
+        }
+        
+        # Add meaningful words found for smart search
+        if result.get('match_type') == 'smart' and 'meaningful_words_found' in result:
+            row['Meaningful_Words_Found'] = ', '.join(result['meaningful_words_found'])
+            row['Words_Matched'] = len(result['meaningful_words_found'])
+            row['Total_Meaningful_Words'] = result.get('total_meaningful_words', 0)
+        else:
+            row['Meaningful_Words_Found'] = ''
+            row['Words_Matched'] = 0
+            row['Total_Meaningful_Words'] = 0
+        
+        csv_data.append(row)
+    
+    df = pd.DataFrame(csv_data)
+    csv = df.to_csv(index=False)
+    
+    # Generate filename
+    safe_query = "".join(c for c in query if c.isalnum() or c in (' ', '-', '_')).strip()
+    safe_query = safe_query.replace(' ', '_')[:20]
+    filename = f"daphne_results_{safe_query}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    st.download_button(
+        label="📥 Download Complete CSV",
+        data=csv,
+        file_name=filename,
+        mime="text/csv"
+    )
+    
+    st.success(f"✅ CSV ready for download with complete content and filtering info! ({len(results)} results)")
+    
+    # Show preview
+    with st.expander("📊 CSV Preview"):
+        preview_cols = ['Match_Number', 'Document', 'Score', 'Page_Number', 'Words_Matched', 'Word_Count']
+        available_cols = [col for col in preview_cols if col in df.columns]
+        st.dataframe(df[available_cols].head())
+
+# Export all functions - COMPLETE
+__all__ = [
+    'display_search_results_beautiful',
+    'display_single_search_result_beautiful', 
+    'display_alignment_results_beautiful',
+    'display_single_alignment_beautiful',
+    'display_manual_search_results_beautiful',
+    'show_alignment_feature_info_beautiful',
+    'format_as_beautiful_paragraphs',
+    'highlight_meaningful_words_only',
+    'highlight_recommendation_terms',
+    'get_meaningful_words',
+    'copy_results_beautiful',
+    'export_results_csv_beautiful',
+    'clean_html_artifacts',
+    'format_text_as_clean_paragraphs'
+] similarity > 0.5:
                     confidence_text = "Medium Confidence"
                 else:
                     confidence_text = "Lower Confidence"
@@ -576,7 +789,7 @@ def show_alignment_feature_info_beautiful():
     """, unsafe_allow_html=True)
 
 # =============================================================================
-# UTILITY FUNCTIONS
+# UTILITY FUNCTIONS - INCLUDING FIXED HIGHLIGHTING
 # =============================================================================
 
 def get_meaningful_words(text: str) -> List[str]:
@@ -679,209 +892,4 @@ def format_as_beautiful_paragraphs(text: str) -> str:
                 ['however', 'furthermore', 'additionally', 'in conclusion', 'therefore', 'moreover'])):
             paragraphs.append(' '.join(current_paragraph))
             current_paragraph = []
-        elif len(current_paragraph) >= 4:  # Max 4 sentences per paragraph
-            paragraphs.append(' '.join(current_paragraph))
-            current_paragraph = []
-    
-    # Add remaining sentences
-    if current_paragraph:
-        paragraphs.append(' '.join(current_paragraph))
-    
-    # Format as clean text paragraphs (no HTML to avoid bleeding)
-    formatted_paragraphs = []
-    for paragraph in paragraphs:
-        if paragraph.strip():
-            formatted_paragraphs.append(paragraph.strip())
-    
-    return '\n\n'.join(formatted_paragraphs) if formatted_paragraphs else clean_text
-
-def highlight_recommendation_terms(text: str) -> str:
-    """Highlight common recommendation and response terms"""
-    
-    # Common terms found in government recommendations and responses
-    highlight_terms = [
-        'recommend', 'recommendation', 'recommendations', 'suggest', 'advise', 'propose',
-        'accept', 'reject', 'agree', 'disagree', 'implement', 'implementation', 
-        'consider', 'approved', 'declined', 'response', 'reply', 'answer',
-        'policy', 'framework', 'guideline', 'protocol', 'strategy',
-        'committee', 'department', 'ministry', 'government', 'authority',
-        'urgent', 'immediate', 'critical', 'priority', 'essential',
-        'budget', 'funding', 'financial', 'cost', 'expenditure',
-        'review', 'analysis', 'assessment', 'evaluation', 'inquiry'
-    ]
-    
-    highlighted = text
-    
-    # Sort by length (longest first) to avoid partial highlighting conflicts
-    highlight_terms.sort(key=len, reverse=True)
-    
-    for term in highlight_terms:
-        if len(term) > 3:  # Only highlight meaningful terms
-            # Case-insensitive highlighting using markdown
-            pattern = re.compile(r'\b' + re.escape(term) + r'\b', re.IGNORECASE)
-            highlighted = pattern.sub(f'**:yellow[{term}]**', highlighted)
-    
-    return highlighted
-
-def highlight_meaningful_words_only(text: str, query: str) -> str:
-    """Highlight only meaningful words from the query in the text using Streamlit markdown"""
-    
-    # Get meaningful words from query (filter out stop words)
-    meaningful_words = get_meaningful_words(query)
-    
-    if not meaningful_words:
-        return text
-    
-    highlighted = text
-    
-    # Sort by length (longest first) to avoid partial highlighting conflicts
-    meaningful_words.sort(key=len, reverse=True)
-    
-    for word in meaningful_words:
-        if len(word) > 1:  # Skip very short words
-            # Case-insensitive highlighting using markdown bold + color
-            pattern = re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE)
-            highlighted = pattern.sub(f'**:yellow[{word}]**', highlighted)
-    
-    return highlighted
-
-def copy_results_beautiful(results: List[Dict], query: str):
-    """Copy results with beautiful formatting and filtering info"""
-    
-    meaningful_words = get_meaningful_words(query)
-    
-    output = f"""
-DAPHNE AI - SEARCH RESULTS REPORT
-==================================
-
-Search Query: "{query}"
-Meaningful Words: {', '.join(meaningful_words) if meaningful_words else 'None'}
-Total Results: {len(results)}
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-"""
-    
-    # Group by document
-    doc_groups = {}
-    for result in results:
-        doc_name = result['document']['filename']
-        if doc_name not in doc_groups:
-            doc_groups[doc_name] = []
-        doc_groups[doc_name].append(result)
-    
-    for doc_name, doc_results in doc_groups.items():
-        output += f"\n📄 DOCUMENT: {doc_name}\n"
-        output += f"{'=' * (len(doc_name) + 15)}\n"
-        output += f"Total Matches: {len(doc_results)}\n\n"
-        
-        for i, result in enumerate(doc_results, 1):
-            score = result.get('score', 0)
-            method = result.get('match_type', 'unknown').title()
-            page = result.get('page_number', 1)
-            context = result.get('context', '')
-            
-            output += f"Match {i} - {method} (Score: {score:.1f}) - Page {page}\n"
-            
-            # Show meaningful words found for smart search
-            if method == 'Smart' and 'meaningful_words_found' in result:
-                words_found = result['meaningful_words_found']
-                if words_found:
-                    output += f"Meaningful Words Found: {', '.join(words_found)}\n"
-            
-            output += f"{'-' * 50}\n"
-            
-            # Include FULL context without truncation
-            output += f"Content:\n{context}\n\n"
-    
-    # Display in a beautiful code block
-    st.markdown("### 📋 Complete Results Report")
-    st.code(output, language="text")
-    st.success("✅ Complete results displayed above! Use Ctrl+A, Ctrl+C to copy to clipboard")
-    
-    # Also provide download option
-    safe_query = "".join(c for c in query if c.isalnum() or c in (' ', '-', '_')).strip()
-    safe_query = safe_query.replace(' ', '_')[:20]
-    
-    st.download_button(
-        label="📥 Download Complete Report",
-        data=output,
-        file_name=f"daphne_search_results_{safe_query}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-        mime="text/plain"
-    )
-
-def export_results_csv_beautiful(results: List[Dict], query: str):
-    """Export results with complete content and filtering info"""
-    
-    meaningful_words = get_meaningful_words(query)
-    
-    csv_data = []
-    
-    for i, result in enumerate(results, 1):
-        # Include FULL content without truncation
-        row = {
-            'Match_Number': i,
-            'Query': query,
-            'Meaningful_Words_Used': ', '.join(meaningful_words),
-            'Document': result['document']['filename'],
-            'Match_Type': result.get('match_type', 'Unknown'),
-            'Score': result.get('score', 0),
-            'Page_Number': result.get('page_number', 1),
-            'Position': result.get('position', 0),
-            'Percentage_Through': result.get('percentage_through', 0),
-            'Complete_Context': result.get('context', ''),  # FULL context
-            'Word_Count': len(result.get('context', '').split()),
-            'Character_Count': len(result.get('context', ''))
-        }
-        
-        # Add meaningful words found for smart search
-        if result.get('match_type') == 'smart' and 'meaningful_words_found' in result:
-            row['Meaningful_Words_Found'] = ', '.join(result['meaningful_words_found'])
-            row['Words_Matched'] = len(result['meaningful_words_found'])
-            row['Total_Meaningful_Words'] = result.get('total_meaningful_words', 0)
-        else:
-            row['Meaningful_Words_Found'] = ''
-            row['Words_Matched'] = 0
-            row['Total_Meaningful_Words'] = 0
-        
-        csv_data.append(row)
-    
-    df = pd.DataFrame(csv_data)
-    csv = df.to_csv(index=False)
-    
-    # Generate filename
-    safe_query = "".join(c for c in query if c.isalnum() or c in (' ', '-', '_')).strip()
-    safe_query = safe_query.replace(' ', '_')[:20]
-    filename = f"daphne_results_{safe_query}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    
-    st.download_button(
-        label="📥 Download Complete CSV",
-        data=csv,
-        file_name=filename,
-        mime="text/csv"
-    )
-    
-    st.success(f"✅ CSV ready for download with complete content and filtering info! ({len(results)} results)")
-    
-    # Show preview
-    with st.expander("📊 CSV Preview"):
-        preview_cols = ['Match_Number', 'Document', 'Score', 'Page_Number', 'Words_Matched', 'Word_Count']
-        available_cols = [col for col in preview_cols if col in df.columns]
-        st.dataframe(df[available_cols].head())
-
-# Export all functions - COMPLETE
-__all__ = [
-    'display_search_results_beautiful',
-    'display_single_search_result_beautiful', 
-    'display_alignment_results_beautiful',
-    'display_single_alignment_beautiful',
-    'display_manual_search_results_beautiful',
-    'show_alignment_feature_info_beautiful',
-    'format_as_beautiful_paragraphs',
-    'highlight_meaningful_words_only',
-    'highlight_recommendation_terms',
-    'get_meaningful_words',
-    'copy_results_beautiful',
-    'export_results_csv_beautiful',
-    'clean_html_artifacts',
-    'format_text_as_clean_paragraphs'
-]
+        elif
