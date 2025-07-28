@@ -1,8 +1,9 @@
-# modules/ui/beautiful_display.py - Beautiful Display Functions with Stop Word Filtering
+# modules/ui/beautiful_display.py - COMPLETE WITH FIXED HIGHLIGHTING
 """
 Beautiful display functions for DaphneAI search results and alignments.
 This file contains all the formatting and presentation logic with complete paragraphs.
 Properly handles stop word filtering for clean, meaningful results.
+FIXED: Restored highlighting with clean Streamlit-native formatting.
 """
 
 import streamlit as st
@@ -117,7 +118,8 @@ def display_single_search_result_beautiful(result: Dict, index: int, query: str,
         'exact': {'icon': '🎯', 'color': '#28a745', 'name': 'Exact Match'},
         'smart': {'icon': '🧠', 'color': '#007bff', 'name': 'Smart Search'},
         'fuzzy': {'icon': '🌀', 'color': '#ffc107', 'name': 'Fuzzy Match'},
-        'semantic': {'icon': '🤖', 'color': '#6f42c1', 'name': 'Semantic Match'}
+        'semantic': {'icon': '🤖', 'color': '#6f42c1', 'name': 'Semantic Match'},
+        'hybrid': {'icon': '🔄', 'color': '#17a2b8', 'name': 'Hybrid Search'}
     }
     
     info = method_info.get(method, {'icon': '🔍', 'color': '#6c757d', 'name': 'Search'})
@@ -160,23 +162,23 @@ def display_single_search_result_beautiful(result: Dict, index: int, query: str,
             </div>
             """, unsafe_allow_html=True)
     
-    # Display FULL context beautifully
+    # Display FULL context beautifully with highlighting
     if show_context:
         full_context = result.get('context', '')
         if full_context:
             
-            # Apply highlighting if requested (only meaningful words) - FIXED
-            if highlight_matches:
-                display_content = highlight_meaningful_words_only(full_context, query)
-            else:
-                display_content = full_context
+            st.markdown("**📖 Complete Context:**")
             
-            # Clean and format the content
-            clean_content = clean_html_artifacts(display_content)
-            formatted_content = format_text_as_clean_paragraphs(clean_content)
+            # Apply highlighting if requested (only meaningful words)
+            if highlight_matches:
+                highlighted_context = highlight_meaningful_words_only(full_context, query)
+                clean_content = clean_html_artifacts(highlighted_context)
+                formatted_content = format_text_as_clean_paragraphs(clean_content)
+            else:
+                clean_content = clean_html_artifacts(full_context)
+                formatted_content = format_text_as_clean_paragraphs(clean_content)
             
             # Display with highlighting preserved
-            st.markdown("**📖 Complete Context:**")
             st.markdown(formatted_content)
             
             # Additional match details
@@ -240,25 +242,23 @@ def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summ
         page_num = rec.get('page_number', 1)
         st.info(f"📄 **Document:** {doc_name} | **Page:** {page_num}")
         
-        # Display the FULL recommendation sentence - WITH HIGHLIGHTING
+        # Display the FULL recommendation sentence with highlighting
         full_sentence = rec.get('sentence', 'No sentence available')
         clean_sentence = clean_html_artifacts(full_sentence)
         
-        # Use clean Streamlit formatting with highlighting for meaningful words
         st.markdown("**📝 Full Recommendation:**")
         with st.container():
             # Check if this looks like a real recommendation (has meaningful content)
             if len(clean_sentence.split()) > 5:  # More than just metadata
-                # Try to highlight meaningful terms commonly found in recommendations
+                # Highlight meaningful terms commonly found in recommendations
                 highlighted_sentence = highlight_recommendation_terms(clean_sentence)
                 st.markdown(f"> {highlighted_sentence}")
             else:
                 st.markdown(f"> {clean_sentence}")
         
-        # Add some spacing
-        st.markdown("")
+        st.markdown("")  # Add spacing
         
-        # Show FULL context as beautiful paragraphs - WITH HIGHLIGHTING
+        # Show FULL context as beautiful paragraphs with highlighting
         full_context = rec.get('context', 'No context available')
         if full_context and full_context != full_sentence:
             st.markdown("#### 📖 Complete Context")
@@ -278,24 +278,18 @@ def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summ
                 resp = resp_match.get('response', {})
                 similarity = resp_match.get('combined_score', 0)
                 
-                # Color code by similarity with beautiful gradients
+                # Color code by similarity
                 if similarity > 0.7:
-                    bg_gradient = "linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%)"
-                    border_color = "#28a745"
                     confidence_text = "High Confidence"
                 elif similarity > 0.5:
-                    bg_gradient = "linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%)"
-                    border_color = "#ffc107"
                     confidence_text = "Medium Confidence"
                 else:
-                    bg_gradient = "linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%)"
-                    border_color = "#dc3545"
                     confidence_text = "Lower Confidence"
                 
                 resp_doc_name = resp.get('document', {}).get('filename', 'Unknown Document')
                 resp_page_num = resp.get('page_number', 1)
                 
-                # Display FULL response content beautifully - FIXED FORMATTING
+                # Display FULL response content beautifully
                 full_resp_sentence = resp.get('sentence', 'No sentence available')
                 full_resp_context = resp.get('context', 'No context available')
                 
@@ -303,11 +297,11 @@ def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summ
                 clean_resp_sentence = clean_html_artifacts(full_resp_sentence)
                 clean_resp_context = clean_html_artifacts(full_resp_context)
                 
-                # Use Streamlit components instead of raw HTML to avoid bleeding
+                # Use Streamlit components instead of raw HTML
                 st.markdown(f"**📄 Response {j} - {confidence_text} ({similarity:.2f})**")
                 st.info(f"📄 **Document:** {resp_doc_name} | **Page:** {resp_page_num}")
                 
-                # Response content in a clean container - WITH HIGHLIGHTING
+                # Response content in a clean container with highlighting
                 with st.container():
                     st.markdown("**📝 Full Response:**")
                     # Apply highlighting to response if it contains meaningful words
@@ -417,22 +411,18 @@ def display_manual_search_results_beautiful(matches: List[Dict], target_sentence
         similarity = match.get('similarity_score', 0)
         if similarity > 0.8:
             confidence_color = "#28a745"
-            confidence_bg = "linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%)"
             confidence_text = "Very High Similarity"
             confidence_icon = "🟢"
         elif similarity > 0.6:
             confidence_color = "#ffc107"
-            confidence_bg = "linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%)"
             confidence_text = "High Similarity"
             confidence_icon = "🟡"
         elif similarity > 0.4:
             confidence_color = "#fd7e14"
-            confidence_bg = "linear-gradient(135deg, #ffe8d1 0%, #ffd19a 100%)"
             confidence_text = "Medium Similarity"
             confidence_icon = "🟠"
         else:
             confidence_color = "#dc3545"
-            confidence_bg = "linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%)"
             confidence_text = "Lower Similarity"
             confidence_icon = "🔴"
         
@@ -463,73 +453,38 @@ def display_manual_search_results_beautiful(matches: List[Dict], target_sentence
                     </div>
                     """, unsafe_allow_html=True)
             
-            # Document information beautifully displayed
+            # Document information
             doc_name = match.get('document', {}).get('filename', 'Unknown')
             page_num = match.get('page_number', 1)
             
-            st.markdown(f"""
-            <div style="
-                background: {confidence_bg};
-                border-left: 4px solid {confidence_color};
-                padding: 20px;
-                border-radius: 10px;
-                margin: 15px 0;
-            ">
-                <h5 style="margin: 0 0 15px 0; color: #333;">
-                    📄 Document Information
-                </h5>
-                <p style="margin: 5px 0; font-weight: 500;">
-                    <strong>File:</strong> {doc_name}<br>
-                    <strong>Page:</strong> {page_num}<br>
-                    <strong>Content Type:</strong> {content_type}
-                    {f'<br><strong>Similarity Score:</strong> {similarity:.3f}' if show_scores else ''}
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
+            st.info(f"📄 **File:** {doc_name} | **Page:** {page_num} | **Type:** {content_type}")
             
-            # Display FULL found sentence beautifully
+            # Display FULL found sentence beautifully with highlighting
             full_sentence = match.get('sentence', 'No sentence available')
             st.markdown("#### 📄 Complete Found Content")
             
-            # Highlight meaningful words only
-            highlighted_sentence = highlight_meaningful_words_only(full_sentence, target_sentence)
+            # Apply highlighting if show_scores is True (use as highlighting preference)
+            if show_scores:  
+                highlighted_sentence = highlight_meaningful_words_only(full_sentence, target_sentence)
+                st.markdown(highlighted_sentence)
+            else:
+                st.markdown(f"> {full_sentence}")
             
-            st.markdown(f"""
-            <div style="
-                background: white;
-                border: 2px solid {confidence_color};
-                padding: 25px;
-                border-radius: 10px;
-                margin: 15px 0;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            ">
-                <div style="font-size: 16px; line-height: 1.8; color: #333;">
-                    {highlighted_sentence}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Display FULL context beautifully
+            # Display FULL context beautifully with highlighting
             full_context = match.get('context', '')
             if full_context and full_context != full_sentence:
                 st.markdown("#### 📖 Complete Context")
                 
-                formatted_context = format_as_beautiful_paragraphs(full_context)
+                # Apply highlighting if show_scores is True
+                if show_scores:
+                    highlighted_context = highlight_meaningful_words_only(full_context, target_sentence)
+                    clean_context = clean_html_artifacts(highlighted_context)
+                    formatted_context = format_text_as_clean_paragraphs(clean_context)
+                else:
+                    clean_context = clean_html_artifacts(full_context)
+                    formatted_context = format_text_as_clean_paragraphs(clean_context)
                 
-                st.markdown(f"""
-                <div style="
-                    background: #f8f9fa;
-                    border: 1px solid #dee2e6;
-                    padding: 25px;
-                    border-radius: 10px;
-                    margin: 15px 0;
-                    font-size: 15px;
-                    line-height: 1.7;
-                    color: #495057;
-                ">
-                    {formatted_context}
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown(formatted_context)
 
 def show_alignment_feature_info_beautiful():
     """Show beautiful information about the alignment feature"""
@@ -624,6 +579,13 @@ def show_alignment_feature_info_beautiful():
 # UTILITY FUNCTIONS
 # =============================================================================
 
+def get_meaningful_words(text: str) -> List[str]:
+    """Extract meaningful words (non-stop words) from text"""
+    words = re.findall(r'\b\w+\b', text.lower())
+    meaningful = [word for word in words 
+                 if word not in STOP_WORDS and len(word) > 1]
+    return meaningful
+
 def clean_html_artifacts(text: str) -> str:
     """Remove HTML artifacts and clean up text display"""
     if not text:
@@ -685,13 +647,6 @@ def format_text_as_clean_paragraphs(text: str) -> str:
     formatted_text = '\n\n'.join(f"> {paragraph}" for paragraph in paragraphs if paragraph.strip())
     
     return formatted_text if formatted_text else f"> {clean_text}"
-
-def get_meaningful_words(text: str) -> List[str]:
-    """Extract meaningful words (non-stop words) from text"""
-    words = re.findall(r'\b\w+\b', text.lower())
-    meaningful = [word for word in words 
-                 if word not in STOP_WORDS and len(word) > 1]
-    return meaningful
 
 def format_as_beautiful_paragraphs(text: str) -> str:
     """Format text as beautiful, properly spaced paragraphs - CLEANED VERSION"""
@@ -767,6 +722,8 @@ def highlight_recommendation_terms(text: str) -> str:
             highlighted = pattern.sub(f'**:yellow[{term}]**', highlighted)
     
     return highlighted
+
+def highlight_meaningful_words_only(text: str, query: str) -> str:
     """Highlight only meaningful words from the query in the text using Streamlit markdown"""
     
     # Get meaningful words from query (filter out stop words)
@@ -785,27 +742,6 @@ def highlight_recommendation_terms(text: str) -> str:
             # Case-insensitive highlighting using markdown bold + color
             pattern = re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE)
             highlighted = pattern.sub(f'**:yellow[{word}]**', highlighted)
-    
-    return highlighted
-
-def highlight_meaningful_words_only(text: str, query: str) -> str:
-    """Alternative highlighting using Streamlit color syntax"""
-    
-    meaningful_words = get_meaningful_words(query)
-    
-    if not meaningful_words:
-        return text
-    
-    highlighted = text
-    
-    # Sort by length (longest first)
-    meaningful_words.sort(key=len, reverse=True)
-    
-    for word in meaningful_words:
-        if len(word) > 1:
-            # Use Streamlit's color syntax for highlighting
-            pattern = re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE)
-            highlighted = pattern.sub(f':yellow-background[**{word}**]', highlighted)
     
     return highlighted
 
@@ -932,7 +868,7 @@ def export_results_csv_beautiful(results: List[Dict], query: str):
         available_cols = [col for col in preview_cols if col in df.columns]
         st.dataframe(df[available_cols].head())
 
-# Export all functions - UPDATED
+# Export all functions - COMPLETE
 __all__ = [
     'display_search_results_beautiful',
     'display_single_search_result_beautiful', 
@@ -942,6 +878,7 @@ __all__ = [
     'show_alignment_feature_info_beautiful',
     'format_as_beautiful_paragraphs',
     'highlight_meaningful_words_only',
+    'highlight_recommendation_terms',
     'get_meaningful_words',
     'copy_results_beautiful',
     'export_results_csv_beautiful',
