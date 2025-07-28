@@ -15,6 +15,11 @@ def render_search_interface(documents: List[Dict[str, Any]]):
     if not documents:
         st.warning("📁 Please upload documents first")
         return
+
+    if 'search_results' not in st.session_state:
+        st.session_state.search_results = None
+        st.session_state.last_search_query = ""
+        st.session_state.last_search_time = 0
     
     # Search input
     query = st.text_input(
@@ -108,6 +113,26 @@ def render_search_interface(documents: List[Dict[str, Any]]):
             if st.button("💡 Install Full AI for Local Development"):
                 st.code("pip install sentence-transformers torch huggingface-hub")
     
+    # =========================================================================
+    # ADD THIS: Show previous results if available (Section 2)
+    # =========================================================================
+    if (st.session_state.search_results is not None and 
+        st.session_state.last_search_query and 
+        not query):  # Only show when no new query is entered
+        
+        st.info(f"📋 **Showing previous results for:** '{st.session_state.last_search_query}'")
+        st.caption(f"🕒 Search completed in {st.session_state.last_search_time:.3f} seconds")
+        
+        # Display the stored results using your existing display function
+        display_results_grouped(
+            results=st.session_state.search_results,
+            query=st.session_state.last_search_query,
+            search_time=st.session_state.last_search_time,
+            show_context=show_context,
+            highlight_matches=highlight_matches,
+            search_method=st.session_state.last_search_query  # Use stored query as method name
+        )
+    
     # Search execution
     if st.button("🔍 Search Documents", type="primary") and query:
         
@@ -125,6 +150,13 @@ def render_search_interface(documents: List[Dict[str, Any]]):
             )
             
             search_time = time.time() - start_time
+            
+            # =========================================================================
+            # ADD THIS: Store results in session state (Section 3)
+            # =========================================================================
+            st.session_state.search_results = results
+            st.session_state.last_search_query = query
+            st.session_state.last_search_time = search_time
             
             # Display results
             display_results_grouped(
