@@ -131,7 +131,9 @@ def clean_text_for_processing(text: str) -> str:
     text = re.sub(r'\s+', ' ', text)
     
     # Fix common OCR issues
-    text = text.replace(''', "'").replace('"', '"').replace('"', '"')
+    # Fix common OCR quote issues
+    text = text.replace("‘", "'").replace("’", "'").replace("“", '"').replace("”", '"')
+
     
     # Handle hyphenated line breaks
     text = re.sub(r'(\w+)-\s+(\w+)', r'\1\2', text)
