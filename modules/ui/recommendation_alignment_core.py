@@ -1,6 +1,6 @@
 # modules/ui/recommendation_alignment_core.py
 """
-🏛️ Core Functions for Recommendation-Response Alignment System
+Core Functions for Recommendation-Response Alignment System
 Handles data structures, configuration, and core utilities
 """
 
