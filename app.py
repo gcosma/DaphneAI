@@ -101,12 +101,10 @@ class SimpleRecommendationExtractor:
         return recommendations
     
     def _split_sentences(self, text: str) -> List[str]:
-        """Split text into sentences"""
-        # Better sentence splitting that preserves sentence integrity
+        # This regex might not handle all cases properly
         sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
-        # Only keep sentences that are substantial (more than 20 chars and have multiple words)
         return [s.strip() for s in sentences if s.strip() and len(s.strip()) > 30 and len(s.split()) >= 5]
-    
+        
     def _contains_recommendation_phrase(self, sentence: str) -> bool:
         """Check if sentence contains explicit recommendation phrases (stricter)"""
         sentence_lower = sentence.lower()
