@@ -6,6 +6,7 @@ import re
 from typing import Dict, List, Any
 import logging
 import traceback
+from simple_recommendation_extractor import extract_recommendations_simple
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -46,12 +47,13 @@ def main():
         
         # Enhanced tabs with error handling
         try:
-            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
                 "📁 Upload", 
                 "🔍 Extract", 
                 "🔍 Search",
                 "🔗 Align Rec-Resp",
-                "📊 Analytics"
+                "📊 Analytics",
+                "🎯 Recommendations"  # NEW - This is tab6
             ])
             
             with tab1:
@@ -68,6 +70,9 @@ def main():
             
             with tab5:
                 render_analytics_tab_safe(render_analytics_tab)
+            
+            with tab6:  # NEW - RECOMMENDATIONS TAB
+                render_recommendations_tab()
                 
         except Exception as e:
             st.error(f"Tab rendering error: {str(e)}")
@@ -594,6 +599,106 @@ def create_sample_data():
     st.session_state.documents = [sample_doc]
     st.success("✅ Sample data loaded! You can now test the application features.")
 
+def render_recommendations_tab():
+    """Render the recommendations extraction tab"""
+    st.header("🎯 Extract Recommendations")
+    
+    if 'documents' not in st.session_state or not st.session_state.documents:
+        st.warning("📁 Please upload documents first in the Upload tab.")
+        st.info("""
+        **This feature automatically finds recommendations by detecting:**
+        - Sentences starting with action verbs (Improving, Ensuring, etc.)
+        - Phrases like "we recommend", "should", "must"
+        - Any verb-based suggestions in your documents
+        
+        **Uses NLTK to automatically identify ALL verbs - no predefined list needed!**
+        """)
+        return
+    
+    documents = st.session_state.documents
+    doc_names = [doc['filename'] for doc in documents]
+    
+    # Document selection
+    selected_doc = st.selectbox("Select document to analyse:", doc_names)
+    
+    # Confidence slider
+    min_confidence = st.slider(
+        "Minimum confidence:",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.7,
+        step=0.05,
+        help="Only show recommendations with confidence above this threshold"
+    )
+    
+    if st.button("🔍 Extract Recommendations", type="primary"):
+        doc = next((d for d in documents if d['filename'] == selected_doc), None)
+        
+        if doc and 'text' in doc:
+            with st.spinner("Analysing document..."):
+                try:
+                    # Extract recommendations
+                    recommendations = extract_recommendations_simple(
+                        doc['text'],
+                        min_confidence=min_confidence
+                    )
+                    
+                    if recommendations:
+                        st.success(f"✅ Found {len(recommendations)} recommendations")
+                        
+                        # Show statistics
+                        from simple_recommendation_extractor import SimpleRecommendationExtractor
+                        extractor = SimpleRecommendationExtractor()
+                        stats = extractor.get_verb_statistics(recommendations)
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Total Found", stats['total'])
+                        with col2:
+                            st.metric("Unique Verbs", stats['unique_verbs'])
+                        with col3:
+                            st.metric("Avg Confidence", f"{stats['avg_confidence']:.0%}")
+                        
+                        # Display recommendations
+                        st.markdown("---")
+                        st.subheader("📋 Recommendations Found")
+                        
+                        for idx, rec in enumerate(recommendations, 1):
+                            with st.expander(
+                                f"**{idx}. {rec['verb'].upper()}** "
+                                f"(Confidence: {rec['confidence']:.0%})"
+                            ):
+                                st.write(rec['text'])
+                                st.caption(f"Detection method: {rec['method']}")
+                        
+                        # Export options
+                        st.markdown("---")
+                        st.subheader("💾 Export")
+                        
+                        # Create CSV data
+                        import pandas as pd
+                        df = pd.DataFrame(recommendations)
+                        csv = df.to_csv(index=False)
+                        
+                        st.download_button(
+                            label="📥 Download as CSV",
+                            data=csv,
+                            file_name=f"{selected_doc}_recommendations.csv",
+                            mime="text/csv"
+                        )
+                        
+                        # Store in session state for other tabs to use
+                        st.session_state.extracted_recommendations = recommendations
+                        
+                    else:
+                        st.warning("No recommendations found. Try lowering the confidence threshold.")
+                        
+                except Exception as e:
+                    st.error(f"Error extracting recommendations: {str(e)}")
+                    st.info("Make sure you have installed nltk: pip install nltk")
+        else:
+            st.error("Document text not available")
+            
 def show_debug_info():
     """Show debug information"""
     st.markdown("### 🔍 Debug Information")
