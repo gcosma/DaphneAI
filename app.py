@@ -27,30 +27,6 @@ logger = logging.getLogger(__name__)
 
 # ===== RECOMMENDATION EXTRACTOR CODE =====
 
-"""
-Improved Recommendation Extractor for UK COVID-19 Inquiry Documents
-
-This module provides an enhanced approach to extracting recommendations from 
-policy documents, handling both explicit numbered recommendations and 
-implicit recommendations embedded in prose.
-
-Author: Prof. Georgina Brown
-Date: November 2024
-"""
-
-import re
-from typing import List, Dict, Tuple
-from dataclasses import dataclass
-from enum import Enum
-from collections import Counter
-
-# Optional NLP support
-try:
-    from nltk import word_tokenize, pos_tag
-    NLP_AVAILABLE = True
-except ImportError:
-    NLP_AVAILABLE = False
-
 
 class RecommendationType(Enum):
     """Types of recommendations that can be detected"""
