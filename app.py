@@ -203,7 +203,7 @@ class SimpleRecommendationExtractor:
         common_verbs = [
             'recommend', 'suggest', 'advise', 'propose', 'improve', 'ensure',
             'establish', 'enable', 'broaden', 'reform', 'implement', 'develop',
-            'create', 'enhance', 'introduce', 'adopt', 'provide', 'strengthen'
+            'create', 'enhance', 'introduce', 'adopt', 'provide', 'strengthen', 'broaden', 'ensure'
         ]
         
         for verb in common_verbs:
