@@ -687,7 +687,7 @@ def render_basic_alignment_fallback():
     
     with col1:
         st.markdown("**🎯 Find Recommendations**")
-        rec_keywords = st.text_input("Recommendation keywords:", value="recommend, suggest, advise")
+        rec_keywords = st.text_input("Recommendation keywords:", value="recommend, suggest, advise, teeest")
     
     with col2:
         st.markdown("**↩️ Find Responses**")
