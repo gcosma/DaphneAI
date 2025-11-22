@@ -27,167 +27,513 @@ logger = logging.getLogger(__name__)
 
 # ===== RECOMMENDATION EXTRACTOR CODE =====
 
-# ============================================================================
-# IMPROVED VERSION - Replace your existing SimpleRecommendationExtractor class
-# ============================================================================
+"""
+Improved Recommendation Extractor for UK COVID-19 Inquiry Documents
 
-class SimpleRecommendationExtractor:
-    """Extract recommendations by finding sentences with verbs that suggest actions"""
+This module provides an enhanced approach to extracting recommendations from 
+policy documents, handling both explicit numbered recommendations and 
+implicit recommendations embedded in prose.
+
+Author: Prof. Georgina Brown
+Date: November 2024
+"""
+
+import re
+from typing import List, Dict, Tuple
+from dataclasses import dataclass
+from enum import Enum
+from collections import Counter
+
+# Optional NLP support
+try:
+    from nltk import word_tokenize, pos_tag
+    NLP_AVAILABLE = True
+except ImportError:
+    NLP_AVAILABLE = False
+
+
+class RecommendationType(Enum):
+    """Types of recommendations that can be detected"""
+    NUMBERED = "numbered"           # Explicitly numbered recommendations
+    GERUND = "gerund"              # Starting with -ing verbs (Improving, Establishing, etc.)
+    MODAL = "modal"                # Using modal verbs (should, must, need to)
+    IMPERATIVE = "imperative"      # Direct commands (Ensure, Establish, etc.)
+    THERE_IS = "there_is"          # "There is a need to..." patterns
+    KEYWORD = "keyword"            # Explicit recommendation phrases
+
+
+@dataclass
+class Recommendation:
+    """A detected recommendation with metadata"""
+    text: str
+    type: RecommendationType
+    confidence: float
+    verb: str = "unknown"
+    line_number: int = None
+    position: int = None
+    section: str = None
+    
+    def __repr__(self):
+        return f"Recommendation(type={self.type.value}, confidence={self.confidence:.2f}, verb='{self.verb}', text='{self.text[:60]}...')"
+    
+    def to_dict(self) -> Dict:
+        """Convert to dictionary format"""
+        return {
+            'text': self.text,
+            'type': self.type.value,
+            'confidence': self.confidence,
+            'verb': self.verb,
+            'line_number': self.line_number,
+            'position': self.position,
+            'section': self.section
+        }
+
+
+class RecommendationExtractor:
+    """
+    Enhanced extractor for recommendations from policy documents.
+    
+    Features:
+    - Multiple detection methods (numbered, gerund, modal, imperative, keyword)
+    - Confidence scoring
+    - False positive filtering
+    - Context-aware extraction
+    - Verb extraction and statistics
+    """
     
     def __init__(self):
-        # More specific recommendation patterns
+        """Initialise the extractor with pattern definitions"""
+        
+        # High-confidence gerund verbs for policy recommendations
+        self.gerund_verbs = {
+            'improving', 'establishing', 'ensuring', 'enabling', 'broadening',
+            'reforming', 'clarifying', 'implementing', 'developing', 'strengthening',
+            'enhancing', 'creating', 'building', 'maintaining', 'providing',
+            'supporting', 'promoting', 'facilitating', 'introducing', 'expanding',
+            'reviewing', 'updating', 'reducing', 'addressing', 'adopting',
+            'requiring', 'encouraging'
+        }
+        
+        # Imperative verbs that start recommendations
+        self.imperative_verbs = {
+            'ensure', 'establish', 'improve', 'create', 'develop', 'implement',
+            'strengthen', 'enhance', 'provide', 'support', 'maintain', 'promote',
+            'facilitate', 'introduce', 'expand', 'reform', 'clarify', 'review',
+            'update', 'address', 'adopt', 'require', 'encourage'
+        }
+        
+        # Action verbs that typically follow modals in recommendations
+        self.action_verbs = {
+            'implement', 'establish', 'ensure', 'improve', 'develop', 'create',
+            'enhance', 'introduce', 'adopt', 'provide', 'strengthen', 'facilitate',
+            'support', 'maintain', 'expand', 'review', 'update', 'address'
+        }
+        
+        # Modal patterns (high confidence)
+        self.modal_patterns = [
+            r'\bmust\b',
+            r'\bshould\b',
+            r'\bneed to\b',
+            r'\brequire[sd]?\b',
+            r'\bis essential to\b',
+            r'\bis critical to\b',
+            r'\bis important to\b'
+        ]
+        
+        # Modal + action verb patterns (more specific)
+        self.modal_action_patterns = [
+            r'\bshould\s+(?:implement|establish|ensure|improve|develop|create|enhance|introduce|adopt|provide)',
+            r'\bmust\s+(?:implement|establish|ensure|improve|develop|create|enhance|introduce|adopt|provide)',
+            r'\bneed to\s+(?:implement|establish|ensure|improve|develop|create|enhance|introduce|adopt|provide)',
+        ]
+        
+        # "There is" patterns
+        self.there_is_patterns = [
+            r'there (?:is|are|remains?) (?:a |an )?(?:urgent )?need',
+            r'there (?:is|are) (?:a )?lack of',
+            r'there should be'
+        ]
+        
+        # Explicit recommendation phrases
         self.recommendation_patterns = [
             r'we recommend\b',
             r'it is recommended\b',
             r'the inquiry recommends?\b',
             r'the committee recommends?\b',
             r'the report recommends?\b',
-            r'should\b.*\b(?:implement|establish|ensure|improve)',  # Only "should" with action verbs
+            r'(?:this|the) recommendation',
         ]
+        
+        # Phrases to exclude (false positive indicators)
+        self.exclude_phrases = {
+            'when deciding', 'before implementing', 'after establishing',
+            'while ensuring', 'without improving', 'if reforming',
+            'by clarifying', 'through enabling', 'during broadening',
+            'was establishing', 'were improving', 'had been ensuring',
+            'has been', 'have been', 'had been',  # Past tense indicators
+            'will be', 'would be',  # Conditional/future (less certain)
+            'for example', 'for instance', 'such as',  # Examples
+            'the need to understand', 'the need to consider'  # Analysis, not action
+        }
+        
+        # Section headers that indicate recommendation sections
+        self.recommendation_sections = {
+            'recommendation', 'action', 'proposal', 'should', 'must',
+            'key issue', 'future', 'lesson', 'improvement'
+        }
     
-    def extract_recommendations(self, text: str, min_confidence: float = 0.5) -> List[Dict]:
+    def extract_recommendations(self, text: str, min_confidence: float = 0.7) -> List[Recommendation]:
+        """
+        Extract all recommendations from text with confidence scores.
+        
+        Args:
+            text: The document text to analyse
+            min_confidence: Minimum confidence threshold (0-1)
+            
+        Returns:
+            List of Recommendation objects sorted by confidence
+        """
         recommendations = []
+        
+        # Split into lines for line-based processing
+        lines = text.split('\n')
+        
+        for line_num, line in enumerate(lines, 1):
+            line = line.strip()
+            
+            # Skip empty lines and very short lines
+            if len(line) < 20:
+                continue
+            
+            # Try each detection method
+            recs = []
+            
+            # Method 1: Numbered recommendations
+            recs.extend(self._detect_numbered(line, line_num))
+            
+            # Method 2: Gerund-based recommendations (PRIMARY METHOD)
+            recs.extend(self._detect_gerund(line, line_num))
+            
+            # Method 3: Modal verb recommendations
+            recs.extend(self._detect_modal(line, line_num))
+            
+            # Method 4: Imperative recommendations
+            recs.extend(self._detect_imperative(line, line_num))
+            
+            # Method 5: "There is a need to..." patterns
+            recs.extend(self._detect_there_is(line, line_num))
+            
+            # Method 6: Explicit recommendation keywords
+            recs.extend(self._detect_keyword(line, line_num))
+            
+            # Filter by confidence
+            for rec in recs:
+                if rec.confidence >= min_confidence:
+                    recommendations.append(rec)
+        
+        # Also process by sentences for better context
         sentences = self._split_sentences(text)
+        for pos, sentence in enumerate(sentences):
+            # Only process if not already captured by line processing
+            if not any(self._similarity(sentence, r.text) > 0.8 for r in recommendations):
+                recs = []
+                
+                # Apply same methods to sentences
+                recs.extend(self._detect_gerund_sentence(sentence, pos))
+                recs.extend(self._detect_modal_sentence(sentence, pos))
+                recs.extend(self._detect_keyword_sentence(sentence, pos))
+                
+                for rec in recs:
+                    if rec.confidence >= min_confidence:
+                        recommendations.append(rec)
         
-        for idx, sentence in enumerate(sentences):
-            # Method 1: Look for explicit recommendation phrases (now more strict)
-            if self._contains_recommendation_phrase(sentence):
-                verb = self._extract_main_verb(sentence)
-                # Only add if it's a substantial sentence (not just headers)
-                if len(sentence.split()) >= 5:  # At least 5 words
-                    recommendations.append({
-                        'text': sentence,
-                        'verb': verb,
-                        'method': 'keyword',
-                        'confidence': 0.85,
-                        'position': idx
-                    })
-            
-            # Method 2: Look for sentences starting with action gerunds (THIS IS THE MAIN METHOD)
-            elif self._starts_with_gerund(sentence):
-                verb = self._extract_first_verb(sentence)
-                recommendations.append({
-                    'text': sentence,
-                    'verb': verb,
-                    'method': 'gerund',
-                    'confidence': 0.9,
-                    'position': idx
-                })
-            
-            # Method 3: Modal verbs with action (now more strict)
-            elif self._contains_strong_modal(sentence):
-                verb = self._extract_main_verb(sentence)
-                # Only if sentence is substantial and has action verbs
-                if len(sentence.split()) >= 8:  # Longer sentences for modals
-                    recommendations.append({
-                        'text': sentence,
-                        'verb': verb,
-                        'method': 'modal',
-                        'confidence': 0.7,
-                        'position': idx
-                    })
-        
-        # Filter by confidence
-        recommendations = [r for r in recommendations if r['confidence'] >= min_confidence]
-        
-        # Remove duplicates
-        recommendations = self._remove_duplicates(recommendations)
+        # Remove duplicates and sort by confidence
+        recommendations = self._deduplicate(recommendations)
+        recommendations.sort(key=lambda x: x.confidence, reverse=True)
         
         return recommendations
+    
+    def _detect_numbered(self, line: str, line_num: int) -> List[Recommendation]:
+        """Detect explicitly numbered recommendations"""
+        recs = []
+        
+        # Pattern: Number followed by period or parenthesis at start of line
+        numbered_pattern = r'^\s*(\d+)[.)]\s+(.+)$'
+        match = re.match(numbered_pattern, line)
+        
+        if match:
+            number, text = match.groups()
+            
+            # Check if it's actually a recommendation (not just a list item)
+            if self._is_recommendation_content(text):
+                verb = self._extract_main_verb(text)
+                recs.append(Recommendation(
+                    text=text.strip(),
+                    type=RecommendationType.NUMBERED,
+                    confidence=0.95,
+                    verb=verb,
+                    line_number=line_num
+                ))
+        
+        return recs
+    
+    def _detect_gerund(self, line: str, line_num: int) -> List[Recommendation]:
+        """Detect gerund-based recommendations (Improving..., Establishing...)"""
+        recs = []
+        
+        # Check if line starts with a gerund verb
+        words = line.split()
+        if not words:
+            return recs
+        
+        first_word = words[0].lower().rstrip(':,.')
+        
+        if first_word in self.gerund_verbs:
+            # Check it's not a false positive
+            if not self._is_false_positive(line):
+                # Extract verb (remove -ing)
+                verb = first_word[:-3] if first_word.endswith('ing') else first_word
+                recs.append(Recommendation(
+                    text=line.strip(),
+                    type=RecommendationType.GERUND,
+                    confidence=0.90,
+                    verb=verb,
+                    line_number=line_num
+                ))
+        
+        return recs
+    
+    def _detect_gerund_sentence(self, sentence: str, position: int) -> List[Recommendation]:
+        """Detect gerund-based recommendations from sentences"""
+        recs = []
+        
+        words = sentence.split()
+        if not words or len(sentence) < 30:
+            return recs
+        
+        first_word = words[0].strip('.,;:!?"\'').lower()
+        
+        if first_word in self.gerund_verbs:
+            if not self._is_false_positive(sentence):
+                verb = first_word[:-3] if first_word.endswith('ing') else first_word
+                recs.append(Recommendation(
+                    text=sentence.strip(),
+                    type=RecommendationType.GERUND,
+                    confidence=0.90,
+                    verb=verb,
+                    position=position
+                ))
+        
+        return recs
+    
+    def _detect_modal(self, line: str, line_num: int) -> List[Recommendation]:
+        """Detect modal verb recommendations (should, must, need to)"""
+        recs = []
+        
+        line_lower = line.lower()
+        
+        # First check for modal + action patterns (higher confidence)
+        for pattern in self.modal_action_patterns:
+            if re.search(pattern, line_lower):
+                if not self._is_false_positive(line):
+                    verb = self._extract_main_verb(line)
+                    recs.append(Recommendation(
+                        text=line.strip(),
+                        type=RecommendationType.MODAL,
+                        confidence=0.85,
+                        verb=verb,
+                        line_number=line_num
+                    ))
+                    return recs  # Only add once per line
+        
+        # Then check general modal patterns (lower confidence)
+        for pattern in self.modal_patterns:
+            if re.search(pattern, line_lower):
+                if not self._is_false_positive(line) and len(line.split()) >= 8:
+                    verb = self._extract_main_verb(line)
+                    confidence = 0.75
+                    
+                    # Higher confidence for "must" and "should" at sentence start
+                    if re.match(r'^\s*(?:we |governments? |the uk )?(?:must|should)', line_lower):
+                        confidence = 0.80
+                    
+                    recs.append(Recommendation(
+                        text=line.strip(),
+                        type=RecommendationType.MODAL,
+                        confidence=confidence,
+                        verb=verb,
+                        line_number=line_num
+                    ))
+                    break  # Only add once per line
+        
+        return recs
+    
+    def _detect_modal_sentence(self, sentence: str, position: int) -> List[Recommendation]:
+        """Detect modal recommendations from sentences"""
+        recs = []
+        
+        if len(sentence) < 30:
+            return recs
+        
+        sentence_lower = sentence.lower()
+        
+        # Check modal + action patterns
+        for pattern in self.modal_action_patterns:
+            if re.search(pattern, sentence_lower):
+                if not self._is_false_positive(sentence):
+                    verb = self._extract_main_verb(sentence)
+                    recs.append(Recommendation(
+                        text=sentence.strip(),
+                        type=RecommendationType.MODAL,
+                        confidence=0.85,
+                        verb=verb,
+                        position=position
+                    ))
+                    return recs
+        
+        return recs
+    
+    def _detect_imperative(self, line: str, line_num: int) -> List[Recommendation]:
+        """Detect imperative recommendations (Ensure..., Establish...)"""
+        recs = []
+        
+        words = line.split()
+        if not words:
+            return recs
+        
+        first_word = words[0].lower().rstrip(':,.')
+        
+        if first_word in self.imperative_verbs:
+            # Check it's not a false positive
+            if not self._is_false_positive(line):
+                recs.append(Recommendation(
+                    text=line.strip(),
+                    type=RecommendationType.IMPERATIVE,
+                    confidence=0.85,
+                    verb=first_word,
+                    line_number=line_num
+                ))
+        
+        return recs
+    
+    def _detect_there_is(self, line: str, line_num: int) -> List[Recommendation]:
+        """Detect 'There is a need to...' style recommendations"""
+        recs = []
+        
+        line_lower = line.lower()
+        
+        for pattern in self.there_is_patterns:
+            if re.search(pattern, line_lower):
+                # Check it's not a false positive
+                if not self._is_false_positive(line):
+                    verb = self._extract_main_verb(line)
+                    recs.append(Recommendation(
+                        text=line.strip(),
+                        type=RecommendationType.THERE_IS,
+                        confidence=0.80,
+                        verb=verb,
+                        line_number=line_num
+                    ))
+                    break
+        
+        return recs
+    
+    def _detect_keyword(self, line: str, line_num: int) -> List[Recommendation]:
+        """Detect explicit recommendation keywords"""
+        recs = []
+        
+        line_lower = line.lower()
+        
+        for pattern in self.recommendation_patterns:
+            if re.search(pattern, line_lower):
+                # Must be substantial
+                if len(line.split()) >= 5 and not self._is_false_positive(line):
+                    verb = self._extract_main_verb(line)
+                    recs.append(Recommendation(
+                        text=line.strip(),
+                        type=RecommendationType.KEYWORD,
+                        confidence=0.85,
+                        verb=verb,
+                        line_number=line_num
+                    ))
+                    break
+        
+        return recs
+    
+    def _detect_keyword_sentence(self, sentence: str, position: int) -> List[Recommendation]:
+        """Detect explicit recommendation keywords in sentences"""
+        recs = []
+        
+        if len(sentence) < 30:
+            return recs
+        
+        sentence_lower = sentence.lower()
+        
+        for pattern in self.recommendation_patterns:
+            if re.search(pattern, sentence_lower):
+                if not self._is_false_positive(sentence):
+                    verb = self._extract_main_verb(sentence)
+                    recs.append(Recommendation(
+                        text=sentence.strip(),
+                        type=RecommendationType.KEYWORD,
+                        confidence=0.85,
+                        verb=verb,
+                        position=position
+                    ))
+                    break
+        
+        return recs
+    
+    def _is_recommendation_content(self, text: str) -> bool:
+        """Check if numbered item is actually a recommendation"""
+        text_lower = text.lower()
+        
+        # Look for recommendation indicators
+        indicators = ['should', 'must', 'need', 'require', 'ensure', 
+                     'establish', 'improve', 'create', 'develop']
+        
+        return any(ind in text_lower for ind in indicators)
+    
+    def _is_false_positive(self, line: str) -> bool:
+        """Check if line is a false positive"""
+        line_lower = line.lower()
+        
+        # Check for excluding phrases
+        for phrase in self.exclude_phrases:
+            if phrase in line_lower:
+                return True
+        
+        # Check if it's a question (unlikely to be a recommendation)
+        if '?' in line:
+            return True
+        
+        # Check if it's a citation or reference without recommendation content
+        if re.search(r'\[\w+\s+\d{4}\]|\(\d{4}\)', line):
+            if not any(verb in line_lower for verb in self.gerund_verbs):
+                return True
+        
+        return False
     
     def _split_sentences(self, text: str) -> List[str]:
         """Split text into sentences"""
         # Better sentence splitting that preserves sentence integrity
         sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
-        # Only keep sentences that are substantial (more than 20 chars and have multiple words)
+        # Only keep sentences that are substantial (more than 30 chars and have multiple words)
         return [s.strip() for s in sentences if s.strip() and len(s.strip()) > 30 and len(s.split()) >= 5]
     
-    def _contains_recommendation_phrase(self, sentence: str) -> bool:
-        """Check if sentence contains explicit recommendation phrases (stricter)"""
-        sentence_lower = sentence.lower()
-        
-        # Must contain these exact phrases
-        for pattern in self.recommendation_patterns:
-            if re.search(pattern, sentence_lower):
-                return True
-        return False
-    
-    def _starts_with_gerund(self, sentence: str) -> bool:
-        """Check if sentence starts with a gerund (verb-ing) - MAIN DETECTION METHOD"""
-        words = sentence.split()
-        if not words:
-            return False
-        
-        first_word = words[0].strip('.,;:!?"\'').lower()
-        
-        # Must end with 'ing' and be long enough
-        if first_word.endswith('ing') and len(first_word) > 5:
-            # Check against common recommendation gerunds
-            common_gerunds = [
-                'improving', 'ensuring', 'establishing', 'enabling', 'broadening',
-                'reforming', 'implementing', 'developing', 'creating', 'enhancing',
-                'introducing', 'reviewing', 'updating', 'providing', 'supporting',
-                'maintaining', 'expanding', 'reducing', 'addressing', 'promoting',
-                'strengthening', 'facilitating', 'encouraging', 'adopting', 'requiring'
-            ]
-            
-            if first_word in common_gerunds:
-                return True
-            
-            # Also check with NLTK if available
-            if NLP_AVAILABLE:
-                try:
-                    base = first_word[:-3]  # Remove 'ing'
-                    tagged = pos_tag([base])
-                    return tagged[0][1].startswith('VB')
-                except:
-                    pass
-        
-        return False
-    
-    def _contains_strong_modal(self, sentence: str) -> bool:
-        """Check if sentence contains modal verbs with clear action implications"""
-        sentence_lower = sentence.lower()
-        
-        # Only match modals followed by action verbs
-        modal_action_patterns = [
-            r'\bshould\s+(?:implement|establish|ensure|improve|develop|create|enhance|introduce|adopt|provide)',
-            r'\bmust\s+(?:implement|establish|ensure|improve|develop|create|enhance|introduce|adopt|provide)',
-            r'\bneed to\s+(?:implement|establish|ensure|improve|develop|create|enhance|introduce|adopt|provide)',
-        ]
-        
-        for pattern in modal_action_patterns:
-            if re.search(pattern, sentence_lower):
-                return True
-        
-        return False
-    
-    def _extract_first_verb(self, sentence: str) -> str:
-        """Extract the first verb from a sentence"""
-        words = sentence.split()
-        if not words:
-            return 'unknown'
-        
-        first_word = words[0].strip('.,;:!?"\'').lower()
-        
-        # If it ends with 'ing', remove the 'ing' to get base form
-        if first_word.endswith('ing') and len(first_word) > 5:
-            return first_word[:-3]
-        
-        return first_word
-    
-    def _extract_main_verb(self, sentence: str) -> str:
-        """Extract the main verb from a sentence using NLP"""
+    def _extract_main_verb(self, text: str) -> str:
+        """Extract the main verb from text"""
         if NLP_AVAILABLE:
             try:
-                tokens = word_tokenize(sentence[:200])  # Limit length for performance
+                tokens = word_tokenize(text[:200])  # Limit length for performance
                 tagged = pos_tag(tokens)
                 
                 # Find action verbs (not auxiliaries)
                 verbs = [word.lower() for word, pos in tagged if pos.startswith('VB')]
                 
                 if verbs:
-                    auxiliaries = {'be', 'is', 'are', 'was', 'were', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did'}
+                    auxiliaries = {'be', 'is', 'are', 'was', 'were', 'been', 'being', 
+                                 'have', 'has', 'had', 'do', 'does', 'did'}
                     for verb in verbs:
                         if verb not in auxiliaries:
                             return verb
@@ -196,73 +542,209 @@ class SimpleRecommendationExtractor:
                 pass
         
         # Fallback: look for common recommendation verbs
-        sentence_lower = sentence.lower()
-        common_verbs = [
-            'recommend', 'suggest', 'advise', 'propose', 'improve', 'ensure',
-            'establish', 'enable', 'broaden', 'reform', 'implement', 'develop',
-            'create', 'enhance', 'introduce', 'adopt', 'provide', 'strengthen'
-        ]
+        text_lower = text.lower()
         
-        for verb in common_verbs:
-            if verb in sentence_lower:
+        # Check action verbs first
+        for verb in self.action_verbs:
+            if verb in text_lower:
                 return verb
+        
+        # Then check gerund verbs (remove -ing)
+        for verb in self.gerund_verbs:
+            if verb in text_lower:
+                return verb[:-3] if verb.endswith('ing') else verb
+        
+        # Check first word if it's a verb
+        words = text.split()
+        if words:
+            first_word = words[0].lower().rstrip(':,.')
+            if first_word in self.gerund_verbs or first_word in self.imperative_verbs:
+                return first_word[:-3] if first_word.endswith('ing') else first_word
         
         return 'unknown'
     
-    def _remove_duplicates(self, recommendations: List[Dict]) -> List[Dict]:
+    def _deduplicate(self, recommendations: List[Recommendation]) -> List[Recommendation]:
         """Remove duplicate recommendations based on text similarity"""
-        if not recommendations:
-            return []
-        
-        unique = []
-        seen_texts = []
+        unique_recs = []
+        seen_texts = set()
         
         for rec in recommendations:
-            text = rec['text'].lower().strip()
+            # Normalise text for comparison
+            normalised = rec.text.lower().strip()
+            normalised = re.sub(r'\s+', ' ', normalised)
             
+            # Check if we've seen this text (or very similar)
             is_duplicate = False
             for seen in seen_texts:
-                if self._similarity(text, seen) > 0.8:
+                # If texts are very similar (>80% overlap), consider duplicate
+                if self._similarity(normalised, seen) > 0.8:
                     is_duplicate = True
                     break
             
             if not is_duplicate:
-                unique.append(rec)
-                seen_texts.append(text)
+                unique_recs.append(rec)
+                seen_texts.add(normalised)
         
-        return unique
+        return unique_recs
     
     def _similarity(self, text1: str, text2: str) -> float:
-        """Calculate similarity between two texts"""
+        """Calculate simple text similarity (0-1)"""
         words1 = set(text1.split())
         words2 = set(text2.split())
         
         if not words1 or not words2:
             return 0.0
         
-        intersection = len(words1 & words2)
-        union = len(words1 | words2)
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
         
-        return intersection / union if union > 0 else 0.0
+        return len(intersection) / len(union)
     
-    def get_verb_statistics(self, recommendations: List[Dict]) -> Dict:
+    def get_verb_statistics(self, recommendations: List[Recommendation]) -> Dict:
         """Get statistics about the verbs used"""
-        verb_counts = Counter(r['verb'] for r in recommendations)
-        method_counts = Counter(r['method'] for r in recommendations)
+        verb_counts = Counter(r.verb for r in recommendations)
+        method_counts = Counter(r.type.value for r in recommendations)
         
         return {
             'total': len(recommendations),
             'unique_verbs': len(verb_counts),
             'verb_frequency': dict(verb_counts.most_common()),
             'method_distribution': dict(method_counts),
-            'avg_confidence': sum(r['confidence'] for r in recommendations) / len(recommendations) if recommendations else 0
+            'avg_confidence': sum(r.confidence for r in recommendations) / len(recommendations) if recommendations else 0
         }
+    
+    def extract_from_file(self, filepath: str, min_confidence: float = 0.7) -> Dict:
+        """
+        Extract recommendations from a PDF or text file.
+        
+        Args:
+            filepath: Path to the document
+            min_confidence: Minimum confidence threshold
+            
+        Returns:
+            Dictionary with recommendations and metadata
+        """
+        import subprocess
+        
+        # Extract text from PDF
+        if filepath.endswith('.pdf'):
+            result = subprocess.run(
+                ['pdftotext', '-layout', filepath, '-'],
+                capture_output=True,
+                text=True
+            )
+            text = result.stdout
+        else:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                text = f.read()
+        
+        # Extract recommendations
+        recommendations = self.extract_recommendations(text, min_confidence)
+        
+        # Group by type
+        by_type = {}
+        for rec in recommendations:
+            rec_type = rec.type.value
+            if rec_type not in by_type:
+                by_type[rec_type] = []
+            by_type[rec_type].append(rec)
+        
+        # Get verb statistics
+        verb_stats = self.get_verb_statistics(recommendations)
+        
+        return {
+            'total_count': len(recommendations),
+            'by_type': {k: len(v) for k, v in by_type.items()},
+            'recommendations': recommendations,
+            'grouped': by_type,
+            'verb_statistics': verb_stats
+        }
+    
+    def generate_report(self, results: Dict) -> str:
+        """Generate a formatted report of extracted recommendations"""
+        lines = []
+        lines.append("=" * 80)
+        lines.append("RECOMMENDATION EXTRACTION REPORT")
+        lines.append("=" * 80)
+        lines.append(f"\nTotal recommendations found: {results['total_count']}")
+        lines.append("\nBreakdown by type:")
+        
+        for rec_type, count in results['by_type'].items():
+            lines.append(f"  - {rec_type.upper()}: {count}")
+        
+        if 'verb_statistics' in results:
+            lines.append(f"\nUnique verbs found: {results['verb_statistics']['unique_verbs']}")
+            lines.append(f"Average confidence: {results['verb_statistics']['avg_confidence']:.2f}")
+            lines.append("\nTop verbs:")
+            for verb, count in list(results['verb_statistics']['verb_frequency'].items())[:10]:
+                lines.append(f"  - {verb}: {count}")
+        
+        lines.append("\n" + "=" * 80)
+        lines.append("DETAILED RECOMMENDATIONS")
+        lines.append("=" * 80)
+        
+        for i, rec in enumerate(results['recommendations'], 1):
+            lines.append(f"\n[{i}] {rec.type.value.upper()} (confidence: {rec.confidence:.2f}, verb: {rec.verb})")
+            if rec.line_number:
+                lines.append(f"    Line: {rec.line_number}")
+            if rec.position is not None:
+                lines.append(f"    Position: {rec.position}")
+            lines.append(f"    {rec.text}")
+        
+        return '\n'.join(lines)
 
 
 def extract_recommendations_simple(text: str, min_confidence: float = 0.7) -> List[Dict]:
     """Simple function to extract recommendations from text"""
-    extractor = SimpleRecommendationExtractor()
-    return extractor.extract_recommendations(text, min_confidence)
+    extractor = RecommendationExtractor()
+    recommendations = extractor.extract_recommendations(text, min_confidence)
+    return [rec.to_dict() for rec in recommendations]
+
+
+# Example usage
+if __name__ == "__main__":
+    import sys
+    
+    extractor = RecommendationExtractor()
+    
+    if len(sys.argv) > 1:
+        filepath = sys.argv[1]
+        results = extractor.extract_from_file(filepath, min_confidence=0.7)
+        report = extractor.generate_report(results)
+        print(report)
+    else:
+        # Test with example text
+        test_text = """
+        Specific recommendations
+        
+        1. Improving consideration of the impact that decisions might have on those most at risk.
+        
+        2. Broadening participation in SAGE through open recruitment of experts.
+        
+        Reforming and clarifying the structures for decision-making during emergencies.
+        
+        Governments must act swiftly and decisively to stop virus spread.
+        
+        There is a need to continue Long Covid services including clinics.
+        
+        The inquiry recommends establishing better communication channels.
+        
+        The pandemic was unprecedented in scale.
+        """
+        
+        recs = extractor.extract_recommendations(test_text, min_confidence=0.7)
+        
+        print(f"Found {len(recs)} recommendations:\n")
+        for i, rec in enumerate(recs, 1):
+            print(f"{i}. [{rec.type.value}] (verb: {rec.verb}) {rec.text}")
+            print(f"   Confidence: {rec.confidence:.2f}\n")
+        
+        # Show verb statistics
+        stats = extractor.get_verb_statistics(recs)
+        print("\nVerb Statistics:")
+        print(f"Total: {stats['total']}")
+        print(f"Unique verbs: {stats['unique_verbs']}")
+        print(f"Verb frequency: {stats['verb_frequency']}")
 
 
 # ===== END RECOMMENDATION EXTRACTOR CODE =====
