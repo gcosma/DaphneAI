@@ -27,20 +27,22 @@ logger = logging.getLogger(__name__)
 
 # ===== RECOMMENDATION EXTRACTOR CODE =====
 
+# ============================================================================
+# IMPROVED VERSION - Replace your existing SimpleRecommendationExtractor class
+# ============================================================================
+
 class SimpleRecommendationExtractor:
     """Extract recommendations by finding sentences with verbs that suggest actions"""
     
     def __init__(self):
+        # More specific recommendation patterns
         self.recommendation_patterns = [
-            r'\brecommend',
-            r'\bsuggest',
-            r'\badvise',
-            r'\bpropose',
-            r'\burge',
-            r'\bshould\b',
-            r'\bmust\b',
-            r'\bneed to\b',
-            r'\brequire',
+            r'we recommend\b',
+            r'it is recommended\b',
+            r'the inquiry recommends?\b',
+            r'the committee recommends?\b',
+            r'the report recommends?\b',
+            r'should\b.*\b(?:implement|establish|ensure|improve)',  # Only "should" with action verbs
         ]
     
     def extract_recommendations(self, text: str, min_confidence: float = 0.5) -> List[Dict]:
@@ -48,15 +50,20 @@ class SimpleRecommendationExtractor:
         sentences = self._split_sentences(text)
         
         for idx, sentence in enumerate(sentences):
+            # Method 1: Look for explicit recommendation phrases (now more strict)
             if self._contains_recommendation_phrase(sentence):
                 verb = self._extract_main_verb(sentence)
-                recommendations.append({
-                    'text': sentence,
-                    'verb': verb,
-                    'method': 'keyword',
-                    'confidence': 0.85,
-                    'position': idx
-                })
+                # Only add if it's a substantial sentence (not just headers)
+                if len(sentence.split()) >= 5:  # At least 5 words
+                    recommendations.append({
+                        'text': sentence,
+                        'verb': verb,
+                        'method': 'keyword',
+                        'confidence': 0.85,
+                        'position': idx
+                    })
+            
+            # Method 2: Look for sentences starting with action gerunds (THIS IS THE MAIN METHOD)
             elif self._starts_with_gerund(sentence):
                 verb = self._extract_first_verb(sentence)
                 recommendations.append({
@@ -66,70 +73,117 @@ class SimpleRecommendationExtractor:
                     'confidence': 0.9,
                     'position': idx
                 })
-            elif self._contains_modal(sentence):
+            
+            # Method 3: Modal verbs with action (now more strict)
+            elif self._contains_strong_modal(sentence):
                 verb = self._extract_main_verb(sentence)
-                recommendations.append({
-                    'text': sentence,
-                    'verb': verb,
-                    'method': 'modal',
-                    'confidence': 0.7,
-                    'position': idx
-                })
+                # Only if sentence is substantial and has action verbs
+                if len(sentence.split()) >= 8:  # Longer sentences for modals
+                    recommendations.append({
+                        'text': sentence,
+                        'verb': verb,
+                        'method': 'modal',
+                        'confidence': 0.7,
+                        'position': idx
+                    })
         
+        # Filter by confidence
         recommendations = [r for r in recommendations if r['confidence'] >= min_confidence]
+        
+        # Remove duplicates
         recommendations = self._remove_duplicates(recommendations)
         
         return recommendations
     
     def _split_sentences(self, text: str) -> List[str]:
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        return [s.strip() for s in sentences if s.strip() and len(s.strip()) > 20]
+        """Split text into sentences"""
+        # Better sentence splitting that preserves sentence integrity
+        sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
+        # Only keep sentences that are substantial (more than 20 chars and have multiple words)
+        return [s.strip() for s in sentences if s.strip() and len(s.strip()) > 30 and len(s.split()) >= 5]
     
     def _contains_recommendation_phrase(self, sentence: str) -> bool:
+        """Check if sentence contains explicit recommendation phrases (stricter)"""
         sentence_lower = sentence.lower()
-        return any(re.search(pattern, sentence_lower) for pattern in self.recommendation_patterns)
+        
+        # Must contain these exact phrases
+        for pattern in self.recommendation_patterns:
+            if re.search(pattern, sentence_lower):
+                return True
+        return False
     
     def _starts_with_gerund(self, sentence: str) -> bool:
+        """Check if sentence starts with a gerund (verb-ing) - MAIN DETECTION METHOD"""
         words = sentence.split()
         if not words:
             return False
         
         first_word = words[0].strip('.,;:!?"\'').lower()
         
-        if first_word.endswith('ing') and len(first_word) > 4:
+        # Must end with 'ing' and be long enough
+        if first_word.endswith('ing') and len(first_word) > 5:
+            # Check against common recommendation gerunds
             common_gerunds = [
                 'improving', 'ensuring', 'establishing', 'enabling', 'broadening',
                 'reforming', 'implementing', 'developing', 'creating', 'enhancing',
                 'introducing', 'reviewing', 'updating', 'providing', 'supporting',
-                'maintaining', 'expanding', 'reducing', 'addressing', 'promoting'
+                'maintaining', 'expanding', 'reducing', 'addressing', 'promoting',
+                'strengthening', 'facilitating', 'encouraging', 'adopting', 'requiring'
             ]
-            return first_word in common_gerunds or self._is_verb_nltk(first_word[:-3])
+            
+            if first_word in common_gerunds:
+                return True
+            
+            # Also check with NLTK if available
+            if NLP_AVAILABLE:
+                try:
+                    base = first_word[:-3]  # Remove 'ing'
+                    tagged = pos_tag([base])
+                    return tagged[0][1].startswith('VB')
+                except:
+                    pass
         
         return False
     
-    def _contains_modal(self, sentence: str) -> bool:
-        modals = ['should', 'must', 'ought to', 'need to', 'shall']
+    def _contains_strong_modal(self, sentence: str) -> bool:
+        """Check if sentence contains modal verbs with clear action implications"""
         sentence_lower = sentence.lower()
-        return any(f' {modal} ' in f' {sentence_lower} ' for modal in modals)
+        
+        # Only match modals followed by action verbs
+        modal_action_patterns = [
+            r'\bshould\s+(?:implement|establish|ensure|improve|develop|create|enhance|introduce|adopt|provide)',
+            r'\bmust\s+(?:implement|establish|ensure|improve|develop|create|enhance|introduce|adopt|provide)',
+            r'\bneed to\s+(?:implement|establish|ensure|improve|develop|create|enhance|introduce|adopt|provide)',
+        ]
+        
+        for pattern in modal_action_patterns:
+            if re.search(pattern, sentence_lower):
+                return True
+        
+        return False
     
     def _extract_first_verb(self, sentence: str) -> str:
+        """Extract the first verb from a sentence"""
         words = sentence.split()
         if not words:
             return 'unknown'
         
         first_word = words[0].strip('.,;:!?"\'').lower()
         
-        if first_word.endswith('ing'):
-            return first_word[:-3] if len(first_word) > 4 else first_word
+        # If it ends with 'ing', remove the 'ing' to get base form
+        if first_word.endswith('ing') and len(first_word) > 5:
+            return first_word[:-3]
         
         return first_word
     
     def _extract_main_verb(self, sentence: str) -> str:
+        """Extract the main verb from a sentence using NLP"""
         if NLP_AVAILABLE:
             try:
-                tokens = word_tokenize(sentence)
+                tokens = word_tokenize(sentence[:200])  # Limit length for performance
                 tagged = pos_tag(tokens)
                 
+                # Find action verbs (not auxiliaries)
                 verbs = [word.lower() for word, pos in tagged if pos.startswith('VB')]
                 
                 if verbs:
@@ -141,10 +195,12 @@ class SimpleRecommendationExtractor:
             except:
                 pass
         
+        # Fallback: look for common recommendation verbs
         sentence_lower = sentence.lower()
         common_verbs = [
             'recommend', 'suggest', 'advise', 'propose', 'improve', 'ensure',
-            'establish', 'enable', 'broaden', 'reform', 'implement', 'develop'
+            'establish', 'enable', 'broaden', 'reform', 'implement', 'develop',
+            'create', 'enhance', 'introduce', 'adopt', 'provide', 'strengthen'
         ]
         
         for verb in common_verbs:
@@ -153,17 +209,8 @@ class SimpleRecommendationExtractor:
         
         return 'unknown'
     
-    def _is_verb_nltk(self, word: str) -> bool:
-        if not NLP_AVAILABLE:
-            return True
-        
-        try:
-            tagged = pos_tag([word])
-            return tagged[0][1].startswith('VB')
-        except:
-            return True
-    
     def _remove_duplicates(self, recommendations: List[Dict]) -> List[Dict]:
+        """Remove duplicate recommendations based on text similarity"""
         if not recommendations:
             return []
         
@@ -186,6 +233,7 @@ class SimpleRecommendationExtractor:
         return unique
     
     def _similarity(self, text1: str, text2: str) -> float:
+        """Calculate similarity between two texts"""
         words1 = set(text1.split())
         words2 = set(text2.split())
         
@@ -198,6 +246,7 @@ class SimpleRecommendationExtractor:
         return intersection / union if union > 0 else 0.0
     
     def get_verb_statistics(self, recommendations: List[Dict]) -> Dict:
+        """Get statistics about the verbs used"""
         verb_counts = Counter(r['verb'] for r in recommendations)
         method_counts = Counter(r['method'] for r in recommendations)
         
@@ -214,6 +263,7 @@ def extract_recommendations_simple(text: str, min_confidence: float = 0.7) -> Li
     """Simple function to extract recommendations from text"""
     extractor = SimpleRecommendationExtractor()
     return extractor.extract_recommendations(text, min_confidence)
+
 
 # ===== END RECOMMENDATION EXTRACTOR CODE =====
 
