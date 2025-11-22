@@ -131,7 +131,7 @@ class SimpleRecommendationExtractor:
                 'reforming', 'implementing', 'developing', 'creating', 'enhancing',
                 'introducing', 'reviewing', 'updating', 'providing', 'supporting',
                 'maintaining', 'expanding', 'reducing', 'addressing', 'promoting',
-                'strengthening', 'facilitating', 'encouraging', 'adopting', 'requiring'
+                'strengthening', 'facilitating', 'encouraging', 'adopting', 'requiring', 'need'
             ]
             
             if first_word in common_gerunds:
