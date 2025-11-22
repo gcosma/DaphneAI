@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 # ===== RECOMMENDATION EXTRACTOR CODE =====
 
 
-
 class RecommendationExtractor:
     """
     Enhanced extractor for recommendations from policy documents.
@@ -532,6 +531,10 @@ def extract_recommendations_simple(text: str, min_confidence: float = 0.7) -> Li
     return extractor.extract_recommendations(text, min_confidence)
 
 
+# Backward compatibility: alias for old code
+SimpleRecommendationExtractor = RecommendationExtractor
+
+
 # Example usage
 if __name__ == "__main__":
     import sys
@@ -577,7 +580,6 @@ if __name__ == "__main__":
         print(f"Total: {stats['total']}")
         print(f"Unique verbs: {stats['unique_verbs']}")
         print(f"Verb frequency: {stats['verb_frequency']}")
-
 
 # ===== END RECOMMENDATION EXTRACTOR CODE =====
 
