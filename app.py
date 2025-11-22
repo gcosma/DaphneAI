@@ -23,11 +23,6 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# COPY THIS ENTIRE BLOCK
-# Paste it AFTER line 27 (after "logger = logging.getLogger(__name__)")
-# and BEFORE line 29 (before "def safe_import_with_fallback():")
-# ============================================================================
 
 
 # ===== RECOMMENDATION EXTRACTOR CODE =====
@@ -857,7 +852,6 @@ def render_recommendations_tab():
                         st.success(f"✅ Found {len(recommendations)} recommendations")
                         
                         # Show statistics
-                        from simple_recommendation_extractor import SimpleRecommendationExtractor
                         extractor = SimpleRecommendationExtractor()
                         stats = extractor.get_verb_statistics(recommendations)
                         
