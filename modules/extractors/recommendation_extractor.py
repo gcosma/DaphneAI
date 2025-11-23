@@ -1,7 +1,6 @@
 """
 Advanced recommendation extractor for government documents.
 Uses multiple detection methods for high accuracy.
-Fixed version with targeted improvements for 95%+ accuracy.
 """
 
 import re
@@ -210,13 +209,10 @@ class AdvancedRecommendationExtractor:
         return recommendations
     
     def _split_into_sentences(self, text: str) -> List[str]:
-        """Split text into sentences with improved handling for section headers and quotes."""
+        """Split text into sentences with improved handling for section headers."""
         # First, protect abbreviations and numbers
         text = re.sub(r'(\d+)\.(\d+)', r'\1<<DOT>>\2', text)
         text = re.sub(r'(Mr|Mrs|Ms|Dr|Prof)\.', r'\1<<DOT>>', text)
-        
-        # NEW: Fix orphaned numerals like "4." at end of quotes
-        text = re.sub(r'(["\'])\s*(\d+\.\s*)', r'\1\n\2', text)
         
         # Fix cases where period is directly followed by capital letter (no space)
         text = re.sub(r'\.([A-Z])', r'. \1', text)
@@ -231,8 +227,8 @@ class AdvancedRecommendationExtractor:
             parts = re.split(r'\n+(?=[A-Z]|\d+[\.)]\s+[A-Z])', sent)
             final_sentences.extend(parts)
         
-        # Restore dots and clean up
-        final_sentences = [s.replace('<<DOT>>', '.').strip().strip('"\'') for s in final_sentences]
+        # Restore dots
+        final_sentences = [s.replace('<<DOT>>', '.').strip() for s in final_sentences]
         
         # IMPROVED FILTERING - Don't filter out numbered headers
         return [s for s in final_sentences 
@@ -313,26 +309,19 @@ class AdvancedRecommendationExtractor:
             r'\bfollowing.*recommendations?\b',
             r'\bthese recommendations?\b',
             r'\bthe chair\'?s? recommendations?\b',
-            r'^module \d',
+            r'^module \d',  # Module headers
             r'\brecommendations? (?:for|about) (?:the )?future\b',
             r'\brecommendations? are (?:acted upon|implemented)\b',
             r'\bdesigned to work\b',
             r'^\w+\s+\d+[A-Z,]+:',
             r'\bin brief\b',
             r'\bpolitical governance\b',
-            r'\bset of recommendations?\b',
-            r'\boutlines.*recommendations?\b',
-            r'\bcontains.*recommendations?\b',
-            r'\bthis document.*recommendations?\b',
-            r'\ba.*recommendations?\b',
-            r'\boutlined.*recommendations?\b',
-            # NEW PATTERNS TO FIX FALSE POSITIVES:
-            r'\bwhile some.*recommendations?\b',  # "While some recommendations focus on..."
-            r'\bover time.*recommendations?\b',    # "Over time... recommendations"
-            r'\bpersonalized.*recommendations?\b',  # "personalized recommendations"
-            r'\bcontext-aware.*recommendations?\b', # "context-aware recommendations"
-            r'\bdocument outlines.*recommendations?\b', # "This document outlines recommendations"
-            r'\bsuggestions and.*recommendations?\b', # "suggestions and recommendations"
+            r'\bset of recommendations?\b',  # NEW
+            r'\boutlines.*recommendations?\b',  # NEW
+            r'\bcontains.*recommendations?\b',  # NEW
+            r'\bthis document.*recommendations?\b',  # NEW
+            r'\ba.*recommendations?\b',  # NEW - "a recommendation"
+            r'\boutlined.*recommendations?\b',  # NEW
         ]
         
         # Check if sentence is ABOUT recommendations (exclude it)
@@ -382,28 +371,18 @@ class AdvancedRecommendationExtractor:
         return 0.0
     
     def _check_imperative_form(self, sentence: str) -> float:
-        """Check if sentence is in imperative form (command) - improved."""
+        """Check if sentence is in imperative form (command)."""
         words = sentence.split()
         if not words:
             return 0.0
         
         # Handle numbered lists: "1. Strengthen..." 
         first_word = words[0].strip('.,;:!?"\'').lower()
-        second_word = None
-        
         if first_word.isdigit() and len(words) > 1:
             first_word = words[1].strip('.,;:!?"\'').lower()
-            second_word = words[2].strip('.,;:!?"\'').lower() if len(words) > 2 else None
-        elif len(words) > 1:
-            second_word = words[1].strip('.,;:!?"\'').lower()
         
-        # Check if first word is an action verb
+        # Check if first word is an action verb (base form)
         if first_word in self.action_verbs:
-            # NEW: Avoid false positives like "Support agents should..."
-            # If second word suggests it's a noun phrase, not imperative
-            if second_word and second_word in ['agents', 'teams', 'users', 'systems', 'processes', 'staff', 'members', 'groups']:
-                return 0.0
-            
             # Make sure it's not a gerund
             if not first_word.endswith('ing'):
                 return 0.7
@@ -433,4 +412,146 @@ class AdvancedRecommendationExtractor:
     
     def _is_bullet_point(self, sentence: str) -> bool:
         """Check if sentence starts with a bullet point."""
-        for
+        for pattern in self.bullet_patterns:
+            if re.match(pattern, sentence):
+                return True
+        return False
+    
+    def _extract_main_verb(self, sentence: str) -> str:
+        """Extract the main action verb from a sentence."""
+        words = sentence.split()
+        if not words:
+            return 'unknown'
+        
+        sentence_lower = sentence.lower()
+        
+        # Check first word (for gerunds and imperatives)
+        first_word = words[0].strip('.,;:!?"\'').lower()
+        
+        # Handle numbered lists
+        if first_word.isdigit() and len(words) > 1:
+            first_word = words[1].strip('.,;:!?"\'').lower()
+        
+        if first_word in self.action_verbs:
+            return first_word
+        
+        if first_word.endswith('ing') and len(first_word) > 5:
+            base = first_word[:-3]
+            if base in self.action_verbs:
+                return base
+            return first_word
+        
+        # Use NLTK if available
+        if NLP_AVAILABLE:
+            try:
+                tokens = word_tokenize(sentence[:200])
+                tagged = pos_tag(tokens)
+                
+                # Find action verbs
+                verbs = [word.lower() for word, pos in tagged if pos.startswith('VB')]
+                
+                # Filter out auxiliaries
+                auxiliaries = {'be', 'is', 'are', 'was', 'were', 'been', 'being', 
+                              'have', 'has', 'had', 'do', 'does', 'did'}
+                
+                for verb in verbs:
+                    if verb in self.action_verbs:
+                        return verb
+                    if verb not in auxiliaries:
+                        return verb
+                
+                if verbs:
+                    return verbs[0]
+            except:
+                pass
+        
+        # Fallback: search for any action verb in sentence
+        for verb in sorted(self.action_verbs, key=len, reverse=True):
+            if r'\b' + verb + r'\b' in sentence_lower:
+                return verb
+        
+        return 'unknown'
+    
+    def _remove_duplicates(self, recommendations: List[Dict]) -> List[Dict]:
+        """Remove duplicate or very similar recommendations."""
+        if not recommendations:
+            return []
+        
+        unique = []
+        seen_texts = []
+        
+        for rec in recommendations:
+            text = rec['text'].lower().strip()
+            
+            # Remove bullet points for comparison
+            for pattern in self.bullet_patterns:
+                text = re.sub(pattern, '', text)
+            
+            is_duplicate = False
+            for seen in seen_texts:
+                if self._similarity(text, seen) > 0.85:
+                    is_duplicate = True
+                    break
+            
+            if not is_duplicate:
+                unique.append(rec)
+                seen_texts.append(text)
+        
+        return unique
+    
+    def _similarity(self, text1: str, text2: str) -> float:
+        """Calculate Jaccard similarity between two texts."""
+        words1 = set(text1.split())
+        words2 = set(text2.split())
+        
+        if not words1 or not words2:
+            return 0.0
+        
+        intersection = len(words1 & words2)
+        union = len(words1 | words2)
+        
+        return intersection / union if union > 0 else 0.0
+    
+    def get_statistics(self, recommendations: List[Dict]) -> Dict:
+        """Get detailed statistics about extracted recommendations."""
+        if not recommendations:
+            return {
+                'total': 0,
+                'unique_verbs': 0,
+                'verb_frequency': {},
+                'method_distribution': {},
+                'avg_confidence': 0.0,
+                'in_section_count': 0
+            }
+        
+        verb_counts = Counter(r['verb'] for r in recommendations)
+        method_counts = Counter(r['method'] for r in recommendations)
+        in_section_count = sum(1 for r in recommendations if r.get('in_section', False))
+        
+        return {
+            'total': len(recommendations),
+            'unique_verbs': len(verb_counts),
+            'verb_frequency': dict(verb_counts.most_common(10)),
+            'method_distribution': dict(method_counts),
+            'avg_confidence': sum(r['confidence'] for r in recommendations) / len(recommendations),
+            'in_section_count': in_section_count,
+            'confidence_range': {
+                'min': min(r['confidence'] for r in recommendations),
+                'max': max(r['confidence'] for r in recommendations)
+            }
+        }
+
+
+def extract_recommendations(text: str, min_confidence: float = 0.7) -> List[Dict]:
+    """
+    Convenience function to extract recommendations.
+    
+    Args:
+        text: Document text
+        min_confidence: Minimum confidence threshold (0-1)
+        
+    Returns:
+        List of recommendation dictionaries
+    """
+    extractor = AdvancedRecommendationExtractor()
+    return extractor.extract_recommendations(text, min_confidence)
