@@ -107,6 +107,55 @@ def extract_pdf_text(uploaded_file) -> str:
                     page_text = page.extract_text()
                     if page_text:
                         text_parts.append(page_text)
+                
+                # Join pages with double newline
+                full_text = '\n\n'.join(text_parts)
+                
+                # Fix issue where words are on separate lines
+                # Replace single newlines with spaces, but keep double newlines (paragraphs)
+                full_text = re.sub(r'(?<!\n)\n(?!\n)', ' ', full_text)
+                
+                return full_text
+        
+        # Fallback to PyPDF2
+        elif PYPDF2_AVAILABLE:
+            import PyPDF2
+            from io import BytesIO
+            
+            pdf_reader = PyPDF2.PdfReader(BytesIO(uploaded_file.getvalue()))
+            text_parts = []
+            for page in pdf_reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text_parts.append(page_text)
+            
+            full_text = '\n\n'.join(text_parts)
+            
+            # Fix single-word-per-line issue
+            full_text = re.sub(r'(?<!\n)\n(?!\n)', ' ', full_text)
+            
+            return full_text
+    
+    except Exception as e:
+        logging.error(f"PDF extraction error: {e}")
+        raise Exception(f"Failed to extract PDF text: {str(e)}")
+
+
+def extract_pdf_textold(uploaded_file) -> str:
+    """Extract text from PDF using available library"""
+    if not PDFPLUMBER_AVAILABLE and not PYPDF2_AVAILABLE:
+        raise ImportError("No PDF library available. Install: pip install pdfplumber")
+    
+    try:
+        # Try pdfplumber first (better for most documents)
+        if PDFPLUMBER_AVAILABLE:
+            import pdfplumber
+            with pdfplumber.open(uploaded_file) as pdf:
+                text_parts = []
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text_parts.append(page_text)
                 return '\n\n'.join(text_parts)
         
         # Fallback to PyPDF2
