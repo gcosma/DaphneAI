@@ -528,46 +528,175 @@ def render_recommendation_alignment_interface(documents: List[Dict[str, Any]]):
     else:
         render_manual_search_fixed(documents)
 
+
 def render_auto_alignment_fixed(documents: List[Dict[str, Any]]):
-    """Automatic alignment with filtering"""
+    """Automatic alignment using advanced recommendation extractor"""
     
-    st.markdown("### 🔄 Automatic Recommendation-Response Alignment")
+    st.markdown("### 🔄 Advanced Recommendation-Response Alignment")
+    st.markdown("*Uses AI-powered recommendation detection + semantic response matching*")
+    
+    # Import the advanced extractor
+    try:
+        from ..extractors.recommendation_extractor import extract_recommendations
+        EXTRACTOR_AVAILABLE = True
+    except ImportError:
+        EXTRACTOR_AVAILABLE = False
+        st.warning("⚠️ Advanced extractor not available - using basic keyword matching")
     
     # Configuration
     col1, col2 = st.columns(2)
     
     with col1:
-        rec_patterns = st.multiselect(
-            "Recommendation Keywords",
-            ["recommend", "suggest", "advise", "propose", "urge", "should", "must"],
-            default=["recommend", "suggest", "advise"],
-        )
+        st.markdown("**🎯 Recommendation Detection**")
+        
+        if EXTRACTOR_AVAILABLE:
+            confidence_threshold = st.slider(
+                "Confidence threshold",
+                min_value=0.5,
+                max_value=1.0,
+                value=0.7,
+                step=0.05,
+                help="Minimum confidence for recommendations"
+            )
+            
+            detection_methods = st.multiselect(
+                "Detection methods",
+                ["gerund", "imperative", "modal", "explicit_high", "explicit_medium"],
+                default=["gerund", "imperative", "modal"],
+                help="AI methods: gerund (Establishing...), imperative (Implement...), modal (should/must)"
+            )
+        else:
+            rec_patterns = st.multiselect(
+                "Recommendation Keywords",
+                ["recommend", "suggest", "advise", "propose", "urge", "should", "must"],
+                default=["recommend", "suggest", "advise"],
+            )
     
     with col2:
+        st.markdown("**↩️ Response Detection**")
         resp_patterns = st.multiselect(
-            "Response Keywords", 
-            ["accept", "reject", "agree", "disagree", "implement", "consider", "approved", "declined"],
+            "Response keywords",
+            ["accept", "reject", "agree", "disagree", "implement", "consider", "approved", "declined", "support"],
             default=["accept", "reject", "agree", "implement"],
         )
+        
+        similarity_threshold = st.slider(
+            "Similarity threshold",
+            min_value=0.2,
+            max_value=0.8,
+            value=0.3,
+            step=0.1,
+            help="Minimum similarity for alignment"
+        )
+    
+    # Document selection
+    doc_names = [doc['filename'] for doc in documents]
+    selected_docs = st.multiselect(
+        "📄 Select documents to analyse:",
+        doc_names,
+        default=doc_names[:min(2, len(doc_names))],
+        help="Select one or more documents"
+    )
+    
+    if not selected_docs:
+        st.warning("Please select at least one document")
+        return
     
     # Analysis button
-    if st.button("🔍 Find & Align Recommendations", type="primary"):
-        with st.spinner("🔍 Analyzing documents..."):
+    if st.button("🔍 Extract & Align Recommendations", type="primary"):
+        with st.spinner("🔍 Analysing documents..."):
             
             try:
-                recommendations = find_pattern_matches(documents, rec_patterns, "recommendation")
-                responses = find_pattern_matches(documents, resp_patterns, "response")
-                alignments = create_simple_alignments(recommendations, responses)
-                
-                if BEAUTIFUL_DISPLAY_AVAILABLE:
-                    display_alignment_results_beautiful(alignments, show_ai_summaries=False)
+                if EXTRACTOR_AVAILABLE:
+                    # ADVANCED METHOD - Use recommendation extractor
+                    st.info("Step 1/3: Extracting recommendations using AI methods...")
+                    
+                    all_recommendations = []
+                    for doc in documents:
+                        if doc['filename'] not in selected_docs:
+                            continue
+                        
+                        text = doc.get('text', '')
+                        if not text:
+                            continue
+                        
+                        # Extract recommendations using advanced extractor
+                        recs = extract_recommendations(text, min_confidence=confidence_threshold)
+                        
+                        # Filter by detection methods
+                        if detection_methods:
+                            recs = [r for r in recs if r['method'] in detection_methods]
+                        
+                        # Add document info and format for alignment
+                        for rec in recs:
+                            rec['document'] = doc
+                            rec['sentence'] = rec['text']
+                            rec['id'] = f"rec_{len(all_recommendations) + 1}"
+                            rec['pattern'] = rec['verb']
+                            rec['recommendation_type'] = classify_content_type(rec['text'])
+                            rec['position'] = rec.get('position', 0)
+                        
+                        all_recommendations.extend(recs)
+                    
+                    st.success(f"✅ Found {len(all_recommendations)} recommendations using {len(detection_methods)} AI methods")
+                    
                 else:
-                    display_alignment_results_basic(alignments)
+                    # BASIC METHOD - Use keyword matching
+                    st.info("Step 1/3: Finding recommendations using keyword matching...")
+                    all_recommendations = find_pattern_matches(
+                        [d for d in documents if d['filename'] in selected_docs],
+                        rec_patterns,
+                        "recommendation"
+                    )
+                    st.success(f"✅ Found {len(all_recommendations)} recommendations")
+                
+                # Step 2: Find responses (same for both methods)
+                st.info("Step 2/3: Finding responses...")
+                
+                responses = find_pattern_matches(documents, resp_patterns, "response")
+                
+                # Filter responses to selected documents
+                responses = [r for r in responses if r['document']['filename'] in selected_docs]
+                
+                st.success(f"✅ Found {len(responses)} responses")
+                
+                # Step 3: Align recommendations with responses
+                st.info("Step 3/3: Aligning recommendations with responses...")
+                
+                if EXTRACTOR_AVAILABLE:
+                    alignments = align_recommendations_with_responses(
+                        all_recommendations,
+                        responses,
+                        similarity_threshold
+                    )
+                else:
+                    alignments = create_simple_alignments(all_recommendations, responses)
+                
+                st.success(f"✅ Created {len(alignments)} alignments")
+                
+                # Display results
+                if EXTRACTOR_AVAILABLE:
+                    display_advanced_alignment_results(alignments)
+                else:
+                    if BEAUTIFUL_DISPLAY_AVAILABLE:
+                        display_alignment_results_beautiful(alignments, show_ai_summaries=False)
+                    else:
+                        display_alignment_results_basic(alignments)
+                
+                # Export option
+                if alignments:
+                    export_alignments_to_csv(alignments, selected_docs)
                 
             except Exception as e:
                 logger.error(f"Alignment analysis error: {e}")
-                st.error(f"Analysis error: {str(e)}")
-                show_basic_pattern_analysis(documents, rec_patterns, resp_patterns)
+                st.error(f"❌ Analysis error: {str(e)}")
+                with st.expander("Show error details"):
+                    st.code(traceback.format_exc())
+                
+                # Fallback to basic pattern analysis
+                if not EXTRACTOR_AVAILABLE:
+                    show_basic_pattern_analysis(documents, rec_patterns, resp_patterns)
+
 
 def render_manual_search_fixed(documents: List[Dict[str, Any]]):
     """Manual search with filtering"""
