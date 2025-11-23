@@ -388,8 +388,22 @@ class AdvancedRecommendationExtractor:
                 return 0.6, 'explicit_low'
         
         return 0.0, 'none'
-    
+
     def _check_gerund_opening(self, sentence: str) -> float:
+    """Stricter gerund rule: only accept gerunds that indicate actions."""
+    words = sentence.split()
+    if not words:
+        return 0.0
+
+    first = words[0].strip('.,;:!?"\'').lower()
+
+    # Only accept gerunds in approved set
+    if first in self.recommendation_gerunds:
+        return 0.85
+
+    return 0.0
+
+    def _check_gerund_openingold(self, sentence: str) -> float:
         """Check if sentence starts with a recommendation gerund."""
         words = sentence.split()
         if not words:
@@ -431,8 +445,41 @@ class AdvancedRecommendationExtractor:
                 return 0.7
         
         return 0.0
-    
+
     def _check_modal_action(self, sentence: str) -> float:
+    """
+    Improved modal detection:
+    Extracts the FIRST verb immediately following a modal verb.
+    """
+    text = sentence.lower()
+
+    # Order matters: strongest modals first
+    modal_patterns = [
+        (r'\bshould\s+([a-z]+)', 0.7),
+        (r'\bmust\s+([a-z]+)', 0.8),
+        (r'\bneed(?:s)?\s+to\s+([a-z]+)', 0.7),
+        (r'\bought\s+to\s+([a-z]+)', 0.75)
+    ]
+
+    for pattern, conf in modal_patterns:
+        m = re.search(pattern, text)
+        if not m:
+            continue
+
+        verb = m.group(1)
+
+        # Only accept if it's an action verb
+        if verb in self.action_verbs:
+            return conf
+
+        # If verb ends in 'ing' or 'ed', skip (not the main action)
+        if verb.endswith(("ing", "ed")):
+            continue
+
+    return 0.0
+
+    
+    def _check_modal_actionold(self, sentence: str) -> float:
         """Check for modal verbs followed by action verbs."""
         sentence_lower = sentence.lower()
         
