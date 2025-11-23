@@ -46,6 +46,333 @@ STOP_WORDS = {
     'very', 'well', 'here', 'should', 'old', 'still'
 }
 
+def render_auto_alignment_with_extractor(documents: List[Dict[str, Any]]):
+    """Automatic alignment using the advanced recommendation extractor"""
+    
+    st.markdown("### 🔄 Advanced Recommendation-Response Alignment")
+    st.markdown("*Uses AI-powered recommendation detection + semantic response matching*")
+    
+    # Import the advanced extractor
+    try:
+        from ..extractors.recommendation_extractor import extract_recommendations
+        EXTRACTOR_AVAILABLE = True
+    except ImportError:
+        EXTRACTOR_AVAILABLE = False
+        st.error("Advanced recommendation extractor not available")
+        return
+    
+    # Configuration
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**🎯 Recommendation Detection**")
+        confidence_threshold = st.slider(
+            "Confidence threshold",
+            min_value=0.5,
+            max_value=1.0,
+            value=0.7,
+            step=0.05,
+            help="Minimum confidence for recommendations"
+        )
+        
+        detection_methods = st.multiselect(
+            "Detection methods",
+            ["gerund", "imperative", "modal", "explicit_high", "explicit_medium"],
+            default=["gerund", "imperative", "modal"],
+            help="Methods to use for finding recommendations"
+        )
+    
+    with col2:
+        st.markdown("**↩️ Response Detection**")
+        resp_patterns = st.multiselect(
+            "Response keywords",
+            ["accept", "reject", "agree", "disagree", "implement", "consider", "approved", "declined", "support"],
+            default=["accept", "reject", "agree", "implement"],
+        )
+        
+        similarity_threshold = st.slider(
+            "Similarity threshold",
+            min_value=0.2,
+            max_value=0.8,
+            value=0.3,
+            step=0.1,
+            help="Minimum similarity for alignment"
+        )
+    
+    # Document selection
+    doc_names = [doc['filename'] for doc in documents]
+    selected_docs = st.multiselect(
+        "📄 Select documents to analyse:",
+        doc_names,
+        default=doc_names[:min(2, len(doc_names))],
+        help="Select one or more documents"
+    )
+    
+    if not selected_docs:
+        st.warning("Please select at least one document")
+        return
+    
+    # Analysis button
+    if st.button("🔍 Extract & Align Recommendations", type="primary"):
+        with st.spinner("🔍 Analysing documents with advanced extraction..."):
+            
+            try:
+                # Step 1: Extract recommendations using advanced extractor
+                st.info("Step 1/3: Extracting recommendations using AI methods...")
+                
+                all_recommendations = []
+                for doc in documents:
+                    if doc['filename'] not in selected_docs:
+                        continue
+                    
+                    text = doc.get('text', '')
+                    if not text:
+                        continue
+                    
+                    # Extract recommendations
+                    recs = extract_recommendations(text, min_confidence=confidence_threshold)
+                    
+                    # Filter by detection methods
+                    if detection_methods:
+                        recs = [r for r in recs if r['method'] in detection_methods]
+                    
+                    # Add document info
+                    for rec in recs:
+                        rec['document'] = doc
+                        rec['sentence'] = rec['text']
+                        rec['id'] = f"rec_{len(all_recommendations) + 1}"
+                        rec['pattern'] = rec['verb']
+                        rec['recommendation_type'] = classify_content_type(rec['text'])
+                    
+                    all_recommendations.extend(recs)
+                
+                st.success(f"✅ Found {len(all_recommendations)} recommendations")
+                
+                # Step 2: Find responses
+                st.info("Step 2/3: Finding responses...")
+                
+                responses = find_pattern_matches(documents, resp_patterns, "response")
+                
+                # Filter responses to selected documents
+                responses = [r for r in responses if r['document']['filename'] in selected_docs]
+                
+                st.success(f"✅ Found {len(responses)} responses")
+                
+                # Step 3: Align recommendations with responses
+                st.info("Step 3/3: Aligning recommendations with responses...")
+                
+                alignments = align_recommendations_with_responses(
+                    all_recommendations,
+                    responses,
+                    similarity_threshold
+                )
+                
+                st.success(f"✅ Created {len(alignments)} alignments")
+                
+                # Display results
+                if BEAUTIFUL_DISPLAY_AVAILABLE:
+                    display_alignment_results_beautiful(alignments, show_ai_summaries=False)
+                else:
+                    display_advanced_alignment_results(alignments)
+                
+                # Export option
+                if alignments:
+                    export_alignments_to_csv(alignments, selected_docs)
+                
+            except Exception as e:
+                logger.error(f"Advanced alignment error: {e}")
+                st.error(f"❌ Alignment error: {str(e)}")
+                with st.expander("Show error details"):
+                    st.code(traceback.format_exc())
+
+
+def align_recommendations_with_responses(recommendations: List[Dict], responses: List[Dict], 
+                                        similarity_threshold: float) -> List[Dict]:
+    """Align recommendations with responses using semantic similarity"""
+    
+    alignments = []
+    
+    for rec in recommendations:
+        # Find responses in the same document or related documents
+        rec_doc = rec['document']['filename']
+        
+        # Get all responses (could be same or different document)
+        candidate_responses = responses
+        
+        # Calculate similarity using meaningful words
+        best_responses = []
+        for resp in candidate_responses:
+            similarity = calculate_simple_similarity(rec['sentence'], resp['sentence'])
+            
+            # Boost similarity if in same document
+            if resp['document']['filename'] == rec_doc:
+                similarity *= 1.2
+            
+            # Boost if response comes after recommendation in text
+            if (resp['document']['filename'] == rec_doc and 
+                resp.get('position', 0) > rec.get('position', 0)):
+                similarity *= 1.1
+            
+            if similarity >= similarity_threshold:
+                best_responses.append({
+                    'response': resp,
+                    'combined_score': min(similarity, 1.0),
+                    'similarity_score': similarity,
+                    'same_document': resp['document']['filename'] == rec_doc
+                })
+        
+        # Sort by similarity
+        best_responses.sort(key=lambda x: x['combined_score'], reverse=True)
+        
+        # Create alignment
+        alignment = {
+            'recommendation': rec,
+            'responses': best_responses[:3],  # Top 3 responses
+            'alignment_confidence': best_responses[0]['combined_score'] if best_responses else 0,
+            'alignment_status': determine_alignment_status(best_responses),
+            'detection_method': rec.get('method', 'unknown'),
+            'detection_confidence': rec.get('confidence', 0),
+            'action_verb': rec.get('verb', 'unknown')
+        }
+        
+        alignments.append(alignment)
+    
+    # Sort by detection confidence
+    alignments.sort(key=lambda x: x['detection_confidence'], reverse=True)
+    
+    return alignments
+
+
+def display_advanced_alignment_results(alignments: List[Dict]):
+    """Display advanced alignment results"""
+    
+    if not alignments:
+        st.warning("No alignments found")
+        return
+    
+    # Summary statistics
+    st.markdown("### 📊 Alignment Summary")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Recommendations", len(alignments))
+    
+    with col2:
+        aligned = sum(1 for a in alignments if a['responses'])
+        st.metric("With Responses", aligned)
+    
+    with col3:
+        strong = sum(1 for a in alignments if a['alignment_status'] == "Strong Alignment")
+        st.metric("Strong Alignments", strong)
+    
+    with col4:
+        avg_confidence = sum(a['detection_confidence'] for a in alignments) / len(alignments)
+        st.metric("Avg Detection Confidence", f"{avg_confidence:.0%}")
+    
+    st.markdown("---")
+    
+    # Display each alignment
+    st.markdown("### 🔗 Recommendation-Response Pairs")
+    
+    for idx, alignment in enumerate(alignments, 1):
+        rec = alignment['recommendation']
+        responses = alignment['responses']
+        status = alignment['alignment_status']
+        method = alignment['detection_method']
+        verb = alignment['action_verb']
+        
+        # Status color
+        if status == "Strong Alignment":
+            status_color = "🟢"
+        elif status == "Good Alignment":
+            status_color = "🟡"
+        else:
+            status_color = "🔴"
+        
+        with st.expander(
+            f"{status_color} **{idx}. {verb.upper()}** - {status} (Method: {method})",
+            expanded=(idx <= 3)
+        ):
+            # Recommendation
+            st.markdown("**🎯 Recommendation:**")
+            st.info(rec['sentence'])
+            
+            st.caption(f"Document: {rec['document']['filename']} | Confidence: {rec['confidence']:.0%} | Method: {method}")
+            
+            # Responses
+            if responses:
+                st.markdown("**↩️ Responses:**")
+                
+                for i, resp_data in enumerate(responses, 1):
+                    resp = resp_data['response']
+                    score = resp_data['combined_score']
+                    same_doc = resp_data.get('same_document', False)
+                    
+                    doc_icon = "📄" if same_doc else "📋"
+                    
+                    st.success(f"{doc_icon} **Response {i}** (Similarity: {score:.0%})")
+                    st.write(resp['sentence'])
+                    st.caption(f"Document: {resp['document']['filename']} | Pattern: {resp['pattern']}")
+                    
+                    if i < len(responses):
+                        st.markdown("---")
+            else:
+                st.warning("❌ No matching responses found")
+
+
+def export_alignments_to_csv(alignments: List[Dict], selected_docs: List[str]):
+    """Export alignments to CSV"""
+    
+    st.markdown("---")
+    st.markdown("### 📥 Export Results")
+    
+    export_data = []
+    
+    for idx, alignment in enumerate(alignments, 1):
+        rec = alignment['recommendation']
+        responses = alignment['responses']
+        
+        # Create row for each recommendation
+        row = {
+            'ID': idx,
+            'Recommendation': rec['sentence'],
+            'Action Verb': alignment['action_verb'],
+            'Detection Method': alignment['detection_method'],
+            'Detection Confidence': f"{alignment['detection_confidence']:.0%}",
+            'Document': rec['document']['filename'],
+            'Alignment Status': alignment['alignment_status'],
+            'Response Count': len(responses),
+        }
+        
+        # Add top response if available
+        if responses:
+            top_response = responses[0]['response']
+            row['Top Response'] = top_response['sentence']
+            row['Response Document'] = top_response['document']['filename']
+            row['Alignment Confidence'] = f"{responses[0]['combined_score']:.0%}"
+        else:
+            row['Top Response'] = "No response found"
+            row['Response Document'] = ""
+            row['Alignment Confidence'] = "0%"
+        
+        export_data.append(row)
+    
+    df = pd.DataFrame(export_data)
+    
+    csv = df.to_csv(index=False)
+    
+    docs_str = "_".join(selected_docs)[:50]
+    filename = f"alignments_{docs_str}_{datetime.now().strftime('%Y%m%d')}.csv"
+    
+    st.download_button(
+        label="📥 Download Alignments as CSV",
+        data=csv,
+        file_name=filename,
+        mime="text/csv",
+        help="Download all recommendation-response alignments"
+    )
+    
 # =============================================================================
 # MAIN INTERFACE FUNCTIONS
 # =============================================================================
