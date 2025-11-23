@@ -417,9 +417,9 @@ def render_alignment_tab_safe():
         
         try:
             # Try to import the alignment interface
-            from modules.ui.search_components import render_recommendation_alignment_interface
+            from modules.ui.simplified_alignment_ui import render_simple_alignment_interface
             documents = st.session_state.documents
-            render_recommendation_alignment_interface(documents)
+            render_simple_alignment_interface(documents)
         except ImportError:
             st.error("🔧 Alignment module not available. Using fallback interface.")
             render_basic_alignment_fallback()
