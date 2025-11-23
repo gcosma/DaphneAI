@@ -13,6 +13,27 @@ __version__ = "2.0.0"
 __description__ = "Advanced Document Search System with RAG + Smart Search"
 __author__ = "DaphneAI Team"
 
+# Recommendation extractor
+try:
+    from .extractors.recommendation_extractor import (
+        extract_recommendations,
+        AdvancedRecommendationExtractor
+    )
+    RECOMMENDATION_EXTRACTOR_AVAILABLE = True
+except ImportError as e:
+    logging.warning(f"Could not import recommendation_extractor: {e}")
+    RECOMMENDATION_EXTRACTOR_AVAILABLE = False
+    
+    def extract_recommendations(text, min_confidence=0.7):
+        logging.error("Recommendation extractor not available")
+        return []
+    
+    class AdvancedRecommendationExtractor:
+        def __init__(self):
+            pass
+        def extract_recommendations(self, text, min_confidence=0.7):
+            return []
+
 # Import functions with proper error handling
 try:
     from .core_utils import setup_logging, log_action, search_analytics
@@ -95,6 +116,10 @@ except ImportError as e:
 
 # Package exports - FIXED: Use single underscores
 __all__ = [
+    # Recommendation extractor
+    'extract_recommendations',
+    'AdvancedRecommendationExtractor',
+    
     # Core utilities
     'setup_logging',
     'log_action', 
@@ -119,7 +144,8 @@ __all__ = [
     'CORE_UTILS_AVAILABLE',
     'DOCUMENT_PROCESSOR_AVAILABLE',
     'UI_AVAILABLE',
-    'INTEGRATION_HELPER_AVAILABLE'
+    'INTEGRATION_HELPER_AVAILABLE',
+    'RECOMMENDATION_EXTRACTOR_AVAILABLE'
 ]
 
 # Log package initialization
@@ -129,6 +155,7 @@ logger.info(f"Core utils: {'✓' if CORE_UTILS_AVAILABLE else '✗'}")
 logger.info(f"Document processor: {'✓' if DOCUMENT_PROCESSOR_AVAILABLE else '✗'}")
 logger.info(f"UI components: {'✓' if UI_AVAILABLE else '✗'}")
 logger.info(f"Integration helper: {'✓' if INTEGRATION_HELPER_AVAILABLE else '✗'}")
+logger.info(f"Recommendation extractor: {'✓' if RECOMMENDATION_EXTRACTOR_AVAILABLE else '✗'}")
 
 # Convenience function for package status
 def get_package_status():
@@ -136,13 +163,15 @@ def get_package_status():
     return {
         'version': __version__,
         'core_utils': CORE_UTILS_AVAILABLE,
-        'document_processor': DOCUMENT_PROCESSOR_AVAILABLE,
+        'document_processor': DOCUMENT_PROCESSOR_AVAILABLE, 
         'ui_components': UI_AVAILABLE,
         'integration_helper': INTEGRATION_HELPER_AVAILABLE,
+        'recommendation_extractor': RECOMMENDATION_EXTRACTOR_AVAILABLE,
         'all_available': all([
             CORE_UTILS_AVAILABLE,
             DOCUMENT_PROCESSOR_AVAILABLE, 
             UI_AVAILABLE,
-            INTEGRATION_HELPER_AVAILABLE
+            INTEGRATION_HELPER_AVAILABLE,
+            RECOMMENDATION_EXTRACTOR_AVAILABLE
         ])
     }
