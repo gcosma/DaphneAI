@@ -265,7 +265,7 @@ class AdvancedRecommendationExtractor:
         text = re.sub(r'\.([A-Z])', r'. \1', text)
 
         # Split on sentence boundaries: period/!? followed by space + capital
-        candidate_sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9"\'"'(\[]))', text)
+        candidate_sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9"\'(\[])')
 
         final_sentences = []
         for sent in candidate_sentences:
