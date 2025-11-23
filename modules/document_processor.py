@@ -111,6 +111,9 @@ def extract_pdf_text(uploaded_file) -> str:
                 # Join pages with double newline
                 full_text = '\n\n'.join(text_parts)
                 
+                # Fix multiple spaces between words (reduce to single space)
+                full_text = re.sub(r' {2,}', ' ', full_text)
+                
                 # Fix issue where words are on separate lines
                 # Replace single newlines with spaces, but keep double newlines (paragraphs)
                 full_text = re.sub(r'(?<!\n)\n(?!\n)', ' ', full_text)
@@ -131,6 +134,9 @@ def extract_pdf_text(uploaded_file) -> str:
             
             full_text = '\n\n'.join(text_parts)
             
+            # Fix multiple spaces
+            full_text = re.sub(r' {2,}', ' ', full_text)
+            
             # Fix single-word-per-line issue
             full_text = re.sub(r'(?<!\n)\n(?!\n)', ' ', full_text)
             
@@ -139,6 +145,7 @@ def extract_pdf_text(uploaded_file) -> str:
     except Exception as e:
         logging.error(f"PDF extraction error: {e}")
         raise Exception(f"Failed to extract PDF text: {str(e)}")
+        
 
 
 def extract_pdf_textold(uploaded_file) -> str:
