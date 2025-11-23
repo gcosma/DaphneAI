@@ -54,7 +54,7 @@ def render_auto_alignment_with_extractor(documents: List[Dict[str, Any]]):
     
     # Import the advanced extractor
     try:
-        from ..extractors.recommendation_extractor import extract_recommendations
+        from modules.extractors.recommendation_extractor import extract_recommendations
         EXTRACTOR_AVAILABLE = True
     except ImportError:
         EXTRACTOR_AVAILABLE = False
