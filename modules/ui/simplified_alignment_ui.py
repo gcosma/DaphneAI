@@ -14,7 +14,7 @@ from difflib import SequenceMatcher
 def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
     """Simple alignment interface with self-match prevention built in"""
     
-    st.markdown("### 🎯 Simple Recommendation-Response Alignment")
+    # Removed the heading - it's already shown by the main app
     st.markdown("*Automatically finds and aligns recommendations with government responses*")
     
     if not documents:
