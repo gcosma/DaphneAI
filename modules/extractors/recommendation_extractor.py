@@ -447,36 +447,36 @@ class AdvancedRecommendationExtractor:
         return 0.0
 
     def _check_modal_action(self, sentence: str) -> float:
-    """
-    Improved modal detection:
-    Extracts the FIRST verb immediately following a modal verb.
-    """
-    text = sentence.lower()
-
-    # Order matters: strongest modals first
-    modal_patterns = [
-        (r'\bshould\s+([a-z]+)', 0.7),
-        (r'\bmust\s+([a-z]+)', 0.8),
-        (r'\bneed(?:s)?\s+to\s+([a-z]+)', 0.7),
-        (r'\bought\s+to\s+([a-z]+)', 0.75)
-    ]
-
-    for pattern, conf in modal_patterns:
-        m = re.search(pattern, text)
-        if not m:
-            continue
-
-        verb = m.group(1)
-
-        # Only accept if it's an action verb
-        if verb in self.action_verbs:
-            return conf
-
-        # If verb ends in 'ing' or 'ed', skip (not the main action)
-        if verb.endswith(("ing", "ed")):
-            continue
-
-    return 0.0
+        """
+        Improved modal detection:
+        Extracts the FIRST verb immediately following a modal verb.
+        """
+        text = sentence.lower()
+    
+        # Order matters: strongest modals first
+        modal_patterns = [
+            (r'\bshould\s+([a-z]+)', 0.7),
+            (r'\bmust\s+([a-z]+)', 0.8),
+            (r'\bneed(?:s)?\s+to\s+([a-z]+)', 0.7),
+            (r'\bought\s+to\s+([a-z]+)', 0.75)
+        ]
+    
+        for pattern, conf in modal_patterns:
+            m = re.search(pattern, text)
+            if not m:
+                continue
+    
+            verb = m.group(1)
+    
+            # Only accept if it's an action verb
+            if verb in self.action_verbs:
+                return conf
+    
+            # If verb ends in 'ing' or 'ed', skip (not the main action)
+            if verb.endswith(("ing", "ed")):
+                continue
+    
+        return 0.0
 
     
     def _check_modal_actionold(self, sentence: str) -> float:
