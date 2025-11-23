@@ -203,14 +203,27 @@ class AdvancedRecommendationExtractor:
         text = re.sub(r'(\d+)\.(\d+)', r'\1<<DOT>>\2', text)
         text = re.sub(r'(Mr|Mrs|Ms|Dr|Prof)\.', r'\1<<DOT>>', text)
         
-        # Split on sentence boundaries
+        # Fix cases where period is directly followed by capital letter (no space)
+        text = re.sub(r'\.([A-Z])', r'. \1', text)
+        
+        # Split on sentence boundaries - improved patterns
+        # Pattern 1: Period/!/?  followed by space and capital
         sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
         
+        # Also split on newlines followed by capital letters (paragraph breaks)
+        final_sentences = []
+        for sent in sentences:
+            # Split on newline + capital letter
+            parts = re.split(r'\n+(?=[A-Z])', sent)
+            final_sentences.extend(parts)
+        
         # Restore dots
-        sentences = [s.replace('<<DOT>>', '.').strip() for s in sentences]
+        final_sentences = [s.replace('<<DOT>>', '.').strip() for s in final_sentences]
         
         # Filter out very short sentences and headers
-        return [s for s in sentences if len(s) > 20 and len(s.split()) >= 4]
+        return [s for s in final_sentences if len(s) > 20 and len(s.split()) >= 4]
+
+    
     
     def _is_recommendation_section_header(self, text: str) -> bool:
         """Check if text is a recommendation section header."""
