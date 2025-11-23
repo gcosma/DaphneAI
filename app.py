@@ -7,6 +7,7 @@ from typing import Dict, List, Any
 import logging
 import traceback
 from collections import Counter
+from modules import extract_recommendations, AdvancedRecommendationExtractor
 
 # ry to import NLTK
 try:
@@ -25,250 +26,6 @@ logger = logging.getLogger(__name__)
 
 
 
-# ===== RECOMMENDATION EXTRACTOR CODE =====
-
-class SimpleRecommendationExtractor:
-    """Extract recommendations by finding sentences with verbs that suggest actions"""
-    
-    def __init__(self):
-        # More specific recommendation patterns
-        self.recommendation_patterns = [
-            r'we recommend\b',
-            r'it is recommended\b',
-            r'the inquiry recommends?\b',
-            r'the committee recommends?\b',
-            r'the report recommends?\b',
-            r'should\b.*\b(?:implement|establish|ensure|improve)',  # Only "should" with action verbs
-        ]
-        
-        # Bullet point patterns for unnumbered lists
-        self.bullet_patterns = [
-            r'^\s*[•●■▪▸►]+\s+',      # Unicode bullets
-            r'^\s*[-–—]\s+',           # Dashes/hyphens  
-            r'^\s*[*]\s+',             # Asterisks
-            r'^\s*[○◦]\s+',            # Open circles
-            r'^\s*[✓✔]\s+',            # Check marks
-        ]
-    
-    def extract_recommendations(self, text: str, min_confidence: float = 0.5) -> List[Dict]:
-        recommendations = []
-        sentences = self._split_sentences(text)
-        
-        for idx, sentence in enumerate(sentences):
-            # Method 1: Look for explicit recommendation phrases (now more strict)
-            if self._contains_recommendation_phrase(sentence):
-                verb = self._extract_main_verb(sentence)
-                # Only add if it's a substantial sentence (not just headers)
-                if len(sentence.split()) >= 5:  # At least 5 words
-                    recommendations.append({
-                        'text': sentence,
-                        'verb': verb,
-                        'method': 'keyword',
-                        'confidence': 0.85,
-                        'position': idx
-                    })
-            
-            # Method 2: Look for sentences starting with action gerunds (THIS IS THE MAIN METHOD)
-            elif self._starts_with_gerund(sentence):
-                verb = self._extract_first_verb(sentence)
-                recommendations.append({
-                    'text': sentence,
-                    'verb': verb,
-                    'method': 'gerund',
-                    'confidence': 0.9,
-                    'position': idx
-                })
-            
-            # Method 3: Modal verbs with action (now more strict)
-            elif self._contains_strong_modal(sentence):
-                verb = self._extract_main_verb(sentence)
-                # Only if sentence is substantial and has action verbs
-                if len(sentence.split()) >= 8:  # Longer sentences for modals
-                    recommendations.append({
-                        'text': sentence,
-                        'verb': verb,
-                        'method': 'modal',
-                        'confidence': 0.7,
-                        'position': idx
-                    })
-        
-        # Filter by confidence
-        recommendations = [r for r in recommendations if r['confidence'] >= min_confidence]
-        
-        # Remove duplicates
-        recommendations = self._remove_duplicates(recommendations)
-        
-        return recommendations
-    
-    def _split_sentences(self, text: str) -> List[str]:
-        # This regex might not handle all cases properly
-        sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
-        return [s.strip() for s in sentences if s.strip() and len(s.strip()) > 30 and len(s.split()) >= 5]
-        
-    def _contains_recommendation_phrase(self, sentence: str) -> bool:
-        """Check if sentence contains explicit recommendation phrases (stricter)"""
-        sentence_lower = sentence.lower()
-        
-        # Must contain these exact phrases
-        for pattern in self.recommendation_patterns:
-            if re.search(pattern, sentence_lower):
-                return True
-        return False
-    
-    def _starts_with_gerund(self, sentence: str) -> bool:
-        """Check if sentence starts with a gerund (verb-ing) - MAIN DETECTION METHOD"""
-        words = sentence.split()
-        if not words:
-            return False
-        
-        first_word = words[0].strip('.,;:!?"\'').lower()
-        
-        # Must end with 'ing' and be long enough
-        if first_word.endswith('ing') and len(first_word) > 5:
-            # Check against common recommendation gerunds
-            common_gerunds = [
-                'improving', 'ensuring', 'establishing', 'enabling', 'broadening',
-                'reforming', 'implementing', 'developing', 'creating', 'enhancing',
-                'introducing', 'reviewing', 'updating', 'providing', 'supporting',
-                'maintaining', 'expanding', 'reducing', 'addressing', 'promoting',
-                'strengthening', 'facilitating', 'encouraging', 'adopting', 'requiring', 'need'
-            ]
-            
-            if first_word in common_gerunds:
-                return True
-            
-            # Also check with NLTK if available
-            if NLP_AVAILABLE:
-                try:
-                    base = first_word[:-3]  # Remove 'ing'
-                    tagged = pos_tag([base])
-                    return tagged[0][1].startswith('VB')
-                except:
-                    pass
-        
-        return False
-    
-    def _contains_strong_modal(self, sentence: str) -> bool:
-        """Check if sentence contains modal verbs with clear action implications"""
-        sentence_lower = sentence.lower()
-        
-        # Only match modals followed by action verbs
-        modal_action_patterns = [
-            r'\bshould\s+(?:implement|establish|ensure|improve|develop|create|enhance|introduce|adopt|provide)',
-            r'\bmust\s+(?:implement|establish|ensure|improve|develop|create|enhance|introduce|adopt|provide)',
-            r'\bneed to\s+(?:implement|establish|ensure|improve|develop|create|enhance|introduce|adopt|provide)',
-        ]
-        
-        for pattern in modal_action_patterns:
-            if re.search(pattern, sentence_lower):
-                return True
-        
-        return False
-    
-    def _extract_first_verb(self, sentence: str) -> str:
-        """Extract the first verb from a sentence"""
-        words = sentence.split()
-        if not words:
-            return 'unknown'
-        
-        first_word = words[0].strip('.,;:!?"\'').lower()
-        
-        # If it ends with 'ing', remove the 'ing' to get base form
-        if first_word.endswith('ing') and len(first_word) > 5:
-            return first_word[:-3]
-        
-        return first_word
-    
-    def _extract_main_verb(self, sentence: str) -> str:
-        """Extract the main verb from a sentence using NLP"""
-        if NLP_AVAILABLE:
-            try:
-                tokens = word_tokenize(sentence[:200])  # Limit length for performance
-                tagged = pos_tag(tokens)
-                
-                # Find action verbs (not auxiliaries)
-                verbs = [word.lower() for word, pos in tagged if pos.startswith('VB')]
-                
-                if verbs:
-                    auxiliaries = {'be', 'is', 'are', 'was', 'were', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did'}
-                    for verb in verbs:
-                        if verb not in auxiliaries:
-                            return verb
-                    return verbs[0]
-            except:
-                pass
-        
-        # Fallback: look for common recommendation verbs
-        sentence_lower = sentence.lower()
-        common_verbs = [
-            'recommend', 'suggest', 'advise', 'propose', 'improve', 'ensure',
-            'establish', 'enable', 'broaden', 'reform', 'implement', 'develop',
-            'create', 'enhance', 'introduce', 'adopt', 'provide', 'strengthen', 'broaden', 'ensure'
-        ]
-        
-        for verb in common_verbs:
-            if verb in sentence_lower:
-                return verb
-        
-        return 'unknown'
-    
-    def _remove_duplicates(self, recommendations: List[Dict]) -> List[Dict]:
-        """Remove duplicate recommendations based on text similarity"""
-        if not recommendations:
-            return []
-        
-        unique = []
-        seen_texts = []
-        
-        for rec in recommendations:
-            text = rec['text'].lower().strip()
-            
-            is_duplicate = False
-            for seen in seen_texts:
-                if self._similarity(text, seen) > 0.8:
-                    is_duplicate = True
-                    break
-            
-            if not is_duplicate:
-                unique.append(rec)
-                seen_texts.append(text)
-        
-        return unique
-    
-    def _similarity(self, text1: str, text2: str) -> float:
-        """Calculate similarity between two texts"""
-        words1 = set(text1.split())
-        words2 = set(text2.split())
-        
-        if not words1 or not words2:
-            return 0.0
-        
-        intersection = len(words1 & words2)
-        union = len(words1 | words2)
-        
-        return intersection / union if union > 0 else 0.0
-    
-    def get_verb_statistics(self, recommendations: List[Dict]) -> Dict:
-        """Get statistics about the verbs used"""
-        verb_counts = Counter(r['verb'] for r in recommendations)
-        method_counts = Counter(r['method'] for r in recommendations)
-        
-        return {
-            'total': len(recommendations),
-            'unique_verbs': len(verb_counts),
-            'verb_frequency': dict(verb_counts.most_common()),
-            'method_distribution': dict(method_counts),
-            'avg_confidence': sum(r['confidence'] for r in recommendations) / len(recommendations) if recommendations else 0
-        }
-
-
-def extract_recommendations_simple(text: str, min_confidence: float = 0.7) -> List[Dict]:
-    """Simple function to extract recommendations from text"""
-    extractor = SimpleRecommendationExtractor()
-    return extractor.extract_recommendations(text, min_confidence)
-
-# ===== END RECOMMENDATION EXTRACTOR CODE =====
-
 def safe_import_with_fallback():
     """Safely import modules with comprehensive fallbacks"""
     try:
@@ -282,6 +39,101 @@ def safe_import_with_fallback():
     except ImportError as e:
         logger.warning(f"Import error: {e}")
         return False, None, None, None, None
+
+def render_recommendations_tab():
+    """Render the improved recommendations extraction tab"""
+    st.header("🎯 Extract Recommendations")
+    
+    if 'documents' not in st.session_state or not st.session_state.documents:
+        st.warning("📁 Please upload documents first in the Upload tab.")
+        
+        with st.expander("ℹ️ About this feature", expanded=True):
+            st.markdown("""
+            ### What This Feature Does
+            
+            This advanced recommendation extractor uses **5 different detection methods**:
+            
+            1. **Explicit Phrases** - "We recommend", "The inquiry recommends"
+            2. **Gerund Openings** - Sentences starting with "Improving", "Ensuring", "Establishing"
+            3. **Imperative Commands** - "Implement", "Establish", "Create" at sentence start
+            4. **Modal Verbs** - "Should implement", "Must establish"
+            5. **Section-Aware** - Identifies "Recommendations" sections and applies context
+            """)
+        return
+    
+    documents = st.session_state.documents
+    doc_names = [doc['filename'] for doc in documents]
+    
+    selected_doc = st.selectbox("Select document to analyse:", doc_names)
+    
+    min_confidence = st.slider(
+        "Minimum confidence threshold:",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.6,
+        step=0.05,
+        help="Only show recommendations with confidence above this threshold"
+    )
+    
+    if st.button("🔍 Extract Recommendations", type="primary"):
+        doc = next((d for d in documents if d['filename'] == selected_doc), None)
+        
+        if doc and 'text' in doc:
+            with st.spinner("Analysing document with advanced methods..."):
+                try:
+                    recommendations = extract_recommendations(
+                        doc['text'],
+                        min_confidence=min_confidence
+                    )
+                    
+                    if recommendations:
+                        st.success(f"✅ Found {len(recommendations)} recommendations")
+                        
+                        extractor = AdvancedRecommendationExtractor()
+                        stats = extractor.get_statistics(recommendations)
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Total Recommendations", stats['total'])
+                        with col2:
+                            st.metric("Unique Action Verbs", stats['unique_verbs'])
+                        with col3:
+                            st.metric("Average Confidence", f"{stats['avg_confidence']:.0%}")
+                        with col4:
+                            st.metric("In Rec Sections", stats['in_section_count'])
+                        
+                        st.markdown("---")
+                        st.subheader("📋 Extracted Recommendations")
+                        
+                        for idx, rec in enumerate(recommendations, 1):
+                            title = f"**{idx}. {rec['verb'].upper()}** (Confidence: {rec['confidence']:.0%})"
+                            
+                            with st.expander(title, expanded=(idx <= 3)):
+                                st.write(rec['text'])
+                                st.caption(f"Detection method: {rec['method']}")
+                        
+                        st.markdown("---")
+                        df_export = pd.DataFrame(recommendations)
+                        csv = df_export.to_csv(index=False)
+                        
+                        st.download_button(
+                            label="📥 Download as CSV",
+                            data=csv,
+                            file_name=f"{selected_doc}_recommendations.csv",
+                            mime="text/csv"
+                        )
+                        
+                        st.session_state.extracted_recommendations = recommendations
+                        
+                    else:
+                        st.warning("⚠️ No recommendations found. Try lowering the confidence threshold.")
+                        
+                except Exception as e:
+                    st.error(f"❌ Error extracting recommendations: {str(e)}")
+                    with st.expander("Show error details"):
+                        st.code(traceback.format_exc())
+        else:
+            st.error("Document text not available")
 
 def main():
     """Main application with enhanced error handling"""
@@ -856,104 +708,7 @@ def create_sample_data():
     st.session_state.documents = [sample_doc]
     st.success("✅ Sample data loaded! You can now test the application features.")
 
-def render_recommendations_tab():
-    """Render the recommendations extraction tab"""
-    st.header("🎯 Extract Recommendations")
-    
-    if 'documents' not in st.session_state or not st.session_state.documents:
-        st.warning("📁 Please upload documents first in the Upload tab.")
-        st.info("""
-        **This feature automatically finds recommendations by detecting:**
-        - Sentences starting with action verbs (Improving, Ensuring, etc.)
-        - Phrases like "we recommend", "should", "must"
-        - Any verb-based suggestions in your documents
-        
-        **Uses NLTK to automatically identify ALL verbs - no predefined list needed!**
-        """)
-        return
-    
-    documents = st.session_state.documents
-    doc_names = [doc['filename'] for doc in documents]
-    
-    # Document selection
-    selected_doc = st.selectbox("Select document to analyse:", doc_names)
-    
-    # Confidence slider
-    min_confidence = st.slider(
-        "Minimum confidence:",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.7,
-        step=0.05,
-        help="Only show recommendations with confidence above this threshold"
-    )
-    
-    if st.button("🔍 Extract Recommendations", type="primary"):
-        doc = next((d for d in documents if d['filename'] == selected_doc), None)
-        
-        if doc and 'text' in doc:
-            with st.spinner("Analysing document..."):
-                try:
-                    # Extract recommendations
-                    recommendations = extract_recommendations_simple(
-                        doc['text'],
-                        min_confidence=min_confidence
-                    )
-                    
-                    if recommendations:
-                        st.success(f"✅ Found {len(recommendations)} recommendations")
-                        
-                        # Show statistics
-                        extractor = SimpleRecommendationExtractor()
-                        stats = extractor.get_verb_statistics(recommendations)
-                        
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Total Found", stats['total'])
-                        with col2:
-                            st.metric("Unique Verbs", stats['unique_verbs'])
-                        with col3:
-                            st.metric("Avg Confidence", f"{stats['avg_confidence']:.0%}")
-                        
-                        # Display recommendations
-                        st.markdown("---")
-                        st.subheader("📋 Recommendations Found")
-                        
-                        for idx, rec in enumerate(recommendations, 1):
-                            with st.expander(
-                                f"**{idx}. {rec['verb'].upper()}** "
-                                f"(Confidence: {rec['confidence']:.0%})"
-                            ):
-                                st.write(rec['text'])
-                                st.caption(f"Detection method: {rec['method']}")
-                        
-                        # Export options
-                        st.markdown("---")
-                        st.subheader("💾 Export")
-                        
-                        # Create CSV data
-                        import pandas as pd
-                        df = pd.DataFrame(recommendations)
-                        csv = df.to_csv(index=False)
-                        
-                        st.download_button(
-                            label="📥 Download as CSV",
-                            data=csv,
-                            file_name=f"{selected_doc}_recommendations.csv",
-                            mime="text/csv"
-                        )
-                        
-                        # Store in session state for other tabs to use
-                        st.session_state.extracted_recommendations = recommendations
-                        
-                    else:
-                        st.warning("No recommendations found. Try lowering the confidence threshold.")
-                        
-                except Exception as e:
-                    st.error(f"Error extracting recommendations: {str(e)}")
-                    st.info("Make sure you have installed nltk: pip install nltk")
-        else:
-            st.error("Document text not available")
+
             
 def show_debug_info():
     """Show debug information"""
