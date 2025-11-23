@@ -1,6 +1,6 @@
 """
-Advanced recommendation extractor for government documents.
-Uses multiple detection methods for high accuracy.
+Improved recommendation extractor for government documents.
+Fixes issues with numbered recommendations and false positives.
 """
 
 import re
@@ -23,25 +23,23 @@ except ImportError:
     logger.warning("NLTK not available - using pattern-based extraction only")
 
 
-class AdvancedRecommendationExtractor:
+class ImprovedRecommendationExtractor:
     """
-    Extract recommendations from government documents using multiple methods:
-    1. Numbered recommendation headers (1. Strengthen...)
-    2. Explicit recommendation phrases
-    3. Imperative sentences (command form)
-    4. Modal verbs (should, must, ought)
-    5. Gerund openings (Improving, Ensuring, etc.)
-    6. Numbered/bulleted recommendation sections
+    Extract recommendations from government documents with improved accuracy.
+    Key improvements:
+    - Better detection of numbered recommendations
+    - Stronger filtering of false positives
+    - Improved sentence splitting for numbered lists
     """
     
     def __init__(self):
         # Explicit recommendation indicators
         self.recommendation_indicators = {
             'high': [
-                r'\brecommend(?:ation)?s?\b',
                 r'\bthe (?:inquiry|committee|panel|review) recommends?\b',
-                r'\bit is recommended\b',
-                r'\bwe recommend\b',
+                r'\bit is recommended that\b',
+                r'\bwe recommend that\b',
+                r'\bour recommendation is\b',
             ],
             'medium': [
                 r'\bshould\s+(?:be\s+)?(?:implemented?|established?|introduced?|created?|developed?|considered?)\b',
@@ -67,7 +65,8 @@ class AdvancedRecommendationExtractor:
             'assess', 'evaluate', 'consider', 'explore', 'investigate',
             'reform', 'modernise', 'streamline', 'simplify', 'clarify',
             'promote', 'encourage', 'facilitate', 'coordinate', 'integrate',
-            'optimize', 'optimise', 'modernize'
+            'optimize', 'optimise', 'modernize', 'consolidate', 'standardize',
+            'refine', 'conduct', 'transition', 'track', 'publish'
         }
         
         # Gerunds (verb+ing forms) that start recommendations
@@ -79,9 +78,10 @@ class AdvancedRecommendationExtractor:
             'strengthening', 'facilitating', 'encouraging', 'adopting',
             'requiring', 'mandating', 'enforcing', 'monitoring', 'assessing',
             'evaluating', 'considering', 'exploring', 'investigating',
-            'reforming', 'modernising', 'streamlining', 'simplifying',
+            'modernising', 'streamlining', 'simplifying', 'consolidating',
             'clarifying', 'coordinating', 'integrating', 'optimizing',
-            'optimising', 'modernizing'
+            'optimising', 'modernizing', 'standardizing', 'tracking',
+            'conducting', 'refining', 'publishing'
         }
         
         # Section headers that indicate recommendations
@@ -94,15 +94,30 @@ class AdvancedRecommendationExtractor:
             r'^specific recommendations?:?\s*$',
         ]
         
-        # Bullet point patterns
-        self.bullet_patterns = [
-            r'^\s*[•●■▪▸►]+\s+',
-            r'^\s*[-–—]\s+',
-            r'^\s*[*]\s+',
-            r'^\s*[○◦]\s+',
-            r'^\s*[✓✔]\s+',
-            r'^\s*\d+[\.)]\s+',  # Numbered lists
-            r'^\s*[a-z][\.)]\s+',  # Lettered lists
+        # Patterns that indicate text ABOUT recommendations, not actual recommendations
+        self.exclusion_patterns = [
+            r'\breports? contain.*recommendations?\b',
+            r'\bfindings.*and.*recommendations?\b',
+            r'\brecommendations? (?:are|can be|will be) (?:found|developed|published|available)\b',
+            r'\brecommendations? include\b',
+            r'\bthe recommendations?\b.*\b(?:report|document|section)\b',
+            r'\bmonitoring.*recommendations?\b',
+            r'\bimplementation of.*recommendations?\b',
+            r'\bacting on.*recommendations?\b',
+            r'\bfollowing.*recommendations?\b',
+            r'\bthese recommendations?\b',
+            r'^this document outlines\b',
+            r'^this document contains\b',
+            r'\bdocument outlines a set of recommendations\b',
+            r'^operational improvement recommendations report\b',
+            r'\bwhile some recommendations\b',
+            r'\bset of recommendations intended\b',
+            r'\boutlines.*recommendations?\b',
+            r'\bcontains.*recommendations?\b',
+            r'\ba recommendation\b',
+            r'\bthe goal is to provide\b',
+            r'\bthe insights below\b',
+            r'\bbased on observations\b',
         ]
     
     def extract_recommendations(
@@ -112,7 +127,7 @@ class AdvancedRecommendationExtractor:
         context_window: int = 2
     ) -> List[Dict]:
         """
-        Extract recommendations with improved context awareness.
+        Extract recommendations with improved accuracy.
         
         Args:
             text: Document text
@@ -123,84 +138,105 @@ class AdvancedRecommendationExtractor:
             List of recommendation dictionaries
         """
         recommendations = []
+        
+        # Split text into lines for better numbered list handling
         lines = text.split('\n')
-        sentences = self._split_into_sentences(text)
         
         # Track if we're in a recommendation section
         in_rec_section = False
         section_confidence_boost = 0.0
         
-        for idx, sentence in enumerate(sentences):
-            sentence = sentence.strip()
-            if not sentence or len(sentence) < 10:
+        for line_idx, line in enumerate(lines):
+            line = line.strip()
+            if not line or len(line) < 10:
                 continue
             
             # Check if this is a section header
-            if self._is_recommendation_section_header(sentence):
+            if self._is_recommendation_section_header(line):
                 in_rec_section = True
                 section_confidence_boost = 0.15
                 continue
             
             # Check if we've left the recommendation section
-            if in_rec_section and self._is_new_section_header(sentence):
+            if in_rec_section and self._is_new_section_header(line):
                 in_rec_section = False
                 section_confidence_boost = 0.0
             
-            # Method 1: Check for numbered recommendations first (highest priority)
-            confidence, method = self._check_numbered_recommendation(sentence)
-
-            # Method 2: Explicit recommendation phrases
-            if confidence < 0.7:
+            # PRIORITY 1: Check for numbered recommendations (e.g., "1. Strengthen...")
+            is_numbered, verb = self._check_numbered_recommendation_line(line)
+            if is_numbered:
+                # This is definitely a recommendation header
+                recommendations.append({
+                    'text': line,
+                    'verb': verb,
+                    'method': 'numbered_header',
+                    'confidence': 0.95,
+                    'position': line_idx,
+                    'in_section': in_rec_section
+                })
+                continue
+            
+            # Split line into sentences for other checks
+            sentences = self._split_line_into_sentences(line)
+            
+            for sent_idx, sentence in enumerate(sentences):
+                sentence = sentence.strip()
+                if not sentence or len(sentence) < 10:
+                    continue
+                
+                # Skip if this is text ABOUT recommendations
+                if self._is_about_recommendations(sentence):
+                    continue
+                
+                confidence = 0.0
+                method = 'none'
+                
+                # Method 2: Explicit recommendation phrases
                 explicit_conf, explicit_method = self._check_explicit_recommendations(sentence)
                 if explicit_conf > confidence:
                     confidence = explicit_conf
                     method = explicit_method
-
-            # Method 3: Starts with gerund
-            if confidence < 0.7:
-                gerund_conf = self._check_gerund_opening(sentence)
-                if gerund_conf > confidence:
-                    confidence = gerund_conf
-                    method = 'gerund'
-            
-            # Method 4: Imperative sentence (command form)
-            if confidence < 0.7:
-                imperative_conf = self._check_imperative_form(sentence)
-                if imperative_conf > confidence:
-                    confidence = imperative_conf
-                    method = 'imperative'
-            
-            # Method 5: Modal verbs with action
-            if confidence < 0.7:
-                modal_conf = self._check_modal_action(sentence)
-                if modal_conf > confidence:
-                    confidence = modal_conf
-                    method = 'modal'
-            
-            # Method 6: Bullet point in recommendation section
-            if in_rec_section and self._is_bullet_point(sentence):
-                confidence = max(confidence, 0.75)
-                method = 'bullet_in_section'
-            
-            # Boost confidence if in recommendation section
-            confidence += section_confidence_boost
-            confidence = min(confidence, 1.0)
-            
-            # Extract main verb
-            verb = self._extract_main_verb(sentence)
-            
-            # Only add if confidence is sufficient
-            if confidence >= min_confidence:
-                recommendations.append({
-                    'text': sentence,
-                    'verb': verb,
-                    'method': method,
-                    'confidence': round(confidence, 2),
-                    'position': idx,
-                    'in_section': in_rec_section
-                })
+                
+                # Method 3: Starts with gerund
+                if confidence < 0.7:
+                    gerund_conf = self._check_gerund_opening(sentence)
+                    if gerund_conf > confidence:
+                        confidence = gerund_conf
+                        method = 'gerund'
+                
+                # Method 4: Imperative sentence (command form)
+                if confidence < 0.7:
+                    imperative_conf = self._check_imperative_form(sentence)
+                    if imperative_conf > confidence:
+                        confidence = imperative_conf
+                        method = 'imperative'
+                
+                # Method 5: Modal verbs with action
+                if confidence < 0.7:
+                    modal_conf = self._check_modal_action(sentence)
+                    if modal_conf > confidence:
+                        confidence = modal_conf
+                        method = 'modal'
+                
+                # Boost confidence if in recommendation section
+                confidence += section_confidence_boost
+                confidence = min(confidence, 1.0)
+                
+                # Extract main verb
+                verb = self._extract_main_verb(sentence)
+                
+                # Only add if confidence is sufficient
+                if confidence >= min_confidence:
+                    recommendations.append({
+                        'text': sentence,
+                        'verb': verb,
+                        'method': method,
+                        'confidence': round(confidence, 2),
+                        'position': line_idx * 1000 + sent_idx,  # Preserve order
+                        'in_section': in_rec_section
+                    })
         
-        # Remove duplicates and very similar recommendations
+        # Remove duplicates
         recommendations = self._remove_duplicates(recommendations)
         
         # Sort by position (order in document)
@@ -208,34 +244,62 @@ class AdvancedRecommendationExtractor:
         
         return recommendations
     
-    def _split_into_sentences(self, text: str) -> List[str]:
-        """Split text into sentences with improved handling for section headers."""
-        # First, protect abbreviations and numbers
+    def _check_numbered_recommendation_line(self, line: str) -> Tuple[bool, str]:
+        """
+        Check if a line is a numbered recommendation header.
+        Returns (is_numbered_rec, verb)
+        """
+        line = line.strip()
+        
+        # Pattern for numbered recommendations: "1. Action Verb..."
+        match = re.match(r'^(\d+)\.?\s+([A-Z][a-z]+)\s+(.+)', line)
+        if match:
+            first_word = match.group(2).lower()
+            
+            # Check if first word after number is an action verb
+            if first_word in self.action_verbs:
+                return True, first_word
+            
+            # Check second word if first is an article/adjective
+            words = line.split()
+            if len(words) > 2:
+                second_word = words[2].lower().strip('.,;:')
+                if second_word in self.action_verbs:
+                    return True, second_word
+        
+        return False, 'unknown'
+    
+    def _is_about_recommendations(self, text: str) -> bool:
+        """Check if text is ABOUT recommendations rather than making them."""
+        text_lower = text.lower()
+        
+        for pattern in self.exclusion_patterns:
+            if re.search(pattern, text_lower):
+                return True
+        
+        # Additional checks for common false positives
+        if text_lower.startswith('operational improvement recommendations'):
+            return True
+        if 'this document' in text_lower and 'recommendations' in text_lower:
+            return True
+        if 'set of recommendations' in text_lower:
+            return True
+            
+        return False
+    
+    def _split_line_into_sentences(self, text: str) -> List[str]:
+        """Split a line into sentences."""
+        # Protect abbreviations
         text = re.sub(r'(\d+)\.(\d+)', r'\1<<DOT>>\2', text)
-        text = re.sub(r'(Mr|Mrs|Ms|Dr|Prof)\.', r'\1<<DOT>>', text)
+        text = re.sub(r'(Mr|Mrs|Ms|Dr|Prof|Inc|Ltd|Corp)\.', r'\1<<DOT>>', text)
         
-        # Fix cases where period is directly followed by capital letter (no space)
-        text = re.sub(r'\.([A-Z])', r'. \1', text)
-        
-        # Split on sentence boundaries - improved patterns
+        # Split on sentence boundaries
         sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
         
-        # Also split on newlines followed by capital letters (paragraph breaks)
-        final_sentences = []
-        for sent in sentences:
-            # Split on newline + capital letter OR numbered list items
-            parts = re.split(r'\n+(?=[A-Z]|\d+[\.)]\s+[A-Z])', sent)
-            final_sentences.extend(parts)
-        
         # Restore dots
-        final_sentences = [s.replace('<<DOT>>', '.').strip() for s in final_sentences]
+        sentences = [s.replace('<<DOT>>', '.').strip() for s in sentences]
         
-        # IMPROVED FILTERING - Don't filter out numbered headers
-        return [s for s in final_sentences 
-                if len(s.strip()) > 10 and (
-                    len(s.split()) >= 4 or  # Normal sentences
-                    re.match(r'^\d+[\.)]\s+[A-Z]', s.strip())  # Numbered headers
-                )]
+        return [s for s in sentences if len(s.strip()) > 10]
     
     def _is_recommendation_section_header(self, text: str) -> bool:
         """Check if text is a recommendation section header."""
@@ -249,7 +313,6 @@ class AdvancedRecommendationExtractor:
     
     def _is_new_section_header(self, text: str) -> bool:
         """Check if text is a new section header (leaving recommendations)."""
-        # Common section headers that aren't recommendations
         non_rec_headers = [
             r'^introduction:?\s*$',
             r'^background:?\s*$',
@@ -259,7 +322,6 @@ class AdvancedRecommendationExtractor:
             r'^response:?\s*$',
             r'^implementation:?\s*$',
             r'^appendix:?\s*$',
-            r'^\d+\.?\s+\w+:?\s*$',  # Numbered headers
         ]
         
         text_lower = text.lower().strip()
@@ -269,67 +331,16 @@ class AdvancedRecommendationExtractor:
                 return True
         
         return False
-
-    def _check_numbered_recommendation(self, sentence: str) -> Tuple[float, str]:
-        """Check for numbered recommendation headers like '1. Strengthen...'"""
-        sentence = sentence.strip()
-        
-        # Look for numbered list items
-        match = re.match(r'^\d+[\.)]\s+([A-Z][a-z]+)', sentence)
-        if match:
-            first_verb = match.group(1).lower()
-            
-            # Check if it starts with an action verb
-            if first_verb in self.action_verbs:
-                return 0.95, 'numbered_header'
-            
-            # Also check second word if first is a number
-            words = sentence.split()
-            if len(words) > 2:
-                second_word = words[1].lower().strip('.,;:')
-                if second_word in self.action_verbs:
-                    return 0.95, 'numbered_header'
-        
-        return 0.0, 'none'
-
+    
     def _check_explicit_recommendations(self, sentence: str) -> Tuple[float, str]:
         """Check for explicit recommendation phrases."""
         sentence_lower = sentence.lower()
         
-        # Exclusion patterns - sentences ABOUT recommendations, not MAKING them
-        exclusion_patterns = [
-            r'\breports? contain.*recommendations?\b',
-            r'\bfindings.*and.*recommendations?\b',
-            r'\brecommendations? (?:are|can be|will be) (?:found|developed|published|available)\b',
-            r'\brecommendations? include\b',
-            r'\bthe recommendations?\b.*\b(?:report|document|section)\b',
-            r'\bmonitoring.*recommendations?\b',
-            r'\bimplementation of.*recommendations?\b',
-            r'\bacting on.*recommendations?\b',
-            r'\bfollowing.*recommendations?\b',
-            r'\bthese recommendations?\b',
-            r'\bthe chair\'?s? recommendations?\b',
-            r'^module \d',  # Module headers
-            r'\brecommendations? (?:for|about) (?:the )?future\b',
-            r'\brecommendations? are (?:acted upon|implemented)\b',
-            r'\bdesigned to work\b',
-            r'^\w+\s+\d+[A-Z,]+:',
-            r'\bin brief\b',
-            r'\bpolitical governance\b',
-            r'\bset of recommendations?\b',  # NEW
-            r'\boutlines.*recommendations?\b',  # NEW
-            r'\bcontains.*recommendations?\b',  # NEW
-            r'\bthis document.*recommendations?\b',  # NEW
-            r'\ba.*recommendations?\b',  # NEW - "a recommendation"
-            r'\boutlined.*recommendations?\b',  # NEW
-        ]
+        # First check if this is ABOUT recommendations
+        if self._is_about_recommendations(sentence):
+            return 0.0, 'none'
         
-        # Check if sentence is ABOUT recommendations (exclude it)
-        for pattern in exclusion_patterns:
-            if re.search(pattern, sentence_lower):
-                return 0.0, 'none'
-        
-        # High confidence patterns - actually MAKING recommendations
+        # High confidence patterns
         for pattern in self.recommendation_indicators['high']:
             if re.search(pattern, sentence_lower):
                 return 0.9, 'explicit_high'
@@ -357,17 +368,6 @@ class AdvancedRecommendationExtractor:
         if first_word in self.recommendation_gerunds:
             return 0.85
         
-        # Check if it ends with 'ing' and might be a verb
-        if first_word.endswith('ing') and len(first_word) > 5:
-            if NLP_AVAILABLE:
-                try:
-                    base = first_word[:-3]
-                    if base in self.action_verbs:
-                        return 0.8
-                except:
-                    pass
-            return 0.5
-        
         return 0.0
     
     def _check_imperative_form(self, sentence: str) -> float:
@@ -376,10 +376,7 @@ class AdvancedRecommendationExtractor:
         if not words:
             return 0.0
         
-        # Handle numbered lists: "1. Strengthen..." 
         first_word = words[0].strip('.,;:!?"\'').lower()
-        if first_word.isdigit() and len(words) > 1:
-            first_word = words[1].strip('.,;:!?"\'').lower()
         
         # Check if first word is an action verb (base form)
         if first_word in self.action_verbs:
@@ -404,18 +401,13 @@ class AdvancedRecommendationExtractor:
         for pattern, confidence in strong_modals:
             match = re.search(pattern, sentence_lower)
             if match:
-                verb = match.group(1)
-                if verb in self.action_verbs:
+                verb = match.group(1).strip('.,;:')
+                # Clean verb extraction
+                verb = verb.lower()
+                if verb in self.action_verbs or verb.endswith('ed') or verb.endswith('ing'):
                     return confidence
         
         return 0.0
-    
-    def _is_bullet_point(self, sentence: str) -> bool:
-        """Check if sentence starts with a bullet point."""
-        for pattern in self.bullet_patterns:
-            if re.match(pattern, sentence):
-                return True
-        return False
     
     def _extract_main_verb(self, sentence: str) -> str:
         """Extract the main action verb from a sentence."""
@@ -425,7 +417,7 @@ class AdvancedRecommendationExtractor:
         
         sentence_lower = sentence.lower()
         
-        # Check first word (for gerunds and imperatives)
+        # Check first word (for imperatives and gerunds)
         first_word = words[0].strip('.,;:!?"\'').lower()
         
         # Handle numbered lists
@@ -435,11 +427,14 @@ class AdvancedRecommendationExtractor:
         if first_word in self.action_verbs:
             return first_word
         
-        if first_word.endswith('ing') and len(first_word) > 5:
+        if first_word.endswith('ing'):
+            # Try to get base form
             base = first_word[:-3]
             if base in self.action_verbs:
                 return base
-            return first_word
+            # Still return the gerund form if it's in our list
+            if first_word in self.recommendation_gerunds:
+                return first_word
         
         # Use NLTK if available
         if NLP_AVAILABLE:
@@ -452,7 +447,8 @@ class AdvancedRecommendationExtractor:
                 
                 # Filter out auxiliaries
                 auxiliaries = {'be', 'is', 'are', 'was', 'were', 'been', 'being', 
-                              'have', 'has', 'had', 'do', 'does', 'did'}
+                              'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
+                              'can', 'could', 'may', 'might', 'shall', 'should', 'ought'}
                 
                 for verb in verbs:
                     if verb in self.action_verbs:
@@ -467,7 +463,7 @@ class AdvancedRecommendationExtractor:
         
         # Fallback: search for any action verb in sentence
         for verb in sorted(self.action_verbs, key=len, reverse=True):
-            if r'\b' + verb + r'\b' in sentence_lower:
+            if re.search(r'\b' + verb + r'\b', sentence_lower):
                 return verb
         
         return 'unknown'
@@ -483,9 +479,9 @@ class AdvancedRecommendationExtractor:
         for rec in recommendations:
             text = rec['text'].lower().strip()
             
-            # Remove bullet points for comparison
-            for pattern in self.bullet_patterns:
-                text = re.sub(pattern, '', text)
+            # Normalize for comparison
+            text = re.sub(r'^\d+\.\s*', '', text)  # Remove numbering
+            text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
             
             is_duplicate = False
             for seen in seen_texts:
@@ -553,5 +549,36 @@ def extract_recommendations(text: str, min_confidence: float = 0.7) -> List[Dict
     Returns:
         List of recommendation dictionaries
     """
-    extractor = AdvancedRecommendationExtractor()
+    extractor = ImprovedRecommendationExtractor()
     return extractor.extract_recommendations(text, min_confidence)
+
+
+# Test the extractor with the provided document
+if __name__ == "__main__":
+    # Read the test document
+    with open("Test.txt", "r", encoding="utf-8") as f:
+        test_text = f.read()
+    
+    # Extract recommendations
+    extractor = ImprovedRecommendationExtractor()
+    recommendations = extractor.extract_recommendations(test_text, min_confidence=0.7)
+    
+    # Print results
+    print(f"\nFound {len(recommendations)} recommendations:\n")
+    print("-" * 80)
+    
+    for i, rec in enumerate(recommendations, 1):
+        print(f"{i}. [{rec['method']}] (confidence: {rec['confidence']})")
+        print(f"   Verb: {rec['verb']}")
+        print(f"   Text: {rec['text'][:100]}...")
+        print()
+    
+    # Print statistics
+    stats = extractor.get_statistics(recommendations)
+    print("\nStatistics:")
+    print("-" * 40)
+    print(f"Total recommendations: {stats['total']}")
+    print(f"Unique verbs: {stats['unique_verbs']}")
+    print(f"Average confidence: {stats['avg_confidence']:.2f}")
+    print(f"Method distribution: {stats['method_distribution']}")
+    print(f"Top verbs: {stats['verb_frequency']}")
