@@ -40,6 +40,7 @@ def safe_import_with_fallback():
         logger.warning(f"Import error: {e}")
         return False, None, None, None, None
 
+
 def render_recommendations_tab():
     """Render the improved recommendations extraction tab"""
     st.header("🎯 Extract Recommendations")
@@ -106,24 +107,37 @@ def render_recommendations_tab():
                         st.subheader("📋 Extracted Recommendations")
                         
                         for idx, rec in enumerate(recommendations, 1):
-                            title = f"**{idx}. {rec['verb'].upper()}** (Confidence: {rec['confidence']:.0%})"
+                            # Get the text safely
+                            rec_text = rec.get('text', '[No text available]').strip()
+                            verb = rec.get('verb', 'unknown').upper()
+                            confidence = rec.get('confidence', 0)
+                            method = rec.get('method', 'unknown')
                             
-                            with st.expander(title, expanded=(idx <= 3)):
-                                st.write(rec['text'])
-                                st.caption(f"Detection method: {rec['method']}")
+                            # Only show if text has substance
+                            if len(rec_text) > 10:
+                                title = f"**{idx}. {verb}** (Confidence: {confidence:.0%})"
+                                
+                                with st.expander(title, expanded=(idx <= 3)):
+                                    st.markdown(rec_text)
+                                    st.caption(f"Detection method: {method}")
                         
                         st.markdown("---")
-                        df_export = pd.DataFrame(recommendations)
-                        csv = df_export.to_csv(index=False)
                         
-                        st.download_button(
-                            label="📥 Download as CSV",
-                            data=csv,
-                            file_name=f"{selected_doc}_recommendations.csv",
-                            mime="text/csv"
-                        )
+                        # Filter out empty recommendations before export
+                        valid_recs = [r for r in recommendations if len(r.get('text', '').strip()) > 10]
                         
-                        st.session_state.extracted_recommendations = recommendations
+                        if valid_recs:
+                            df_export = pd.DataFrame(valid_recs)
+                            csv = df_export.to_csv(index=False)
+                            
+                            st.download_button(
+                                label=f"📥 Download as CSV ({len(valid_recs)} recommendations)",
+                                data=csv,
+                                file_name=f"{selected_doc}_recommendations.csv",
+                                mime="text/csv"
+                            )
+                        
+                        st.session_state.extracted_recommendations = valid_recs
                         
                     else:
                         st.warning("⚠️ No recommendations found. Try lowering the confidence threshold.")
@@ -134,6 +148,7 @@ def render_recommendations_tab():
                         st.code(traceback.format_exc())
         else:
             st.error("Document text not available")
+
 
 def main():
     """Main application with enhanced error handling"""
