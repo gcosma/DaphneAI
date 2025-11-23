@@ -390,18 +390,18 @@ class AdvancedRecommendationExtractor:
         return 0.0, 'none'
 
     def _check_gerund_opening(self, sentence: str) -> float:
-    """Stricter gerund rule: only accept gerunds that indicate actions."""
-    words = sentence.split()
-    if not words:
+        """Stricter gerund rule: only accept gerunds that indicate actions."""
+        words = sentence.split()
+        if not words:
+            return 0.0
+    
+        first = words[0].strip('.,;:!?"\'').lower()
+    
+        # Only accept gerunds in approved set
+        if first in self.recommendation_gerunds:
+            return 0.85
+    
         return 0.0
-
-    first = words[0].strip('.,;:!?"\'').lower()
-
-    # Only accept gerunds in approved set
-    if first in self.recommendation_gerunds:
-        return 0.85
-
-    return 0.0
 
     def _check_gerund_openingold(self, sentence: str) -> float:
         """Check if sentence starts with a recommendation gerund."""
