@@ -21,6 +21,12 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
         st.warning("📁 Please upload documents first")
         return
     
+    # Initialize session state for results
+    if 'alignment_results' not in st.session_state:
+        st.session_state.alignment_results = None
+    if 'alignment_settings' not in st.session_state:
+        st.session_state.alignment_settings = {}
+    
     # Just one slider for similarity threshold
     similarity_threshold = st.slider(
         "Match sensitivity",
@@ -91,8 +97,19 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
             
             st.success(f"✅ Created {len(alignments)} alignments (self-matches prevented)")
             
-            # Display results
-            display_simple_results(alignments, similarity_threshold)
+            # Store results in session state so they persist
+            st.session_state.alignment_results = alignments
+            st.session_state.alignment_settings = {
+                'threshold': similarity_threshold,
+                'documents': selected_docs
+            }
+    
+    # Display results from session state (persists when switching tabs)
+    if st.session_state.alignment_results is not None:
+        display_simple_results(
+            st.session_state.alignment_results, 
+            st.session_state.alignment_settings.get('threshold', 0.4)
+        )
 
 def find_all_patterns(documents: List[Dict], keywords: List[str], match_type: str) -> List[Dict]:
     """Find all patterns in documents"""
@@ -260,37 +277,77 @@ def display_simple_results(alignments: List[Dict], threshold: float):
     if displayed == 0:
         st.info("No results to display. Try adjusting the filters.")
     
-    # Export option
-    if st.button("💾 Export to CSV"):
-        csv = export_simple_csv(alignments)
+    # Export option - show download button directly if we have alignments
+    if alignments and len(alignments) > 0:
+        st.markdown("---")
+        st.markdown("### 💾 Export Results")
+        csv_data = export_simple_csv(alignments)
         st.download_button(
-            "Download CSV",
-            csv,
-            "alignment_results.csv",
-            "text/csv"
+            label="📥 Download Results as CSV",
+            data=csv_data,
+            file_name="alignment_results.csv",
+            mime="text/csv",
+            help="Download all alignment results as a CSV file"
         )
 
 def export_simple_csv(alignments: List[Dict]) -> str:
-    """Export to simple CSV format"""
+    """Export to CSV format with all details including confidence"""
     
-    lines = ["Recommendation,Rec_Document,Response,Resp_Document,Similarity"]
+    lines = ["ID,Recommendation,Rec_Document,Rec_Keyword,Response,Resp_Document,Resp_Keyword,Similarity,Match_Quality,Same_Document"]
     
+    id_counter = 1
     for alignment in alignments:
         rec = alignment['recommendation']
         
         if alignment['responses']:
             for resp_match in alignment['responses']:
                 resp = resp_match['response']
+                similarity = resp_match['similarity']
+                
+                # Determine match quality
+                if similarity > 0.7:
+                    match_quality = "Strong"
+                elif similarity > 0.5:
+                    match_quality = "Good"
+                elif similarity > 0.4:
+                    match_quality = "Moderate"
+                else:
+                    match_quality = "Weak"
+                
+                # Clean text for CSV (remove line breaks and extra spaces)
+                rec_text = rec["sentence"].replace('\n', ' ').replace('\r', ' ').strip()
+                resp_text = resp["sentence"].replace('\n', ' ').replace('\r', ' ').strip()
+                
+                # Create CSV line
                 lines.append(
-                    f'"{rec["sentence"]}","{rec["document"]["filename"]}",'
-                    f'"{resp["sentence"]}","{resp["document"]["filename"]}",'
-                    f'{resp_match["similarity"]:.2f}'
+                    f'{id_counter},'
+                    f'"{rec_text}",'
+                    f'"{rec["document"]["filename"]}",'
+                    f'"{rec["keyword"]}",'
+                    f'"{resp_text}",'
+                    f'"{resp["document"]["filename"]}",'
+                    f'"{resp["keyword"]}",'
+                    f'{similarity:.2%},'
+                    f'{match_quality},'
+                    f'{"Yes" if resp_match["same_doc"] else "No"}'
                 )
+                id_counter += 1
         else:
+            # No response found
+            rec_text = rec["sentence"].replace('\n', ' ').replace('\r', ' ').strip()
             lines.append(
-                f'"{rec["sentence"]}","{rec["document"]["filename"]}",'
-                f'"No response found","",0.00'
+                f'{id_counter},'
+                f'"{rec_text}",'
+                f'"{rec["document"]["filename"]}",'
+                f'"{rec["keyword"]}",'
+                f'"No response found",'
+                f'"",'
+                f'"",'
+                f'0%,'
+                f'No Match,'
+                f'N/A'
             )
+            id_counter += 1
     
     return "\n".join(lines)
 
