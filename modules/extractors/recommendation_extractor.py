@@ -244,27 +244,50 @@ class AdvancedRecommendationExtractor:
                 return True
         
         return False
-    
+
     def _check_explicit_recommendations(self, sentence: str) -> Tuple[float, str]:
-        """Check for explicit recommendation phrases."""
-        sentence_lower = sentence.lower()
-        
-        # High confidence patterns
-        for pattern in self.recommendation_indicators['high']:
-            if re.search(pattern, sentence_lower):
-                return 0.9, 'explicit_high'
-        
-        # Medium confidence patterns
-        for pattern in self.recommendation_indicators['medium']:
-            if re.search(pattern, sentence_lower):
-                return 0.75, 'explicit_medium'
-        
-        # Low confidence patterns
-        for pattern in self.recommendation_indicators['low']:
-            if re.search(pattern, sentence_lower):
-                return 0.6, 'explicit_low'
-        
-        return 0.0, 'none'
+    """Check for explicit recommendation phrases."""
+    sentence_lower = sentence.lower()
+    
+    # Exclusion patterns - sentences ABOUT recommendations, not MAKING them
+    exclusion_patterns = [
+        r'\breports? contain.*recommendations?\b',
+        r'\bfindings.*and.*recommendations?\b',
+        r'\brecommendations? (?:are|can be|will be) (?:found|developed|published|available)\b',
+        r'\brecommendations? include\b',
+        r'\bthe recommendations?\b.*\b(?:report|document|section)\b',
+        r'\bmonitoring.*recommendations?\b',
+        r'\bimplementation of.*recommendations?\b',
+        r'\bacting on.*recommendations?\b',
+        r'\bfollowing.*recommendations?\b',
+        r'\bthese recommendations?\b',
+        r'\bthe chair\'?s? recommendations?\b',
+    ]
+    
+    # Check if sentence is ABOUT recommendations (exclude it)
+    for pattern in exclusion_patterns:
+        if re.search(pattern, sentence_lower):
+            return 0.0, 'none'
+    
+    # High confidence patterns - actually MAKING recommendations
+    for pattern in self.recommendation_indicators['high']:
+        if re.search(pattern, sentence_lower):
+            return 0.9, 'explicit_high'
+    
+    # Medium confidence patterns
+    for pattern in self.recommendation_indicators['medium']:
+        if re.search(pattern, sentence_lower):
+            return 0.75, 'explicit_medium'
+    
+    # Low confidence patterns
+    for pattern in self.recommendation_indicators['low']:
+        if re.search(pattern, sentence_lower):
+            return 0.6, 'explicit_low'
+    
+    return 0.0, 'none'
+
+
+    
     
     def _check_gerund_opening(self, sentence: str) -> float:
         """Check if sentence starts with a recommendation gerund."""
