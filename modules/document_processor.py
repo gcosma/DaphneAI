@@ -5,7 +5,7 @@ import streamlit as st
 from datetime import datetime
 from typing import List, Dict, Any
 import logging
-
+import re
 # PDF processing with fallbacks
 try:
     import pdfplumber
