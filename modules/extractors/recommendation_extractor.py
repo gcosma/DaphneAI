@@ -262,7 +262,15 @@ class AdvancedRecommendationExtractor:
             r'\bfollowing.*recommendations?\b',
             r'\bthese recommendations?\b',
             r'\bthe chair\'?s? recommendations?\b',
+            r'^module \d',  # Module headers
+            r'\brecommendations? (?:for|about) (?:the )?future\b',  # "recommendations for the future"
+            r'\brecommendations? are (?:acted upon|implemented)\b',  # "recommendations are acted upon"
+            r'\bdesigned to work\b',  # "These are designed to work"
+            r'^\w+\s+\d+[A-Z,]+:',  # Headers like "Module 2, 2A, 2B:"
+            r'\bin brief\b',  # Report titles
+            r'\bpolitical governance\b',  # Headers
         ]
+
         
         # Check if sentence is ABOUT recommendations (exclude it)
         for pattern in exclusion_patterns:
