@@ -293,6 +293,35 @@ def display_simple_results(alignments: List[Dict], threshold: float):
 def export_simple_csv(alignments: List[Dict]) -> str:
     """Export to CSV format with all details including confidence"""
     
+    def clean_text_for_csv(text: str) -> str:
+        """Clean text for CSV export - handle special characters"""
+        if not text:
+            return ""
+        
+        # Replace smart quotes with regular quotes
+        text = text.replace('"', '"').replace('"', '"')  # Smart double quotes
+        text = text.replace(''', "'").replace(''', "'")  # Smart single quotes
+        
+        # Replace other problematic characters
+        text = text.replace('–', '-').replace('—', '-')  # Em and en dashes
+        text = text.replace('…', '...')  # Ellipsis
+        text = text.replace('\n', ' ').replace('\r', ' ')  # Line breaks
+        text = text.replace('\t', ' ')  # Tabs
+        
+        # Remove non-breaking spaces and other unicode spaces
+        text = text.replace('\u00A0', ' ')  # Non-breaking space
+        text = text.replace('\u2009', ' ')  # Thin space
+        text = text.replace('\u200B', '')   # Zero-width space
+        
+        # Clean up multiple spaces
+        import re
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Escape quotes for CSV
+        text = text.replace('"', '""')  # Escape remaining quotes
+        
+        return text.strip()
+    
     lines = ["ID,Recommendation,Rec_Document,Rec_Keyword,Response,Resp_Document,Resp_Keyword,Similarity,Match_Quality,Same_Document"]
     
     id_counter = 1
@@ -314,19 +343,23 @@ def export_simple_csv(alignments: List[Dict]) -> str:
                 else:
                     match_quality = "Weak"
                 
-                # Clean text for CSV (remove line breaks and extra spaces)
-                rec_text = rec["sentence"].replace('\n', ' ').replace('\r', ' ').strip()
-                resp_text = resp["sentence"].replace('\n', ' ').replace('\r', ' ').strip()
+                # Clean text for CSV
+                rec_text = clean_text_for_csv(rec["sentence"])
+                resp_text = clean_text_for_csv(resp["sentence"])
+                rec_doc = clean_text_for_csv(rec["document"]["filename"])
+                resp_doc = clean_text_for_csv(resp["document"]["filename"])
+                rec_keyword = clean_text_for_csv(rec["keyword"])
+                resp_keyword = clean_text_for_csv(resp["keyword"])
                 
                 # Create CSV line
                 lines.append(
                     f'{id_counter},'
                     f'"{rec_text}",'
-                    f'"{rec["document"]["filename"]}",'
-                    f'"{rec["keyword"]}",'
+                    f'"{rec_doc}",'
+                    f'"{rec_keyword}",'
                     f'"{resp_text}",'
-                    f'"{resp["document"]["filename"]}",'
-                    f'"{resp["keyword"]}",'
+                    f'"{resp_doc}",'
+                    f'"{resp_keyword}",'
                     f'{similarity:.2%},'
                     f'{match_quality},'
                     f'{"Yes" if resp_match["same_doc"] else "No"}'
@@ -334,12 +367,15 @@ def export_simple_csv(alignments: List[Dict]) -> str:
                 id_counter += 1
         else:
             # No response found
-            rec_text = rec["sentence"].replace('\n', ' ').replace('\r', ' ').strip()
+            rec_text = clean_text_for_csv(rec["sentence"])
+            rec_doc = clean_text_for_csv(rec["document"]["filename"])
+            rec_keyword = clean_text_for_csv(rec["keyword"])
+            
             lines.append(
                 f'{id_counter},'
                 f'"{rec_text}",'
-                f'"{rec["document"]["filename"]}",'
-                f'"{rec["keyword"]}",'
+                f'"{rec_doc}",'
+                f'"{rec_keyword}",'
                 f'"No response found",'
                 f'"",'
                 f'"",'
