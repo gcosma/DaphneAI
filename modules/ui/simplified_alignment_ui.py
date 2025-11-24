@@ -16,12 +16,20 @@ def clean_display_text(text: str) -> str:
     if not text:
         return ""
     
+    # Fix UTF-8 encoding corruption (these are very common in PDFs)
+    text = text.replace('â€™', "'")   # Corrupted apostrophe
+    text = text.replace('â€œ', '"')   # Corrupted opening quote
+    text = text.replace('â€', '"')    # Corrupted closing quote
+    text = text.replace('â€¢', '•')   # Corrupted bullet point
+    text = text.replace('â€"', '-')   # Corrupted dash
+    text = text.replace('â€¦', '...')  # Corrupted ellipsis
+    
     # Fix common PDF extraction errors
     text = text.replace('�', 'ti')  # Common PDF corruption where 'ti' becomes �
     text = text.replace('ﬁ', 'fi').replace('ﬂ', 'fl')  # Ligatures
     text = text.replace('ﬀ', 'ff').replace('ﬃ', 'ffi').replace('ﬄ', 'ffl')
     
-    # Replace smart quotes with regular quotes
+    # Replace smart quotes with regular quotes (if any remain)
     text = text.replace('"', '"').replace('"', '"')  # Smart double quotes
     text = text.replace(''', "'").replace(''', "'")  # Smart single quotes
     
@@ -329,12 +337,20 @@ def export_simple_csv(alignments: List[Dict]) -> str:
         if not text:
             return ""
         
+        # Fix UTF-8 encoding corruption (these are very common in PDFs)
+        text = text.replace('â€™', "'")   # Corrupted apostrophe
+        text = text.replace('â€œ', '"')   # Corrupted opening quote
+        text = text.replace('â€', '"')    # Corrupted closing quote
+        text = text.replace('â€¢', '•')   # Corrupted bullet point
+        text = text.replace('â€"', '-')   # Corrupted dash
+        text = text.replace('â€¦', '...')  # Corrupted ellipsis
+        
         # Fix common PDF extraction errors
         text = text.replace('�', 'ti')  # Common PDF corruption where 'ti' becomes �
         text = text.replace('ﬁ', 'fi').replace('ﬂ', 'fl')  # Ligatures
         text = text.replace('ﬀ', 'ff').replace('ﬃ', 'ffi').replace('ﬄ', 'ffl')
         
-        # Replace smart quotes with regular quotes
+        # Replace smart quotes with regular quotes (if any remain)
         text = text.replace('"', '"').replace('"', '"')  # Smart double quotes
         text = text.replace(''', "'").replace(''', "'")  # Smart single quotes
         
