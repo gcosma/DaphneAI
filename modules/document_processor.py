@@ -35,6 +35,11 @@ def clean_extracted_text(text: str) -> str:
     if not text:
         return ""
     
+    # Fix common PDF extraction errors
+    text = text.replace('�', 'ti')  # Common PDF corruption where 'ti' becomes �
+    text = text.replace('ﬁ', 'fi').replace('ﬂ', 'fl')  # Ligatures
+    text = text.replace('ﬀ', 'ff').replace('ﬃ', 'ffi').replace('ﬄ', 'ffl')
+    
     # Replace smart quotes with regular quotes
     text = text.replace('"', '"').replace('"', '"')  # Smart double quotes
     text = text.replace(''', "'").replace(''', "'")  # Smart single quotes
@@ -50,10 +55,6 @@ def clean_extracted_text(text: str) -> str:
     text = text.replace('\u202F', ' ')  # Narrow no-break space
     text = text.replace('\u2028', '\n')  # Line separator
     text = text.replace('\u2029', '\n\n')  # Paragraph separator
-    
-    # Fix ligatures that sometimes appear in PDFs
-    text = text.replace('ﬁ', 'fi').replace('ﬂ', 'fl')
-    text = text.replace('ﬀ', 'ff').replace('ﬃ', 'ffi').replace('ﬄ', 'ffl')
     
     # Fix multiple spaces
     text = re.sub(r' {2,}', ' ', text)
