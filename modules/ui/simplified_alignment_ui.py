@@ -11,6 +11,34 @@ from typing import List, Dict, Any
 import re
 from difflib import SequenceMatcher
 
+def clean_display_text(text: str) -> str:
+    """Clean text for display - remove special characters"""
+    if not text:
+        return ""
+    
+    # Fix common PDF extraction errors
+    text = text.replace('�', 'ti')  # Common PDF corruption where 'ti' becomes �
+    text = text.replace('ﬁ', 'fi').replace('ﬂ', 'fl')  # Ligatures
+    text = text.replace('ﬀ', 'ff').replace('ﬃ', 'ffi').replace('ﬄ', 'ffl')
+    
+    # Replace smart quotes with regular quotes
+    text = text.replace('"', '"').replace('"', '"')  # Smart double quotes
+    text = text.replace(''', "'").replace(''', "'")  # Smart single quotes
+    
+    # Replace other problematic characters
+    text = text.replace('–', '-').replace('—', '-')  # Em and en dashes
+    text = text.replace('…', '...')  # Ellipsis
+    
+    # Remove non-breaking spaces and other unicode spaces
+    text = text.replace('\u00A0', ' ')  # Non-breaking space
+    text = text.replace('\u2009', ' ')  # Thin space
+    text = text.replace('\u200B', '')   # Zero-width space
+    
+    # Clean up multiple spaces
+    text = re.sub(r'\s+', ' ', text)
+    
+    return text.strip()
+
 def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
     """Simple alignment interface with self-match prevention built in"""
     
@@ -125,20 +153,23 @@ def find_all_patterns(documents: List[Dict], keywords: List[str], match_type: st
         sentences = re.split(r'[.!?]+', text)
         
         for sent_idx, sentence in enumerate(sentences):
-            if len(sentence.strip()) < 20:  # Skip very short sentences
+            # Clean the sentence for display
+            clean_sent = clean_display_text(sentence.strip())
+            
+            if len(clean_sent) < 20:  # Skip very short sentences
                 continue
             
-            sentence_lower = sentence.lower()
+            sentence_lower = clean_sent.lower()
             
             # Check if any keyword is in sentence
             for keyword in keywords:
                 if keyword in sentence_lower:
-                    # Calculate position
+                    # Calculate position using original text
                     char_position = text.find(sentence)
                     
                     matches.append({
                         'document': doc,
-                        'sentence': sentence.strip(),
+                        'sentence': clean_sent,  # Store cleaned text
                         'keyword': keyword,
                         'type': match_type,
                         'position': char_position,
@@ -297,6 +328,11 @@ def export_simple_csv(alignments: List[Dict]) -> str:
         """Clean text for CSV export - handle special characters"""
         if not text:
             return ""
+        
+        # Fix common PDF extraction errors
+        text = text.replace('�', 'ti')  # Common PDF corruption where 'ti' becomes �
+        text = text.replace('ﬁ', 'fi').replace('ﬂ', 'fl')  # Ligatures
+        text = text.replace('ﬀ', 'ff').replace('ﬃ', 'ffi').replace('ﬄ', 'ffl')
         
         # Replace smart quotes with regular quotes
         text = text.replace('"', '"').replace('"', '"')  # Smart double quotes
