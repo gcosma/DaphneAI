@@ -1,5 +1,6 @@
 # modules/document_processor.py
 # Simple, clean document processor for Streamlit document search
+# WITH CHARACTER CLEANING to fix encoding issues
 
 import streamlit as st
 from datetime import datetime
@@ -28,6 +29,39 @@ try:
 except ImportError:
     DOCX_AVAILABLE = False
     logging.warning("python-docx not available")
+
+def clean_extracted_text(text: str) -> str:
+    """Clean text extracted from documents - remove special characters"""
+    if not text:
+        return ""
+    
+    # Replace smart quotes with regular quotes
+    text = text.replace('"', '"').replace('"', '"')  # Smart double quotes
+    text = text.replace(''', "'").replace(''', "'")  # Smart single quotes
+    
+    # Replace other problematic characters
+    text = text.replace('–', '-').replace('—', '-')  # Em and en dashes
+    text = text.replace('…', '...')  # Ellipsis
+    
+    # Remove non-breaking spaces and other unicode spaces
+    text = text.replace('\u00A0', ' ')  # Non-breaking space
+    text = text.replace('\u2009', ' ')  # Thin space
+    text = text.replace('\u200B', '')   # Zero-width space
+    text = text.replace('\u202F', ' ')  # Narrow no-break space
+    text = text.replace('\u2028', '\n')  # Line separator
+    text = text.replace('\u2029', '\n\n')  # Paragraph separator
+    
+    # Fix ligatures that sometimes appear in PDFs
+    text = text.replace('ﬁ', 'fi').replace('ﬂ', 'fl')
+    text = text.replace('ﬀ', 'ff').replace('ﬃ', 'ffi').replace('ﬄ', 'ffl')
+    
+    # Fix multiple spaces
+    text = re.sub(r' {2,}', ' ', text)
+    
+    # Fix multiple newlines (more than 2 in a row)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    return text
 
 def process_uploaded_files(uploaded_files: List) -> List[Dict[str, Any]]:
     """
@@ -65,6 +99,9 @@ def process_uploaded_files(uploaded_files: List) -> List[Dict[str, Any]]:
                     'processed_at': datetime.now().isoformat()
                 })
                 continue
+            
+            # Clean the extracted text
+            text = clean_extracted_text(text)
             
             # Create document record
             doc = {
@@ -118,7 +155,8 @@ def extract_pdf_text(uploaded_file) -> str:
                 # Replace single newlines with spaces, but keep double newlines (paragraphs)
                 full_text = re.sub(r'(?<!\n)\n(?!\n)', ' ', full_text)
                 
-                return full_text
+                # Clean the text before returning
+                return clean_extracted_text(full_text)
         
         # Fallback to PyPDF2
         elif PYPDF2_AVAILABLE:
@@ -140,7 +178,8 @@ def extract_pdf_text(uploaded_file) -> str:
             # Fix single-word-per-line issue
             full_text = re.sub(r'(?<!\n)\n(?!\n)', ' ', full_text)
             
-            return full_text
+            # Clean the text before returning
+            return clean_extracted_text(full_text)
     
     except Exception as e:
         logging.error(f"PDF extraction error: {e}")
@@ -152,14 +191,17 @@ def extract_txt_text(uploaded_file) -> str:
     """Extract text from TXT file with encoding detection"""
     try:
         # Try UTF-8 first
-        return uploaded_file.getvalue().decode('utf-8')
+        text = uploaded_file.getvalue().decode('utf-8')
     except UnicodeDecodeError:
         try:
             # Try with latin-1 encoding
-            return uploaded_file.getvalue().decode('latin-1')
+            text = uploaded_file.getvalue().decode('latin-1')
         except UnicodeDecodeError:
             # Last resort: ignore errors
-            return uploaded_file.getvalue().decode('utf-8', errors='ignore')
+            text = uploaded_file.getvalue().decode('utf-8', errors='ignore')
+    
+    # Clean the text before returning
+    return clean_extracted_text(text)
 
 def extract_docx_text(uploaded_file) -> str:
     """Extract text from DOCX file"""
@@ -185,7 +227,10 @@ def extract_docx_text(uploaded_file) -> str:
                     if cell.text.strip():
                         text_parts.append(cell.text)
         
-        return '\n'.join(text_parts)
+        full_text = '\n'.join(text_parts)
+        
+        # Clean the text before returning
+        return clean_extracted_text(full_text)
     
     except Exception as e:
         logging.error(f"DOCX extraction error: {e}")
