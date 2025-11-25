@@ -689,24 +689,40 @@ def render_basic_analytics_fallback():
 def show_alignment_feature_info():
     """Show information about the alignment feature"""
     st.markdown("""
-    ### 🎯 What This Feature Does:
+    ### 🔗 What This Feature Does
     
-    **🔍 Automatically finds:**
-    - All recommendations in your documents
-    - Corresponding responses to those recommendations
-    - Aligns them using AI similarity matching
+    This feature finds **government responses** to recommendations and classifies them.
     
-    **📊 Provides:**
-    - Side-by-side view of recommendation + response
-    - AI-generated summaries of each pair
-    - Confidence scores for alignments
-    - Export options for further analysis
+    ---
     
-    **💡 Perfect for:**
-    - Government inquiry reports
-    - Policy documents and responses
-    - Committee recommendations and outcomes
-    - Audit findings and management responses
+    ### 📋 How To Use
+    
+    **Step 1:** Go to the **🎯 Recommendations** tab
+    - Upload your inquiry/report document
+    - Extract recommendations
+    
+    **Step 2:** Return here to **🔗 Align Rec-Resp** tab
+    - Upload your government response document
+    - Click "Find Responses"
+    
+    ---
+    
+    ### 📊 Response Classifications
+    
+    | Status | Meaning |
+    |--------|---------|
+    | ✅ **Accepted** | Government fully accepts the recommendation |
+    | ⚠️ **Partial** | Accepted in principle or with modifications |
+    | ❌ **Rejected** | Government does not accept the recommendation |
+    | 📝 **Noted** | Acknowledged but no clear commitment |
+    | ❓ **No Response** | No matching response found |
+    
+    ---
+    
+    **💡 Best for:**
+    - Government inquiry reports + official responses
+    - Committee recommendations + government replies
+    - Audit findings + management responses
     """)
 
 def render_error_recovery():
