@@ -468,12 +468,12 @@ def main():
     """Main application with enhanced error handling"""
     try:
         st.set_page_config(
-            page_title="DaphneAI - Government Document Analysis", 
+            page_title="DaphneAI - Document Analysis", 
             layout="wide",
             initial_sidebar_state="expanded"
         )
         
-        st.title("🏛️ DaphneAI - Government Document Analysis")
+        st.title("🏛️ DaphneAI - Recommendation & Response Document Analysis")
         st.markdown("*Advanced document processing and search for government content*")
         
         # Check module availability
