@@ -215,7 +215,7 @@ def main():
                 "📁 Upload", 
                 "🔍 Extract", 
                 "🔍 Search",
-                "🔗 Align Rec-Resp",
+                "🔗 Align Recommendations-Responses",
                 "🎯 Recommendations",
                 "📊 Analytics"
             ])
