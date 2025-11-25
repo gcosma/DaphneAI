@@ -216,8 +216,8 @@ def main():
                 "🔍 Extract", 
                 "🔍 Search",
                 "🔗 Align Rec-Resp",
-                "📊 Analytics",
-                "🎯 Recommendations"  # NEW - This is tab6
+                "🎯 Recommendations",
+                "📊 Analytics"
             ])
             
             with tab1:
@@ -231,13 +231,13 @@ def main():
             
             with tab4:
                 render_alignment_tab_safe()
-            
-            with tab5:
-                render_analytics_tab_safe(render_analytics_tab)
-            
-            with tab6:  # NEW - RECOMMENDATIONS TAB
+                
+            with tab5:  # NEW - RECOMMENDATIONS TAB
                 render_recommendations_tab()
                 
+            with tab6:
+                render_analytics_tab_safe(render_analytics_tab)
+            
         except Exception as e:
             st.error(f"Tab rendering error: {str(e)}")
             render_error_recovery()
