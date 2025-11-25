@@ -673,9 +673,7 @@ def render_search_tab_safe(setup_search_tab):
 
 def render_alignment_tab_safe():
     """Safe alignment tab with error handling"""
-    try:
-        st.header("🔗 Recommendation-Response Alignment")
-        
+    try:        
         if 'documents' not in st.session_state or not st.session_state.documents:
             st.warning("📁 Please upload documents first in the Upload tab.")
             return
