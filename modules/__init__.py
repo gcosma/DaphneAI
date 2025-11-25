@@ -8,33 +8,59 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# Package metadata - FIXED: Use single underscores
-__version__ = "2.0.0"
+# Package metadata
+__version__ = "2.1.0"  # Bumped for strict extractor
 __description__ = "Advanced Document Search System with RAG + Smart Search"
 __author__ = "DaphneAI Team"
 
-# Recommendation extractor
-try:
-    from .extractors.recommendation_extractor import (
-        extract_recommendations,
-        AdvancedRecommendationExtractor
-    )
-    RECOMMENDATION_EXTRACTOR_AVAILABLE = True
-except ImportError as e:
-    logging.warning(f"Could not import recommendation_extractor: {e}")
-    RECOMMENDATION_EXTRACTOR_AVAILABLE = False
-    
-    def extract_recommendations(text, min_confidence=0.7):
-        logging.error("Recommendation extractor not available")
-        return []
-    
-    class AdvancedRecommendationExtractor:
-        def __init__(self):
-            pass
-        def extract_recommendations(self, text, min_confidence=0.7):
-            return []
+# =============================================================================
+# RECOMMENDATION EXTRACTOR - UPDATED to use StrictRecommendationExtractor
+# =============================================================================
+# Priority: Use the strict extractor (simple_recommendation_extractor.py)
+# which eliminates ~90% of false positives from PDF artifacts, URLs, timestamps
 
-# Import functions with proper error handling
+try:
+    # FIRST: Try to import the STRICT extractor (the good one)
+    from .simple_recommendation_extractor import (
+        extract_recommendations,
+        StrictRecommendationExtractor,
+    )
+    # Alias for backward compatibility
+    AdvancedRecommendationExtractor = StrictRecommendationExtractor
+    RECOMMENDATION_EXTRACTOR_AVAILABLE = True
+    logging.info("Using StrictRecommendationExtractor (improved filtering)")
+    
+except ImportError as e:
+    logging.warning(f"Could not import simple_recommendation_extractor: {e}")
+    
+    # FALLBACK: Try the old extractor
+    try:
+        from .extractors.recommendation_extractor import (
+            extract_recommendations,
+            AdvancedRecommendationExtractor
+        )
+        RECOMMENDATION_EXTRACTOR_AVAILABLE = True
+        logging.warning("Using legacy AdvancedRecommendationExtractor (may have false positives)")
+        
+    except ImportError as e2:
+        logging.warning(f"Could not import any recommendation_extractor: {e2}")
+        RECOMMENDATION_EXTRACTOR_AVAILABLE = False
+        
+        def extract_recommendations(text, min_confidence=0.7):
+            logging.error("Recommendation extractor not available")
+            return []
+        
+        class AdvancedRecommendationExtractor:
+            def __init__(self):
+                pass
+            def extract_recommendations(self, text, min_confidence=0.7):
+                return []
+            def get_statistics(self, recommendations):
+                return {'total': 0, 'methods': {}, 'top_verbs': {}, 'avg_confidence': 0}
+
+# =============================================================================
+# CORE UTILITIES
+# =============================================================================
 try:
     from .core_utils import setup_logging, log_action, search_analytics
     CORE_UTILS_AVAILABLE = True
@@ -42,7 +68,6 @@ except ImportError as e:
     logging.warning(f"Could not import core_utils: {e}")
     CORE_UTILS_AVAILABLE = False
     
-    # Provide dummy functions
     def setup_logging():
         return logging.getLogger(__name__)
     
@@ -52,6 +77,9 @@ except ImportError as e:
     def search_analytics():
         return {'total_searches': 0, 'total_uploads': 0}
 
+# =============================================================================
+# DOCUMENT PROCESSOR
+# =============================================================================
 try:
     from .document_processor import process_uploaded_files, get_processing_stats, check_dependencies
     DOCUMENT_PROCESSOR_AVAILABLE = True
@@ -59,7 +87,6 @@ except ImportError as e:
     logging.warning(f"Could not import document_processor: {e}")
     DOCUMENT_PROCESSOR_AVAILABLE = False
     
-    # Provide dummy functions
     def process_uploaded_files(files):
         return [{'filename': f.name, 'error': 'Document processor not available'} for f in files]
     
@@ -69,7 +96,9 @@ except ImportError as e:
     def check_dependencies():
         return {'pdfplumber': False, 'PyPDF2': False, 'python-docx': False}
 
-# UI components - updated import path
+# =============================================================================
+# UI COMPONENTS
+# =============================================================================
 try:
     from .ui import render_search_interface, render_recommendation_alignment_interface
     UI_AVAILABLE = True
@@ -86,7 +115,9 @@ except ImportError as e:
         import streamlit as st
         st.error("Recommendation alignment components not available")
 
-# Integration helper fallback
+# =============================================================================
+# INTEGRATION HELPER
+# =============================================================================
 try:
     from .integration_helper import (
         setup_search_tab, 
@@ -99,7 +130,6 @@ except ImportError as e:
     logging.warning(f"Could not import integration_helper: {e}")
     INTEGRATION_HELPER_AVAILABLE = False
     
-    # Provide basic fallbacks
     def setup_search_tab():
         import streamlit as st
         st.error("Integration helper not available")
@@ -114,11 +144,13 @@ except ImportError as e:
         import streamlit as st
         st.info("Analytics not available")
 
-# Package exports - FIXED: Use single underscores
+# =============================================================================
+# PACKAGE EXPORTS
+# =============================================================================
 __all__ = [
-    # Recommendation extractor
+    # Recommendation extractor (now uses strict version)
     'extract_recommendations',
-    'AdvancedRecommendationExtractor',
+    'AdvancedRecommendationExtractor',  # Alias to StrictRecommendationExtractor
     
     # Core utilities
     'setup_logging',
@@ -148,7 +180,9 @@ __all__ = [
     'RECOMMENDATION_EXTRACTOR_AVAILABLE'
 ]
 
-# Log package initialization
+# =============================================================================
+# PACKAGE STATUS
+# =============================================================================
 logger = logging.getLogger(__name__)
 logger.info(f"Initialized document search package v{__version__}")
 logger.info(f"Core utils: {'✓' if CORE_UTILS_AVAILABLE else '✗'}")
@@ -157,7 +191,7 @@ logger.info(f"UI components: {'✓' if UI_AVAILABLE else '✗'}")
 logger.info(f"Integration helper: {'✓' if INTEGRATION_HELPER_AVAILABLE else '✗'}")
 logger.info(f"Recommendation extractor: {'✓' if RECOMMENDATION_EXTRACTOR_AVAILABLE else '✗'}")
 
-# Convenience function for package status
+
 def get_package_status():
     """Get the status of all package components"""
     return {
