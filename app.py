@@ -363,6 +363,16 @@ def render_recommendations_tab():
     
     selected_doc = st.selectbox("Select document to analyse:", doc_names)
     
+    # FIX: Clear old results when document selection changes
+    if 'last_analysed_doc' not in st.session_state:
+        st.session_state.last_analysed_doc = None
+    
+    if selected_doc != st.session_state.last_analysed_doc:
+        # Document changed - clear previous results
+        if 'extracted_recommendations' in st.session_state:
+            del st.session_state.extracted_recommendations
+        st.session_state.last_analysed_doc = selected_doc
+    
     if st.button("🔍 Extract Recommendations", type="primary"):
         doc = next((d for d in documents if d['filename'] == selected_doc), None)
         
