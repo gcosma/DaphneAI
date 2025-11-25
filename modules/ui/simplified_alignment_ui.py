@@ -81,6 +81,9 @@ def extract_response_sentences(text: str) -> List[Dict]:
     
     responses = []
     
+    # Track if we're in a "Government response to recommendation X" section
+    current_rec_number = None
+    
     for idx, sentence in enumerate(sentences):
         sentence = sentence.strip()
         if len(sentence) < 30:
@@ -88,7 +91,29 @@ def extract_response_sentences(text: str) -> List[Dict]:
         
         sentence_lower = sentence.lower()
         
-        # Check if this looks like a response
+        # =================================================================
+        # SKIP sentences that are just quoting recommendations
+        # =================================================================
+        
+        # Skip if it starts with "Recommendation N" and doesn't have response language
+        if re.match(r'^recommendation\s+\d+\s+', sentence_lower):
+            # Check if this also contains response language
+            has_response_language = any(term in sentence_lower for term in 
+                ['government response', 'accept', 'reject', 'agree', 'the government', 
+                 'we will', 'we accept', 'support', 'noted'])
+            if not has_response_language:
+                continue  # Skip - this is just quoting the recommendation
+        
+        # =================================================================
+        # Detect "Government response to recommendation N" headers
+        # =================================================================
+        gov_resp_match = re.search(r'government\s+response\s+to\s+recommendation\s+(\d+)', sentence_lower)
+        if gov_resp_match:
+            current_rec_number = gov_resp_match.group(1)
+        
+        # =================================================================
+        # Check if this looks like an actual response
+        # =================================================================
         is_response = False
         response_type = 'unknown'
         confidence = 0.0
@@ -104,7 +129,7 @@ def extract_response_sentences(text: str) -> List[Dict]:
             if is_response:
                 break
         
-        # Check for general response indicators
+        # Check for general response indicators (must have multiple)
         if not is_response:
             indicator_count = sum(1 for ind in RESPONSE_INDICATORS if ind in sentence_lower)
             if indicator_count >= 2:
@@ -112,11 +137,22 @@ def extract_response_sentences(text: str) -> List[Dict]:
                 response_type = 'general_response'
                 confidence = 0.6 + (indicator_count * 0.1)
         
-        # Check for recommendation number references
+        # Check for "The government" statements
+        if not is_response and re.search(r'\bthe\s+government\s+(will|has|is|supports?|agrees?|accepts?)\b', sentence_lower):
+            is_response = True
+            response_type = 'government_statement'
+            confidence = 0.85
+        
+        # Check for recommendation number references in response context
         rec_ref = re.search(r'recommendation\s+(\d+)', sentence_lower)
         if rec_ref:
-            is_response = True
-            confidence = max(confidence, 0.8)
+            # Only count as response if it has response language
+            if any(term in sentence_lower for term in ['accept', 'reject', 'agree', 'support', 'response', 'government']):
+                is_response = True
+                confidence = max(confidence, 0.8)
+        
+        # Use the tracked recommendation number if we're in a response section
+        detected_rec_number = rec_ref.group(1) if rec_ref else current_rec_number
         
         if is_response:
             responses.append({
@@ -124,7 +160,7 @@ def extract_response_sentences(text: str) -> List[Dict]:
                 'position': idx,
                 'response_type': response_type,
                 'confidence': min(confidence, 1.0),
-                'rec_number': rec_ref.group(1) if rec_ref else None
+                'rec_number': detected_rec_number
             })
     
     return responses
@@ -203,16 +239,44 @@ def find_best_response(recommendation: Dict, responses: List[Dict],
     for response in responses:
         resp_text = response.get('text', '')
         
-        # Calculate base similarity
+        # =================================================================
+        # SELF-MATCH PREVENTION - Don't match recommendation with itself
+        # =================================================================
+        
+        # Check 1: Exact or near-exact text match (it's quoting the recommendation)
+        if is_self_match(rec_text, resp_text):
+            continue
+        
+        # Check 2: Response starts with "Recommendation N" pattern (it's quoting)
+        if re.match(r'^Recommendation\s+\d+\s+', resp_text, re.IGNORECASE):
+            # This is likely quoting the recommendation, not a response
+            # Unless it also contains response language
+            if not any(term in resp_text.lower() for term in 
+                      ['government response', 'accept', 'reject', 'agree', 'support', 
+                       'the government', 'we will', 'we accept', 'we agree']):
+                continue
+        
+        # =================================================================
+        # Calculate similarity
+        # =================================================================
         similarity = calculate_similarity(rec_text, resp_text)
         
         # Boost if response references the same recommendation number
         if rec_number and response.get('rec_number') == rec_number:
-            similarity += 0.4
+            similarity += 0.3
         
-        # Boost if response contains key terms from recommendation
-        if any(term in resp_text.lower() for term in ['recommendation', 'accept', 'reject', 'implement']):
-            similarity += 0.1
+        # Boost if response contains actual response language
+        response_boost = 0
+        for term in ['government response', 'accept', 'reject', 'agree', 'support', 
+                     'the government will', 'we will', 'implement']:
+            if term in resp_text.lower():
+                response_boost += 0.1
+        similarity += min(response_boost, 0.3)
+        
+        # Penalise if response looks like it's just quoting the recommendation
+        if similarity > 0.8 and not any(term in resp_text.lower() for term in 
+                                        ['accept', 'reject', 'agree', 'support', 'government']):
+            similarity *= 0.5  # Heavy penalty for high similarity without response language
         
         if similarity > best_score and similarity >= min_similarity:
             best_score = similarity
@@ -226,6 +290,49 @@ def find_best_response(recommendation: Dict, responses: List[Dict],
             }
     
     return best_match
+
+
+def is_self_match(rec_text: str, resp_text: str) -> bool:
+    """Check if the response is actually just quoting the recommendation"""
+    
+    # Clean texts for comparison
+    rec_clean = re.sub(r'\s+', ' ', rec_text.lower().strip())
+    resp_clean = re.sub(r'\s+', ' ', resp_text.lower().strip())
+    
+    # Check 1: Exact match
+    if rec_clean == resp_clean:
+        return True
+    
+    # Check 2: One contains the other almost entirely
+    if len(rec_clean) > 50 and len(resp_clean) > 50:
+        # Check if response is contained in recommendation or vice versa
+        if rec_clean in resp_clean or resp_clean in rec_clean:
+            return True
+    
+    # Check 3: Very high similarity (>90%) without response keywords
+    # Use a quick check - compare first 100 chars
+    if len(rec_clean) >= 100 and len(resp_clean) >= 100:
+        if rec_clean[:100] == resp_clean[:100]:
+            # Same start - check if response has actual response language
+            response_words = ['accept', 'reject', 'agree', 'support', 'government response', 
+                             'we will', 'the government', 'noted', 'implement']
+            if not any(word in resp_clean for word in response_words):
+                return True
+    
+    # Check 4: Calculate actual text overlap
+    rec_words = set(rec_clean.split())
+    resp_words = set(resp_clean.split())
+    
+    if len(rec_words) > 10 and len(resp_words) > 10:
+        overlap = len(rec_words & resp_words) / min(len(rec_words), len(resp_words))
+        if overlap > 0.85:
+            # Very high overlap - check for response language
+            response_words = ['accept', 'reject', 'agree', 'support', 'government response', 
+                             'we will', 'the government', 'noted', 'implement']
+            if not any(word in resp_clean for word in response_words):
+                return True
+    
+    return False
 
 
 # =============================================================================
