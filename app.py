@@ -105,57 +105,70 @@ def render_semantic_search_tab():
             """)
         return
     
-    # Check if search engine needs initialization or re-indexing
+    # Show initialization button if not yet initialized
     documents = st.session_state.documents
-    needs_initialization = 'semantic_search_engine' not in st.session_state
-    needs_reindexing = False
     
-    # Check if documents have changed since last indexing
-    if not needs_initialization:
-        current_doc_ids = [doc.get('filename', '') for doc in documents]
-        indexed_doc_ids = st.session_state.get('indexed_documents', [])
-        needs_reindexing = current_doc_ids != indexed_doc_ids
-    
-    if needs_initialization or needs_reindexing:
+    if 'semantic_search_engine' not in st.session_state:
         if not SEMANTIC_SEARCH_AVAILABLE:
             st.error("❌ Semantic search engine not available. Please install dependencies:")
             st.code("pip install sentence-transformers torch scikit-learn")
             return
         
-        status_text = "🔄 Initializing AI search engine (first time)..." if needs_initialization else "🔄 Re-indexing documents..."
+        st.info("🤖 AI Search Engine is not initialized yet. Click below to initialize.")
+        st.markdown("""
+        **What happens when you initialize:**
+        - Downloads AI model (33MB, one-time download)
+        - Indexes your documents for semantic search
+        - Takes ~10-30 seconds depending on document size
+        - Only needs to be done once!
+        """)
         
-        with st.spinner(status_text):
-            try:
-                # Initialize or reuse search engine
-                if needs_initialization:
+        if st.button("🚀 Initialize AI Search Engine", type="primary"):
+            with st.spinner("🔄 Initializing AI search engine and indexing documents..."):
+                try:
+                    # Initialize search engine
                     search_engine = SemanticSearchEngine(
-                        model_name='BAAI/bge-small-en-v1.5',  # Best quality/size ratio
-                        use_cross_encoder=False,  # Can enable for re-ranking
+                        model_name='BAAI/bge-small-en-v1.5',
+                        use_cross_encoder=False,
                         cache_embeddings=True
                     )
+                    
+                    # Index documents
+                    search_engine.add_documents(documents, chunk_size=300, chunk_overlap=50)
+                    
+                    # Save to session state
                     st.session_state.semantic_search_engine = search_engine
-                else:
-                    search_engine = st.session_state.semantic_search_engine
-                
-                # Index documents
-                search_engine.add_documents(documents, chunk_size=300, chunk_overlap=50)
-                
-                # Track indexed documents
-                st.session_state.indexed_documents = [doc.get('filename', '') for doc in documents]
-                
-                st.success("✅ AI search engine ready!" if needs_initialization else "✅ Documents re-indexed!")
-                
-            except Exception as e:
-                st.error(f"Failed to initialize search engine: {str(e)}")
-                with st.expander("Show error details"):
-                    st.code(traceback.format_exc())
-                return
+                    st.session_state.indexed_documents = [doc.get('filename', '') for doc in documents]
+                    
+                    st.success("✅ AI search engine ready! You can now search below.")
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"Failed to initialize search engine: {str(e)}")
+                    with st.expander("Show error details"):
+                        st.code(traceback.format_exc())
+        return
     
+    # Check if documents have changed since indexing
     search_engine = st.session_state.semantic_search_engine
+    current_doc_ids = [doc.get('filename', '') for doc in documents]
+    indexed_doc_ids = st.session_state.get('indexed_documents', [])
     
-    # Show status if already initialized
-    if not (needs_initialization or needs_reindexing):
-        st.info(f"✅ Search engine ready with {len(documents)} documents indexed. Start searching below!")
+    if current_doc_ids != indexed_doc_ids:
+        st.warning("⚠️ Documents have changed since last indexing.")
+        if st.button("🔄 Re-index Documents"):
+            with st.spinner("Re-indexing documents..."):
+                try:
+                    search_engine.add_documents(documents, chunk_size=300, chunk_overlap=50)
+                    st.session_state.indexed_documents = current_doc_ids
+                    st.success("✅ Documents re-indexed!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Re-indexing failed: {str(e)}")
+        return
+    
+    # Show status
+    st.success(f"✅ Search engine ready with {len(documents)} documents indexed")
     
     # Search interface
     st.markdown("---")
