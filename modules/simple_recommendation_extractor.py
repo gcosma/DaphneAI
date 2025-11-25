@@ -458,65 +458,6 @@ def extract_recommendations(text: str, min_confidence: float = 0.75) -> List[Dic
     return extractor.extract_recommendations(text, min_confidence)
 
 
-def test_with_real_data():
-    """Test with actual problematic examples"""
-    
-    test_cases = [
-        # Should REJECT
-        ("UK https://www.gov.uk/government/publications/rapid-review... 1/84", False),
-        ("11/24/25, 5:39 PM Rapid review into data on mental health inpatient settings", False),
-        ("The recommendations have identified ways in which the system can improve...", False),
-        ("I truly believe that the recommendations from this review can improve...", False),
-        ("Once implemented, these recommendations will help contribute towards saving lives.", False),
-        # Should ACCEPT
-        ("Recommendation 1 NHS England should establish a programme of work.", True),
-        ("Recommendation 3 ICSs and provider collaboratives should bring together trusts.", True),
-        ("All providers of NHS-funded care should review the information they provide.", True),
-        ("Every provider board should urgently review its membership and skillset.", True),
-        ("Boards should consider annual mandatory training for their members on data literacy.", True),
-    ]
-    
-    extractor = StrictRecommendationExtractor()
-    
-    print("=" * 80)
-    print("STRICT RECOMMENDATION EXTRACTOR - TEST RESULTS")
-    print("=" * 80)
-    
-    passed = 0
-    failed = 0
-    
-    for text, should_extract in test_cases:
-        cleaned = extractor.clean_text(text)
-        is_garbage, reason = extractor.is_garbage(text)
-        is_meta = extractor.is_meta_recommendation(cleaned) if not is_garbage else False
-        is_rec, conf, method, verb = extractor.is_genuine_recommendation(cleaned) if not is_garbage and not is_meta else (False, 0, 'n/a', 'n/a')
-        
-        extracted = is_rec and conf >= 0.75
-        correct = extracted == should_extract
-        
-        status = "✓ PASS" if correct else "✗ FAIL"
-        if correct:
-            passed += 1
-        else:
-            failed += 1
-        
-        print(f"\n{status}")
-        print(f"  Input: {text[:70]}...")
-        print(f"  Expected: {'EXTRACT' if should_extract else 'REJECT'}")
-        print(f"  Got: {'EXTRACT' if extracted else 'REJECT'}", end="")
-        if is_garbage:
-            print(f" (garbage: {reason})")
-        elif is_meta:
-            print(" (meta-recommendation)")
-        elif extracted:
-            print(f" (conf: {conf:.2f}, method: {method}, verb: {verb})")
-        else:
-            print(" (not a recommendation)")
-    
-    print("\n" + "=" * 80)
-    print(f"RESULTS: {passed} passed, {failed} failed out of {len(test_cases)} tests")
-    print("=" * 80)
-
 
 if __name__ == "__main__":
     test_with_real_data()
