@@ -1,7 +1,7 @@
-# modules/ui/simplified_alignment_ui.py
+# modules/ui/simplified_alignment_ui.py - FIXED VERSION
 """
 🔗 Simplified Recommendation-Response Alignment Interface
-Uses recommendations extracted in the Recommendations tab and finds responses in separate documents.
+FIXED: Prevents recommendations from being classified as responses
 """
 
 import streamlit as st
@@ -14,9 +14,157 @@ from collections import Counter
 
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# RECOMMENDATION EXCLUSION PATTERNS (NEW - CRITICAL FIX)
+# =============================================================================
+
+# Patterns that indicate this is a RECOMMENDATION, not a response
+RECOMMENDATION_EXCLUSION_PATTERNS = [
+    r'^recommendation\s+\d+',  # Starts with "Recommendation N"
+    r'we\s+recommend',
+    r'committee\s+recommends?',
+    r'inquiry\s+recommends?',
+    r'report\s+recommends?',
+    r'it\s+is\s+recommended',
+    r'our\s+recommendation',
+    r'should\s+(?:be\s+)?(?:consider|implement|establish|develop)',  # Recommendation language
+    r'must\s+(?:be\s+)?(?:consider|implement|establish|develop)',
+    r'ought\s+to\s+(?:consider|implement|establish)',
+]
+
+# Strong indicators that this IS a response (government speaking)
+STRONG_RESPONSE_INDICATORS = [
+    r'government\s+(?:accepts?|rejects?|agrees?|notes?)',
+    r'the\s+government\s+(?:will|has|is)',
+    r'we\s+(?:accept|reject|agree|note)\s+(?:this\s+)?recommendation',
+    r'(?:accept|reject)(?:s|ed)?\s+in\s+(?:full|part|principle)',
+    r'government\s+response\s+to\s+recommendation',
+    r'in\s+response\s+to\s+(?:this\s+)?recommendation',
+    r'department\s+(?:accepts?|rejects?|agrees?)',
+]
+
 
 # =============================================================================
-# RESPONSE STATUS CLASSIFICATION
+# RESPONSE EXTRACTION (FIXED VERSION)
+# =============================================================================
+
+def extract_response_sentences(text: str, extracted_recommendations: List[Dict] = None) -> List[Dict]:
+    """
+    Extract sentences that look like responses to recommendations
+    FIXED: Now filters out sentences that are actually recommendations
+    """
+    
+    if not text:
+        return []
+    
+    # Create a set of recommendation texts to exclude
+    known_recommendation_texts = set()
+    if extracted_recommendations:
+        for rec in extracted_recommendations:
+            rec_text = rec.get('text', '').strip().lower()
+            if rec_text:
+                known_recommendation_texts.add(rec_text)
+    
+    # Split into sentences
+    sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
+    
+    responses = []
+    current_rec_number = None
+    
+    for idx, sentence in enumerate(sentences):
+        sentence = sentence.strip()
+        if len(sentence) < 30:
+            continue
+        
+        sentence_lower = sentence.lower()
+        
+        # =================================================================
+        # CRITICAL FIX 1: Skip if this is an extracted recommendation
+        # =================================================================
+        if sentence_lower in known_recommendation_texts:
+            logger.info(f"Skipping extracted recommendation: {sentence[:50]}...")
+            continue
+        
+        # Check for partial match with extracted recommendations (95% similarity)
+        for known_rec in known_recommendation_texts:
+            if len(known_rec) > 50 and len(sentence_lower) > 50:
+                # Compare first 100 chars
+                if known_rec[:100] == sentence_lower[:100]:
+                    logger.info(f"Skipping similar to extracted recommendation: {sentence[:50]}...")
+                    continue
+        
+        # =================================================================
+        # CRITICAL FIX 2: Exclude sentences that are RECOMMENDATIONS
+        # =================================================================
+        is_recommendation = False
+        for pattern in RECOMMENDATION_EXCLUSION_PATTERNS:
+            if re.search(pattern, sentence_lower):
+                is_recommendation = True
+                logger.debug(f"Excluded as recommendation (pattern: {pattern}): {sentence[:50]}...")
+                break
+        
+        if is_recommendation:
+            continue
+        
+        # =================================================================
+        # CRITICAL FIX 3: Only include if it has STRONG response indicators
+        # =================================================================
+        has_strong_response_indicator = False
+        for pattern in STRONG_RESPONSE_INDICATORS:
+            if re.search(pattern, sentence_lower):
+                has_strong_response_indicator = True
+                break
+        
+        # If it doesn't have strong indicators, skip it
+        if not has_strong_response_indicator:
+            # Check for weaker indicators but ONLY if it also has response context
+            weak_indicators = ['accept', 'reject', 'agree', 'note', 'implement']
+            has_weak = any(word in sentence_lower for word in weak_indicators)
+            has_context = any(phrase in sentence_lower for phrase in 
+                            ['government', 'department', 'ministry', 'in response'])
+            
+            if not (has_weak and has_context):
+                continue
+        
+        # =================================================================
+        # Detect "Government response to recommendation N" headers
+        # =================================================================
+        gov_resp_match = re.search(r'government\s+response\s+to\s+recommendation\s+(\d+)', sentence_lower)
+        if gov_resp_match:
+            current_rec_number = gov_resp_match.group(1)
+        
+        # =================================================================
+        # Classify the response
+        # =================================================================
+        is_response = True
+        response_type = 'government_response'
+        confidence = 0.9  # High confidence since we passed strict filters
+        
+        # Check for specific response patterns
+        for status, patterns in RESPONSE_PATTERNS.items():
+            for pattern in patterns:
+                if re.search(pattern, sentence_lower):
+                    response_type = status
+                    break
+        
+        # Get recommendation number reference
+        rec_ref = re.search(r'recommendation\s+(\d+)', sentence_lower)
+        detected_rec_number = rec_ref.group(1) if rec_ref else current_rec_number
+        
+        responses.append({
+            'text': sentence,
+            'position': idx,
+            'response_type': response_type,
+            'confidence': confidence,
+            'rec_number': detected_rec_number
+        })
+    
+    logger.info(f"Extracted {len(responses)} responses after filtering out recommendations")
+    return responses
+
+
+# =============================================================================
+# RESPONSE PATTERNS (Keep existing)
 # =============================================================================
 
 RESPONSE_PATTERNS = {
@@ -57,114 +205,6 @@ RESPONSE_PATTERNS = {
     ]
 }
 
-# Keywords that indicate a response to a recommendation
-RESPONSE_INDICATORS = [
-    'government response', 'response to', 'in response', 'responding to',
-    'the government', 'we accept', 'we reject', 'we agree', 'we note',
-    'this recommendation', 'recommendation is', 'recommendation will',
-    'accept', 'reject', 'implement', 'agree', 'noted', 'consider'
-]
-
-
-# =============================================================================
-# RESPONSE EXTRACTION
-# =============================================================================
-
-def extract_response_sentences(text: str) -> List[Dict]:
-    """Extract sentences that look like responses to recommendations"""
-    
-    if not text:
-        return []
-    
-    # Split into sentences
-    sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
-    
-    responses = []
-    
-    # Track if we're in a "Government response to recommendation X" section
-    current_rec_number = None
-    
-    for idx, sentence in enumerate(sentences):
-        sentence = sentence.strip()
-        if len(sentence) < 30:
-            continue
-        
-        sentence_lower = sentence.lower()
-        
-        # =================================================================
-        # SKIP sentences that are just quoting recommendations
-        # =================================================================
-        
-        # Skip if it starts with "Recommendation N" and doesn't have response language
-        if re.match(r'^recommendation\s+\d+\s+', sentence_lower):
-            # Check if this also contains response language
-            has_response_language = any(term in sentence_lower for term in 
-                ['government response', 'accept', 'reject', 'agree', 'the government', 
-                 'we will', 'we accept', 'support', 'noted'])
-            if not has_response_language:
-                continue  # Skip - this is just quoting the recommendation
-        
-        # =================================================================
-        # Detect "Government response to recommendation N" headers
-        # =================================================================
-        gov_resp_match = re.search(r'government\s+response\s+to\s+recommendation\s+(\d+)', sentence_lower)
-        if gov_resp_match:
-            current_rec_number = gov_resp_match.group(1)
-        
-        # =================================================================
-        # Check if this looks like an actual response
-        # =================================================================
-        is_response = False
-        response_type = 'unknown'
-        confidence = 0.0
-        
-        # Check for response patterns
-        for status, patterns in RESPONSE_PATTERNS.items():
-            for pattern in patterns:
-                if re.search(pattern, sentence_lower):
-                    is_response = True
-                    response_type = status
-                    confidence = 0.9
-                    break
-            if is_response:
-                break
-        
-        # Check for general response indicators (must have multiple)
-        if not is_response:
-            indicator_count = sum(1 for ind in RESPONSE_INDICATORS if ind in sentence_lower)
-            if indicator_count >= 2:
-                is_response = True
-                response_type = 'general_response'
-                confidence = 0.6 + (indicator_count * 0.1)
-        
-        # Check for "The government" statements
-        if not is_response and re.search(r'\bthe\s+government\s+(will|has|is|supports?|agrees?|accepts?)\b', sentence_lower):
-            is_response = True
-            response_type = 'government_statement'
-            confidence = 0.85
-        
-        # Check for recommendation number references in response context
-        rec_ref = re.search(r'recommendation\s+(\d+)', sentence_lower)
-        if rec_ref:
-            # Only count as response if it has response language
-            if any(term in sentence_lower for term in ['accept', 'reject', 'agree', 'support', 'response', 'government']):
-                is_response = True
-                confidence = max(confidence, 0.8)
-        
-        # Use the tracked recommendation number if we're in a response section
-        detected_rec_number = rec_ref.group(1) if rec_ref else current_rec_number
-        
-        if is_response:
-            responses.append({
-                'text': sentence,
-                'position': idx,
-                'response_type': response_type,
-                'confidence': min(confidence, 1.0),
-                'rec_number': detected_rec_number
-            })
-    
-    return responses
-
 
 def classify_response_status(response_text: str) -> Tuple[str, float]:
     """Classify a response as Accepted, Rejected, Partial, or Noted"""
@@ -182,7 +222,7 @@ def classify_response_status(response_text: str) -> Tuple[str, float]:
 
 
 # =============================================================================
-# SEMANTIC MATCHING
+# SEMANTIC MATCHING (Keep existing but improve)
 # =============================================================================
 
 def calculate_similarity(text1: str, text2: str) -> float:
@@ -193,7 +233,6 @@ def calculate_similarity(text1: str, text2: str) -> float:
     
     # Clean and tokenize
     def get_keywords(text):
-        # Remove common words and get meaningful terms
         stopwords = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 
                      'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
                      'would', 'could', 'should', 'may', 'might', 'must', 'shall',
@@ -240,25 +279,13 @@ def find_best_response(recommendation: Dict, responses: List[Dict],
         resp_text = response.get('text', '')
         
         # =================================================================
-        # SELF-MATCH PREVENTION - Don't match recommendation with itself
+        # ENHANCED SELF-MATCH PREVENTION
         # =================================================================
-        
-        # Check 1: Exact or near-exact text match (it's quoting the recommendation)
         if is_self_match(rec_text, resp_text):
+            logger.debug(f"Prevented self-match between recommendation and response")
             continue
         
-        # Check 2: Response starts with "Recommendation N" pattern (it's quoting)
-        if re.match(r'^Recommendation\s+\d+\s+', resp_text, re.IGNORECASE):
-            # This is likely quoting the recommendation, not a response
-            # Unless it also contains response language
-            if not any(term in resp_text.lower() for term in 
-                      ['government response', 'accept', 'reject', 'agree', 'support', 
-                       'the government', 'we will', 'we accept', 'we agree']):
-                continue
-        
-        # =================================================================
         # Calculate similarity
-        # =================================================================
         similarity = calculate_similarity(rec_text, resp_text)
         
         # Boost if response references the same recommendation number
@@ -273,10 +300,10 @@ def find_best_response(recommendation: Dict, responses: List[Dict],
                 response_boost += 0.1
         similarity += min(response_boost, 0.3)
         
-        # Penalise if response looks like it's just quoting the recommendation
+        # Penalize if response looks like it's just quoting the recommendation
         if similarity > 0.8 and not any(term in resp_text.lower() for term in 
                                         ['accept', 'reject', 'agree', 'support', 'government']):
-            similarity *= 0.5  # Heavy penalty for high similarity without response language
+            similarity *= 0.3  # Heavy penalty for high similarity without response language
         
         if similarity > best_score and similarity >= min_similarity:
             best_score = similarity
@@ -305,15 +332,12 @@ def is_self_match(rec_text: str, resp_text: str) -> bool:
     
     # Check 2: One contains the other almost entirely
     if len(rec_clean) > 50 and len(resp_clean) > 50:
-        # Check if response is contained in recommendation or vice versa
         if rec_clean in resp_clean or resp_clean in rec_clean:
             return True
     
     # Check 3: Very high similarity (>90%) without response keywords
-    # Use a quick check - compare first 100 chars
     if len(rec_clean) >= 100 and len(resp_clean) >= 100:
         if rec_clean[:100] == resp_clean[:100]:
-            # Same start - check if response has actual response language
             response_words = ['accept', 'reject', 'agree', 'support', 'government response', 
                              'we will', 'the government', 'noted', 'implement']
             if not any(word in resp_clean for word in response_words):
@@ -326,7 +350,6 @@ def is_self_match(rec_text: str, resp_text: str) -> bool:
     if len(rec_words) > 10 and len(resp_words) > 10:
         overlap = len(rec_words & resp_words) / min(len(rec_words), len(resp_words))
         if overlap > 0.85:
-            # Very high overlap - check for response language
             response_words = ['accept', 'reject', 'agree', 'support', 'government response', 
                              'we will', 'the government', 'noted', 'implement']
             if not any(word in resp_clean for word in response_words):
@@ -336,7 +359,7 @@ def is_self_match(rec_text: str, resp_text: str) -> bool:
 
 
 # =============================================================================
-# MAIN INTERFACE
+# MAIN INTERFACE (UPDATED)
 # =============================================================================
 
 def render_simple_alignment_interface(documents: List[Dict]):
@@ -380,7 +403,7 @@ def render_simple_alignment_interface(documents: List[Dict]):
     
     recommendations = st.session_state.extracted_recommendations
     
-    # Show summary of recommendations
+    # Show summary
     st.success(f"✅ Using **{len(recommendations)}** recommendations from previous extraction")
     
     with st.expander("📋 View Extracted Recommendations", expanded=False):
@@ -396,7 +419,7 @@ def render_simple_alignment_interface(documents: List[Dict]):
     
     doc_names = [doc['filename'] for doc in documents]
     
-    # Try to auto-detect response documents
+    # Auto-detect response documents
     suggested_resp_docs = []
     for name in doc_names:
         name_lower = name.lower()
@@ -417,28 +440,38 @@ def render_simple_alignment_interface(documents: List[Dict]):
     # Run alignment
     if st.button("🔗 Find Responses", type="primary"):
         
-        with st.spinner("Analysing documents for responses..."):
+        with st.spinner("Analyzing documents for responses (filtering out recommendations)..."):
             
-            # Extract responses from selected documents
+            # Extract responses from selected documents - NOW WITH FILTERING
             all_responses = []
             for doc_name in resp_docs:
                 doc = next((d for d in documents if d['filename'] == doc_name), None)
                 if doc and 'text' in doc:
-                    doc_responses = extract_response_sentences(doc['text'])
+                    # FIXED: Pass extracted recommendations to filter them out
+                    doc_responses = extract_response_sentences(
+                        doc['text'], 
+                        extracted_recommendations=recommendations
+                    )
                     for resp in doc_responses:
                         resp['source_document'] = doc_name
                     all_responses.extend(doc_responses)
             
             if not all_responses:
                 st.warning("⚠️ No response patterns found in selected documents.")
-                st.info("This might mean the document format is different than expected, or it's not a government response document.")
+                st.info("""
+                This might mean:
+                - The document format is different than expected
+                - It's not a government response document
+                - All responses were filtered out as recommendations
+                
+                Try selecting a different document.
+                """)
                 return
             
-            st.info(f"Found **{len(all_responses)}** potential response sentences")
+            st.info(f"Found **{len(all_responses)}** genuine response sentences (after filtering out {len(recommendations)} recommendations)")
             
             # Match recommendations to responses
             alignments = []
-            
             progress = st.progress(0)
             
             for idx, rec in enumerate(recommendations):
@@ -456,6 +489,10 @@ def render_simple_alignment_interface(documents: List[Dict]):
             
             # Store results
             st.session_state.alignment_results = alignments
+            
+            # Show summary
+            with_response = sum(1 for a in alignments if a['has_response'])
+            st.success(f"✅ Alignment complete! Found responses for {with_response} out of {len(alignments)} recommendations")
     
     # Display results
     if 'alignment_results' in st.session_state:
@@ -542,24 +579,18 @@ def display_alignment_results(alignments: List[Dict]):
         if not resp:
             status_icon = "❓"
             status_text = "No Response Found"
-            status_color = "gray"
         else:
             status = resp['status']
             if status == 'Accepted':
                 status_icon = "✅"
-                status_color = "green"
             elif status == 'Partial':
                 status_icon = "⚠️"
-                status_color = "orange"
             elif status == 'Rejected':
                 status_icon = "❌"
-                status_color = "red"
             elif status == 'Noted':
                 status_icon = "📝"
-                status_color = "blue"
             else:
                 status_icon = "❓"
-                status_color = "gray"
             status_text = status
         
         # Create expander title
