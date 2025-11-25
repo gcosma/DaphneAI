@@ -1,443 +1,564 @@
-# simplified_alignment_ui.py
+# modules/ui/simplified_alignment_ui.py
 """
-SIMPLIFIED Recommendation-Response Alignment
-- Self-match prevention ALWAYS ON (no option needed)
-- ALL keywords included by default
-- Much simpler interface
+🔗 Simplified Recommendation-Response Alignment Interface
+Uses recommendations extracted in the Recommendations tab and finds responses in separate documents.
 """
 
 import streamlit as st
-from typing import List, Dict, Any
+import pandas as pd
+from datetime import datetime
+import logging
 import re
-from difflib import SequenceMatcher
+from typing import Dict, List, Any, Tuple
+from collections import Counter
 
-def clean_display_text(text: str) -> str:
-    """Clean text for display - remove special characters"""
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# RESPONSE STATUS CLASSIFICATION
+# =============================================================================
+
+RESPONSE_PATTERNS = {
+    'accepted': [
+        r'\baccept(?:s|ed|ing)?\s+(?:this\s+)?(?:recommendation|rec)\b',
+        r'\baccept(?:s|ed|ing)?\s+in\s+full\b',
+        r'\bfully\s+accept(?:s|ed)?\b',
+        r'\bagree(?:s|d)?\s+(?:with\s+)?(?:this\s+)?(?:recommendation|rec)\b',
+        r'\bwill\s+implement\b',
+        r'\bcommit(?:s|ted)?\s+to\s+implement\b',
+        r'\bendorse(?:s|d)?\b',
+        r'\bsupport(?:s|ed)?\s+(?:this\s+)?(?:recommendation|rec)\b',
+    ],
+    'rejected': [
+        r'\breject(?:s|ed|ing)?\s+(?:this\s+)?(?:recommendation|rec)\b',
+        r'\bdoes?\s+not\s+accept\b',
+        r'\bcannot\s+accept\b',
+        r'\bdecline(?:s|d)?\s+(?:to\s+accept)?\b',
+        r'\bdo(?:es)?\s+not\s+agree\b',
+        r'\bdisagree(?:s|d)?\b',
+        r'\bnot\s+(?:be\s+)?implement(?:ed|ing)?\b',
+    ],
+    'partial': [
+        r'\baccept(?:s|ed)?\s+in\s+(?:part|principle)\b',
+        r'\bpartially\s+accept(?:s|ed)?\b',
+        r'\baccept(?:s|ed)?\s+(?:with\s+)?(?:some\s+)?(?:reservations?|modifications?|amendments?)\b',
+        r'\baccept(?:s|ed)?\s+(?:the\s+)?(?:spirit|intent)\b',
+        r'\bagree(?:s|d)?\s+in\s+principle\b',
+        r'\bunder\s+consideration\b',
+        r'\bwill\s+consider\b',
+        r'\bfurther\s+(?:consideration|review|work)\s+(?:is\s+)?(?:needed|required)\b',
+    ],
+    'noted': [
+        r'\bnote(?:s|d)?\s+(?:this\s+)?(?:recommendation|rec)\b',
+        r'\backnowledge(?:s|d)?\b',
+        r'\btake(?:s|n)?\s+note\b',
+        r'\bwill\s+(?:review|examine|look\s+at)\b',
+    ]
+}
+
+# Keywords that indicate a response to a recommendation
+RESPONSE_INDICATORS = [
+    'government response', 'response to', 'in response', 'responding to',
+    'the government', 'we accept', 'we reject', 'we agree', 'we note',
+    'this recommendation', 'recommendation is', 'recommendation will',
+    'accept', 'reject', 'implement', 'agree', 'noted', 'consider'
+]
+
+
+# =============================================================================
+# RESPONSE EXTRACTION
+# =============================================================================
+
+def extract_response_sentences(text: str) -> List[Dict]:
+    """Extract sentences that look like responses to recommendations"""
+    
     if not text:
-        return ""
+        return []
     
-    # Fix UTF-8 encoding corruption (these are very common in PDFs)
-    text = text.replace('â€™', "'")   # Corrupted apostrophe
-    text = text.replace('â€œ', '"')   # Corrupted opening quote
-    text = text.replace('â€', '"')    # Corrupted closing quote
-    text = text.replace('â€¢', '•')   # Corrupted bullet point
-    text = text.replace('â€"', '-')   # Corrupted dash
-    text = text.replace('â€¦', '...')  # Corrupted ellipsis
+    # Split into sentences
+    sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
     
-    # Fix common PDF extraction errors
-    text = text.replace('�', 'ti')  # Common PDF corruption where 'ti' becomes �
-    text = text.replace('ﬁ', 'fi').replace('ﬂ', 'fl')  # Ligatures
-    text = text.replace('ﬀ', 'ff').replace('ﬃ', 'ffi').replace('ﬄ', 'ffl')
+    responses = []
     
-    # Replace smart quotes with regular quotes (if any remain)
-    text = text.replace('"', '"').replace('"', '"')  # Smart double quotes
-    text = text.replace(''', "'").replace(''', "'")  # Smart single quotes
-    
-    # Replace other problematic characters
-    text = text.replace('–', '-').replace('—', '-')  # Em and en dashes
-    text = text.replace('…', '...')  # Ellipsis
-    
-    # Remove non-breaking spaces and other unicode spaces
-    text = text.replace('\u00A0', ' ')  # Non-breaking space
-    text = text.replace('\u2009', ' ')  # Thin space
-    text = text.replace('\u200B', '')   # Zero-width space
-    
-    # Clean up multiple spaces
-    text = re.sub(r'\s+', ' ', text)
-    
-    return text.strip()
-
-def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
-    """Simple alignment interface with self-match prevention built in"""
-    
-    # Removed the heading - it's already shown by the main app
-    st.markdown("*Automatically finds and aligns recommendations with government responses*")
-    
-    if not documents:
-        st.warning("📁 Please upload documents first")
-        return
-    
-    # Initialize session state for results
-    if 'alignment_results' not in st.session_state:
-        st.session_state.alignment_results = None
-    if 'alignment_settings' not in st.session_state:
-        st.session_state.alignment_settings = {}
-    
-    # Just one slider for similarity threshold
-    similarity_threshold = st.slider(
-        "Match sensitivity",
-        min_value=0.2,
-        max_value=0.8,
-        value=0.4,
-        step=0.1,
-        help="Lower = more matches, Higher = only strong matches"
-    )
-    
-    # Document selection (optional)
-    doc_names = [doc['filename'] for doc in documents]
-    selected_docs = st.multiselect(
-        "📄 Select documents (or leave empty for all):",
-        doc_names,
-        default=[],  # Empty by default = use all
-        help="Leave empty to search all documents"
-    )
-    
-    # If no docs selected, use all
-    if not selected_docs:
-        selected_docs = doc_names
-    
-    # Single button to run everything
-    if st.button("🚀 Find & Align Recommendations", type="primary"):
-        with st.spinner("Finding recommendations and responses..."):
-            
-            # Step 1: Find recommendations (ALL keywords)
-            rec_keywords = [
-                'recommend', 'recommends', 'recommendation', 'we recommend',
-                'should', 'must', 'suggest', 'advise', 'propose', 'urge',
-                'it is recommended', 'the committee recommends',
-                'we advise', 'we suggest', 'we propose'
-            ]
-            
-            recommendations = find_all_patterns(
-                [d for d in documents if d['filename'] in selected_docs],
-                rec_keywords,
-                "recommendation"
-            )
-            
-            st.success(f"✅ Found {len(recommendations)} recommendations")
-            
-            # Step 2: Find responses (ALL keywords)
-            resp_keywords = [
-                'accept', 'accepts', 'accepted', 'accepting',
-                'reject', 'rejects', 'rejected', 'rejecting',
-                'agree', 'agrees', 'agreed', 'implement', 'implemented',
-                'approve', 'approved', 'support', 'supported',
-                'will implement', 'will consider', 'under consideration',
-                'accept in principle', 'accept in full'
-            ]
-            
-            responses = find_all_patterns(
-                [d for d in documents if d['filename'] in selected_docs],
-                resp_keywords,
-                "response"
-            )
-            
-            st.success(f"✅ Found {len(responses)} responses")
-            
-            # Step 3: Align with BUILT-IN self-match prevention
-            alignments = align_with_self_match_prevention(
-                recommendations,
-                responses,
-                similarity_threshold
-            )
-            
-            st.success(f"✅ Created {len(alignments)} alignments (self-matches prevented)")
-            
-            # Store results in session state so they persist
-            st.session_state.alignment_results = alignments
-            st.session_state.alignment_settings = {
-                'threshold': similarity_threshold,
-                'documents': selected_docs
-            }
-    
-    # Display results from session state (persists when switching tabs)
-    if st.session_state.alignment_results is not None:
-        display_simple_results(
-            st.session_state.alignment_results, 
-            st.session_state.alignment_settings.get('threshold', 0.4)
-        )
-
-def find_all_patterns(documents: List[Dict], keywords: List[str], match_type: str) -> List[Dict]:
-    """Find all patterns in documents"""
-    
-    matches = []
-    
-    for doc in documents:
-        text = doc.get('text', '')
-        if not text:
+    for idx, sentence in enumerate(sentences):
+        sentence = sentence.strip()
+        if len(sentence) < 30:
             continue
         
-        # Split into sentences
-        sentences = re.split(r'[.!?]+', text)
+        sentence_lower = sentence.lower()
         
-        for sent_idx, sentence in enumerate(sentences):
-            # Clean the sentence for display
-            clean_sent = clean_display_text(sentence.strip())
-            
-            if len(clean_sent) < 20:  # Skip very short sentences
-                continue
-            
-            sentence_lower = clean_sent.lower()
-            
-            # Check if any keyword is in sentence
-            for keyword in keywords:
-                if keyword in sentence_lower:
-                    # Calculate position using original text
-                    char_position = text.find(sentence)
-                    
-                    matches.append({
-                        'document': doc,
-                        'sentence': clean_sent,  # Store cleaned text
-                        'keyword': keyword,
-                        'type': match_type,
-                        'position': char_position,
-                        'sent_idx': sent_idx
-                    })
-                    break  # One match per sentence is enough
-
-    return matches
-
-def align_with_self_match_prevention(
-    recommendations: List[Dict],
-    responses: List[Dict],
-    threshold: float
-) -> List[Dict]:
-    """Align recommendations with responses, PREVENTING self-matches"""
-    
-    alignments = []
-    
-    for rec in recommendations:
-        matched_responses = []
+        # Check if this looks like a response
+        is_response = False
+        response_type = 'unknown'
+        confidence = 0.0
         
-        for resp in responses:
-            # SELF-MATCH PREVENTION CHECKS
+        # Check for response patterns
+        for status, patterns in RESPONSE_PATTERNS.items():
+            for pattern in patterns:
+                if re.search(pattern, sentence_lower):
+                    is_response = True
+                    response_type = status
+                    confidence = 0.9
+                    break
+            if is_response:
+                break
+        
+        # Check for general response indicators
+        if not is_response:
+            indicator_count = sum(1 for ind in RESPONSE_INDICATORS if ind in sentence_lower)
+            if indicator_count >= 2:
+                is_response = True
+                response_type = 'general_response'
+                confidence = 0.6 + (indicator_count * 0.1)
+        
+        # Check for recommendation number references
+        rec_ref = re.search(r'recommendation\s+(\d+)', sentence_lower)
+        if rec_ref:
+            is_response = True
+            confidence = max(confidence, 0.8)
+        
+        if is_response:
+            responses.append({
+                'text': sentence,
+                'position': idx,
+                'response_type': response_type,
+                'confidence': min(confidence, 1.0),
+                'rec_number': rec_ref.group(1) if rec_ref else None
+            })
+    
+    return responses
+
+
+def classify_response_status(response_text: str) -> Tuple[str, float]:
+    """Classify a response as Accepted, Rejected, Partial, or Noted"""
+    
+    text_lower = response_text.lower()
+    
+    # Check patterns in order of specificity
+    for status, patterns in RESPONSE_PATTERNS.items():
+        for pattern in patterns:
+            if re.search(pattern, text_lower):
+                confidence = 0.9 if status in ['accepted', 'rejected'] else 0.75
+                return status.title(), confidence
+    
+    return 'Unclear', 0.5
+
+
+# =============================================================================
+# SEMANTIC MATCHING
+# =============================================================================
+
+def calculate_similarity(text1: str, text2: str) -> float:
+    """Calculate similarity between two texts using keyword overlap"""
+    
+    if not text1 or not text2:
+        return 0.0
+    
+    # Clean and tokenize
+    def get_keywords(text):
+        # Remove common words and get meaningful terms
+        stopwords = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 
+                     'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+                     'would', 'could', 'should', 'may', 'might', 'must', 'shall',
+                     'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from',
+                     'as', 'into', 'through', 'during', 'before', 'after', 'above',
+                     'below', 'between', 'under', 'again', 'further', 'then', 'once',
+                     'and', 'but', 'or', 'nor', 'so', 'yet', 'both', 'either',
+                     'neither', 'not', 'only', 'own', 'same', 'than', 'too', 'very',
+                     'this', 'that', 'these', 'those', 'it', 'its', 'they', 'them',
+                     'their', 'we', 'our', 'you', 'your', 'he', 'she', 'his', 'her'}
+        
+        words = re.findall(r'\b[a-z]{3,}\b', text.lower())
+        return set(w for w in words if w not in stopwords)
+    
+    keywords1 = get_keywords(text1)
+    keywords2 = get_keywords(text2)
+    
+    if not keywords1 or not keywords2:
+        return 0.0
+    
+    # Jaccard similarity
+    intersection = len(keywords1 & keywords2)
+    union = len(keywords1 | keywords2)
+    
+    return intersection / union if union > 0 else 0.0
+
+
+def find_best_response(recommendation: Dict, responses: List[Dict], 
+                       min_similarity: float = 0.15) -> Dict:
+    """Find the best matching response for a recommendation"""
+    
+    rec_text = recommendation.get('text', '')
+    rec_number = None
+    
+    # Check if recommendation has a number
+    num_match = re.search(r'Recommendation\s+(\d+)', rec_text, re.IGNORECASE)
+    if num_match:
+        rec_number = num_match.group(1)
+    
+    best_match = None
+    best_score = 0.0
+    
+    for response in responses:
+        resp_text = response.get('text', '')
+        
+        # Calculate base similarity
+        similarity = calculate_similarity(rec_text, resp_text)
+        
+        # Boost if response references the same recommendation number
+        if rec_number and response.get('rec_number') == rec_number:
+            similarity += 0.4
+        
+        # Boost if response contains key terms from recommendation
+        if any(term in resp_text.lower() for term in ['recommendation', 'accept', 'reject', 'implement']):
+            similarity += 0.1
+        
+        if similarity > best_score and similarity >= min_similarity:
+            best_score = similarity
+            status, status_conf = classify_response_status(resp_text)
+            best_match = {
+                'response_text': resp_text,
+                'similarity': min(similarity, 1.0),
+                'status': status,
+                'status_confidence': status_conf,
+                'response_type': response.get('response_type', 'unknown')
+            }
+    
+    return best_match
+
+
+# =============================================================================
+# MAIN INTERFACE
+# =============================================================================
+
+def render_simple_alignment_interface(documents: List[Dict]):
+    """Render the simplified alignment interface"""
+    
+    st.markdown("### 🔗 Find Government Responses")
+    
+    # Check if we have extracted recommendations
+    if 'extracted_recommendations' not in st.session_state or not st.session_state.extracted_recommendations:
+        st.warning("⚠️ No recommendations extracted yet!")
+        st.info("""
+        **How to use this feature:**
+        1. Go to the **🎯 Recommendations** tab
+        2. Upload and process your **inquiry/report document**
+        3. Click **Extract Recommendations**
+        4. Then return here to find government responses
+        """)
+        
+        # Option to extract recommendations here
+        st.markdown("---")
+        st.markdown("**Or extract recommendations directly:**")
+        
+        doc_names = [doc['filename'] for doc in documents]
+        rec_doc = st.selectbox("Select recommendation document:", doc_names, key="align_rec_doc")
+        
+        if st.button("🔍 Extract Recommendations Now"):
+            doc = next((d for d in documents if d['filename'] == rec_doc), None)
+            if doc and 'text' in doc:
+                try:
+                    from modules.simple_recommendation_extractor import extract_recommendations
+                    recs = extract_recommendations(doc['text'], min_confidence=0.75)
+                    if recs:
+                        st.session_state.extracted_recommendations = recs
+                        st.success(f"✅ Extracted {len(recs)} recommendations!")
+                        st.rerun()
+                    else:
+                        st.warning("No recommendations found in this document.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+        return
+    
+    recommendations = st.session_state.extracted_recommendations
+    
+    # Show summary of recommendations
+    st.success(f"✅ Using **{len(recommendations)}** recommendations from previous extraction")
+    
+    with st.expander("📋 View Extracted Recommendations", expanded=False):
+        for i, rec in enumerate(recommendations[:10], 1):
+            st.markdown(f"**{i}.** {rec['text'][:150]}...")
+        if len(recommendations) > 10:
+            st.caption(f"... and {len(recommendations) - 10} more")
+    
+    st.markdown("---")
+    
+    # Select response document(s)
+    st.markdown("#### 📄 Select Government Response Document(s)")
+    
+    doc_names = [doc['filename'] for doc in documents]
+    
+    # Try to auto-detect response documents
+    suggested_resp_docs = []
+    for name in doc_names:
+        name_lower = name.lower()
+        if any(term in name_lower for term in ['response', 'reply', 'government', 'answer']):
+            suggested_resp_docs.append(name)
+    
+    resp_docs = st.multiselect(
+        "Select response documents:",
+        options=doc_names,
+        default=suggested_resp_docs,
+        help="Select documents containing government responses to the recommendations"
+    )
+    
+    if not resp_docs:
+        st.info("👆 Select at least one response document to continue")
+        return
+    
+    # Run alignment
+    if st.button("🔗 Find Responses", type="primary"):
+        
+        with st.spinner("Analysing documents for responses..."):
             
-            # 1. Check if exact same text
-            if rec['sentence'].strip().lower() == resp['sentence'].strip().lower():
-                continue  # Skip - it's a self-match!
+            # Extract responses from selected documents
+            all_responses = []
+            for doc_name in resp_docs:
+                doc = next((d for d in documents if d['filename'] == doc_name), None)
+                if doc and 'text' in doc:
+                    doc_responses = extract_response_sentences(doc['text'])
+                    for resp in doc_responses:
+                        resp['source_document'] = doc_name
+                    all_responses.extend(doc_responses)
             
-            # 2. Check if very similar (>90% similar)
-            similarity = SequenceMatcher(
-                None,
-                rec['sentence'].lower(),
-                resp['sentence'].lower()
-            ).ratio()
+            if not all_responses:
+                st.warning("⚠️ No response patterns found in selected documents.")
+                st.info("This might mean the document format is different than expected, or it's not a government response document.")
+                return
             
-            if similarity > 0.9:
-                continue  # Skip - too similar, likely same content
+            st.info(f"Found **{len(all_responses)}** potential response sentences")
             
-            # 3. Check if same document and very close position
-            if rec['document']['filename'] == resp['document']['filename']:
-                if abs(rec['position'] - resp['position']) < 500:
-                    continue  # Skip - too close in same document
+            # Match recommendations to responses
+            alignments = []
             
-            # 4. Calculate meaningful similarity for alignment
-            if similarity >= threshold:
-                matched_responses.append({
-                    'response': resp,
-                    'similarity': similarity,
-                    'same_doc': rec['document']['filename'] == resp['document']['filename']
+            progress = st.progress(0)
+            
+            for idx, rec in enumerate(recommendations):
+                progress.progress((idx + 1) / len(recommendations))
+                
+                best_response = find_best_response(rec, all_responses)
+                
+                alignments.append({
+                    'recommendation': rec,
+                    'response': best_response,
+                    'has_response': best_response is not None
                 })
-        
-        # Sort by similarity
-        matched_responses.sort(key=lambda x: x['similarity'], reverse=True)
-        
-        # Keep top 3 matches
-        matched_responses = matched_responses[:3]
-        
-        alignments.append({
-            'recommendation': rec,
-            'responses': matched_responses,
-            'has_response': len(matched_responses) > 0
-        })
+            
+            progress.empty()
+            
+            # Store results
+            st.session_state.alignment_results = alignments
     
-    return alignments
+    # Display results
+    if 'alignment_results' in st.session_state:
+        display_alignment_results(st.session_state.alignment_results)
 
-def display_simple_results(alignments: List[Dict], threshold: float):
-    """Display results in a simple, clear format"""
+
+def display_alignment_results(alignments: List[Dict]):
+    """Display the alignment results with status indicators"""
     
-    # Summary
+    st.markdown("---")
+    st.markdown("### 📊 Alignment Results")
+    
+    # Calculate statistics
     total = len(alignments)
-    with_responses = sum(1 for a in alignments if a['has_response'])
+    with_response = sum(1 for a in alignments if a['has_response'])
     
-    col1, col2, col3 = st.columns(3)
+    # Count by status
+    status_counts = Counter()
+    for a in alignments:
+        if a['has_response'] and a['response']:
+            status_counts[a['response']['status']] += 1
+        else:
+            status_counts['No Response'] += 1
+    
+    # Display metrics
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
     with col1:
         st.metric("Total Recommendations", total)
     with col2:
-        st.metric("With Responses", with_responses)
+        st.metric("✅ Accepted", status_counts.get('Accepted', 0))
     with col3:
-        st.metric("Without Responses", total - with_responses)
+        st.metric("⚠️ Partial", status_counts.get('Partial', 0))
+    with col4:
+        st.metric("❌ Rejected", status_counts.get('Rejected', 0))
+    with col5:
+        st.metric("❓ No Response", status_counts.get('No Response', 0) + status_counts.get('Unclear', 0))
     
-    # Filter options
-    show_only_matched = st.checkbox("Show only recommendations with responses", value=True)
+    # Status legend
+    st.markdown("""
+    ---
+    #### 🎨 Status Guide
+    | Status | Meaning |
+    |--------|---------|
+    | ✅ **Accepted** | Government fully accepts the recommendation |
+    | ⚠️ **Partial** | Accepted in principle or with modifications |
+    | ❌ **Rejected** | Government does not accept the recommendation |
+    | 📝 **Noted** | Acknowledged but no clear commitment |
+    | ❓ **No Response** | No matching response found |
+    """)
+    
+    st.markdown("---")
+    
+    # Sort options
+    sort_option = st.selectbox(
+        "Sort by:",
+        ["Original Order", "Status (Accepted first)", "Status (No Response first)", "Match Confidence"]
+    )
+    
+    # Sort alignments
+    sorted_alignments = alignments.copy()
+    
+    if sort_option == "Status (Accepted first)":
+        status_order = {'Accepted': 0, 'Partial': 1, 'Noted': 2, 'Rejected': 3, 'Unclear': 4, 'No Response': 5}
+        sorted_alignments.sort(key=lambda x: status_order.get(
+            x['response']['status'] if x['has_response'] else 'No Response', 5
+        ))
+    elif sort_option == "Status (No Response first)":
+        sorted_alignments.sort(key=lambda x: 0 if not x['has_response'] else 1)
+    elif sort_option == "Match Confidence":
+        sorted_alignments.sort(
+            key=lambda x: x['response']['similarity'] if x['has_response'] else 0,
+            reverse=True
+        )
     
     # Display each alignment
-    st.markdown("---")
-    st.markdown("### 📋 Results")
+    st.markdown("#### 📋 Detailed Results")
     
-    displayed = 0
-    for alignment in alignments:
-        if show_only_matched and not alignment['has_response']:
-            continue
-        
-        displayed += 1
-        
+    for idx, alignment in enumerate(sorted_alignments, 1):
         rec = alignment['recommendation']
-        responses = alignment['responses']
+        resp = alignment['response']
         
-        # Color based on whether we found responses
-        if responses:
-            color = "🟢"
-            status = f"{len(responses)} response(s) found"
+        # Determine status icon
+        if not resp:
+            status_icon = "❓"
+            status_text = "No Response Found"
+            status_color = "gray"
         else:
-            color = "🔴"
-            status = "No response found"
-        
-        with st.expander(f"{color} Rec #{displayed}: {rec['sentence'][:80]}... | {status}"):
-            # Show full recommendation
-            st.markdown("**📝 Full Recommendation:**")
-            st.info(rec['sentence'])
-            st.caption(f"📁 Document: {rec['document']['filename']}")
-            st.caption(f"🔍 Triggered by: '{rec['keyword']}'")
-            
-            if responses:
-                st.markdown("**📢 Matched Response(s):**")
-                
-                for i, resp_match in enumerate(responses, 1):
-                    resp = resp_match['response']
-                    similarity = resp_match['similarity']
-                    
-                    # Show similarity as percentage
-                    match_quality = "Strong" if similarity > 0.6 else "Moderate" if similarity > 0.4 else "Weak"
-                    
-                    st.success(f"Response {i} - {match_quality} match ({similarity:.0%})")
-                    st.write(resp['sentence'])
-                    st.caption(f"📁 Document: {resp['document']['filename']}")
-                    st.caption(f"🔍 Triggered by: '{resp['keyword']}'")
-                    
-                    if resp_match['same_doc']:
-                        st.caption("📌 Same document")
-                    else:
-                        st.caption("📤 Different document")
+            status = resp['status']
+            if status == 'Accepted':
+                status_icon = "✅"
+                status_color = "green"
+            elif status == 'Partial':
+                status_icon = "⚠️"
+                status_color = "orange"
+            elif status == 'Rejected':
+                status_icon = "❌"
+                status_color = "red"
+            elif status == 'Noted':
+                status_icon = "📝"
+                status_color = "blue"
             else:
-                st.warning("No responses found above the similarity threshold")
-                st.caption(f"Try lowering the match sensitivity (currently {threshold:.1f})")
+                status_icon = "❓"
+                status_color = "gray"
+            status_text = status
+        
+        # Create expander title
+        rec_preview = rec['text'][:80] + "..." if len(rec['text']) > 80 else rec['text']
+        title = f"{status_icon} **{idx}.** {rec_preview}"
+        
+        with st.expander(title, expanded=(idx <= 3)):
+            # Recommendation
+            st.markdown("**📝 Recommendation:**")
+            st.info(rec['text'])
+            
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                st.caption(f"Confidence: {rec.get('confidence', 0):.0%}")
+            with col2:
+                st.caption(f"Method: {rec.get('method', 'unknown')}")
+            
+            st.markdown("---")
+            
+            # Response
+            st.markdown(f"**📢 Government Response:** {status_icon} **{status_text}**")
+            
+            if resp:
+                st.success(resp['response_text'])
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.caption(f"Match confidence: {resp['similarity']:.0%}")
+                with col2:
+                    st.caption(f"Status confidence: {resp['status_confidence']:.0%}")
+                with col3:
+                    st.caption(f"Response type: {resp['response_type']}")
+            else:
+                st.warning("No matching response found in the selected documents.")
     
-    if displayed == 0:
-        st.info("No results to display. Try adjusting the filters.")
+    # Export options
+    st.markdown("---")
+    st.markdown("#### 💾 Export Results")
     
-    # Export option - show download button directly if we have alignments
-    if alignments and len(alignments) > 0:
-        st.markdown("---")
-        st.markdown("### 💾 Export Results")
-        csv_data = export_simple_csv(alignments)
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Create CSV export
+        export_data = []
+        for idx, a in enumerate(alignments, 1):
+            rec = a['recommendation']
+            resp = a['response']
+            export_data.append({
+                'Number': idx,
+                'Recommendation': rec['text'],
+                'Recommendation_Confidence': rec.get('confidence', 0),
+                'Response_Status': resp['status'] if resp else 'No Response',
+                'Response_Text': resp['response_text'] if resp else '',
+                'Match_Confidence': resp['similarity'] if resp else 0,
+            })
+        
+        df = pd.DataFrame(export_data)
+        csv = df.to_csv(index=False)
+        
         st.download_button(
-            label="📥 Download Results as CSV",
-            data=csv_data,
-            file_name="alignment_results.csv",
-            mime="text/csv",
-            help="Download all alignment results as a CSV file"
+            "📥 Download CSV",
+            csv,
+            f"recommendation_responses_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            "text/csv"
+        )
+    
+    with col2:
+        # Summary report
+        report = f"""# Recommendation-Response Alignment Report
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## Summary
+- Total Recommendations: {total}
+- Responses Found: {with_response}
+- Accepted: {status_counts.get('Accepted', 0)}
+- Partial: {status_counts.get('Partial', 0)}
+- Rejected: {status_counts.get('Rejected', 0)}
+- Noted: {status_counts.get('Noted', 0)}
+- No Response: {status_counts.get('No Response', 0)}
+
+## Details
+"""
+        for idx, a in enumerate(alignments, 1):
+            rec = a['recommendation']
+            resp = a['response']
+            status = resp['status'] if resp else 'No Response'
+            report += f"""
+### Recommendation {idx}
+**Status:** {status}
+
+**Recommendation:**
+> {rec['text']}
+
+**Response:**
+> {resp['response_text'] if resp else 'No response found'}
+
+---
+"""
+        
+        st.download_button(
+            "📥 Download Report",
+            report,
+            f"alignment_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+            "text/markdown"
         )
 
-def export_simple_csv(alignments: List[Dict]) -> str:
-    """Export to CSV format with all details including confidence"""
-    
-    def clean_text_for_csv(text: str) -> str:
-        """Clean text for CSV export - handle special characters"""
-        if not text:
-            return ""
-        
-        # Fix UTF-8 encoding corruption (these are very common in PDFs)
-        text = text.replace('â€™', "'")   # Corrupted apostrophe
-        text = text.replace('â€œ', '"')   # Corrupted opening quote
-        text = text.replace('â€', '"')    # Corrupted closing quote
-        text = text.replace('â€¢', '•')   # Corrupted bullet point
-        text = text.replace('â€"', '-')   # Corrupted dash
-        text = text.replace('â€¦', '...')  # Corrupted ellipsis
-        
-        # Fix common PDF extraction errors
-        text = text.replace('�', 'ti')  # Common PDF corruption where 'ti' becomes �
-        text = text.replace('ﬁ', 'fi').replace('ﬂ', 'fl')  # Ligatures
-        text = text.replace('ﬀ', 'ff').replace('ﬃ', 'ffi').replace('ﬄ', 'ffl')
-        
-        # Replace smart quotes with regular quotes (if any remain)
-        text = text.replace('"', '"').replace('"', '"')  # Smart double quotes
-        text = text.replace(''', "'").replace(''', "'")  # Smart single quotes
-        
-        # Replace other problematic characters
-        text = text.replace('–', '-').replace('—', '-')  # Em and en dashes
-        text = text.replace('…', '...')  # Ellipsis
-        text = text.replace('\n', ' ').replace('\r', ' ')  # Line breaks
-        text = text.replace('\t', ' ')  # Tabs
-        
-        # Remove non-breaking spaces and other unicode spaces
-        text = text.replace('\u00A0', ' ')  # Non-breaking space
-        text = text.replace('\u2009', ' ')  # Thin space
-        text = text.replace('\u200B', '')   # Zero-width space
-        
-        # Clean up multiple spaces
-        import re
-        text = re.sub(r'\s+', ' ', text)
-        
-        # Escape quotes for CSV
-        text = text.replace('"', '""')  # Escape remaining quotes
-        
-        return text.strip()
-    
-    lines = ["ID,Recommendation,Rec_Document,Rec_Keyword,Response,Resp_Document,Resp_Keyword,Similarity,Match_Quality,Same_Document"]
-    
-    id_counter = 1
-    for alignment in alignments:
-        rec = alignment['recommendation']
-        
-        if alignment['responses']:
-            for resp_match in alignment['responses']:
-                resp = resp_match['response']
-                similarity = resp_match['similarity']
-                
-                # Determine match quality
-                if similarity > 0.7:
-                    match_quality = "Strong"
-                elif similarity > 0.5:
-                    match_quality = "Good"
-                elif similarity > 0.4:
-                    match_quality = "Moderate"
-                else:
-                    match_quality = "Weak"
-                
-                # Clean text for CSV
-                rec_text = clean_text_for_csv(rec["sentence"])
-                resp_text = clean_text_for_csv(resp["sentence"])
-                rec_doc = clean_text_for_csv(rec["document"]["filename"])
-                resp_doc = clean_text_for_csv(resp["document"]["filename"])
-                rec_keyword = clean_text_for_csv(rec["keyword"])
-                resp_keyword = clean_text_for_csv(resp["keyword"])
-                
-                # Create CSV line
-                lines.append(
-                    f'{id_counter},'
-                    f'"{rec_text}",'
-                    f'"{rec_doc}",'
-                    f'"{rec_keyword}",'
-                    f'"{resp_text}",'
-                    f'"{resp_doc}",'
-                    f'"{resp_keyword}",'
-                    f'{similarity:.2%},'
-                    f'{match_quality},'
-                    f'{"Yes" if resp_match["same_doc"] else "No"}'
-                )
-                id_counter += 1
-        else:
-            # No response found
-            rec_text = clean_text_for_csv(rec["sentence"])
-            rec_doc = clean_text_for_csv(rec["document"]["filename"])
-            rec_keyword = clean_text_for_csv(rec["keyword"])
-            
-            lines.append(
-                f'{id_counter},'
-                f'"{rec_text}",'
-                f'"{rec_doc}",'
-                f'"{rec_keyword}",'
-                f'"No response found",'
-                f'"",'
-                f'"",'
-                f'0%,'
-                f'No Match,'
-                f'N/A'
-            )
-            id_counter += 1
-    
-    return "\n".join(lines)
 
-# Export for use in your app
+# Export
 __all__ = ['render_simple_alignment_interface']
