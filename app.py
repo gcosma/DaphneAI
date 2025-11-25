@@ -474,7 +474,7 @@ def main():
         )
         
         st.title("🏛️ DaphneAI - Recommendation & Response Document Analysis")
-        st.markdown("*Advanced document processing and search for government content*")
+        st.markdown("*Advanced document processing and search*")
         
         # Check module availability
         modules_available, setup_search_tab, prepare_documents_for_search, extract_text_from_file, render_analytics_tab = safe_import_with_fallback()
