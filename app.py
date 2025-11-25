@@ -424,8 +424,8 @@ def main():
             initial_sidebar_state="expanded"
         )
         
-        st.title("🏛️ DaphneAI - Government Document Analysis")
-        st.markdown("*Advanced document processing and search for government content*")
+        st.title("🏛️ DaphneAI - Document Analysis")
+        st.markdown("*Advanced document processing and search for recommendations and responses*")
         
         # Check module availability
         modules_available, setup_search_tab, prepare_documents_for_search, extract_text_from_file, render_analytics_tab = safe_import_with_fallback()
