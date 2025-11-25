@@ -620,41 +620,6 @@ def extract_recommendations_improved(text: str, min_confidence: float = 0.6) -> 
     return extractor.extract_recommendations(text, min_confidence)
 
 
-# Test function
-def test_extraction():
-    """Test the extractor with sample recommendations"""
-    test_texts = [
-        "The Home Office should provide sufficient resourcing to ensure proper oversight.",
-        "The IOPC should conduct audits of complaint handling procedures.",
-        "The College of Policing should review its work on training materials.",
-        "Visit https://www.gov.uk/guidance for more information.",
-        "The recommendations have been implemented across all departments.",
-        "1. Establish a clear framework for accountability.",
-        "Government should prioritise community engagement initiatives.",
-        "See www.police.uk for the full report.",
-        "These recommendations will improve public trust.",
-    ]
-    
-    extractor = ImprovedRecommendationExtractor()
-    
-    print("=" * 70)
-    print("RECOMMENDATION EXTRACTION TEST")
-    print("=" * 70)
-    
-    for text in test_texts:
-        cleaned = extractor.clean_hyperlinks(text)
-        results = extractor.extract_recommendations(text, min_confidence=0.5)
-        
-        print(f"\nInput: {text[:60]}...")
-        print(f"Cleaned: {cleaned[:60]}..." if cleaned else "Cleaned: [empty]")
-        
-        if results:
-            for r in results:
-                print(f"  ✓ EXTRACTED (confidence: {r['confidence']:.2f}, method: {r['method']}, verb: {r['verb']})")
-        else:
-            print("  ✗ Not extracted (filtered out)")
-    
-    print("\n" + "=" * 70)
 
 
 if __name__ == "__main__":
