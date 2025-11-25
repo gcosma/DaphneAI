@@ -67,6 +67,20 @@ def render_recommendations_tab():
             5. **Entity + should patterns** - NHS England should, Boards should, etc.
             
             **Result:** ~90% reduction in false positives compared to basic extraction.
+            
+            ---
+            
+            ### 🎨 Confidence Colour Guide
+            
+            Results are sorted by confidence (highest first) and colour-coded:
+            
+            | Colour | Confidence | What it means |
+            |--------|------------|---------------|
+            | 🟢 | **95%+** | Numbered recommendations or strong directive patterns |
+            | 🟡 | **85-94%** | Passive recommendations ("should be completed") |
+            | 🟠 | **75-84%** | Modal verb patterns - still valid recommendations |
+            
+            All extracted items are genuine recommendations - the colour simply indicates how explicit the recommendation language is.
             """)
         return
     
@@ -75,31 +89,25 @@ def render_recommendations_tab():
     
     selected_doc = st.selectbox("Select document to analyse:", doc_names)
     
-    min_confidence = st.slider(
-        "Minimum confidence threshold:",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.75,  # CHANGED: Default to 0.75 for stricter filtering
-        step=0.05,
-        help="Only show recommendations with confidence above this threshold. 0.75 recommended for best results."
-    )
-    
     if st.button("🔍 Extract Recommendations", type="primary"):
         doc = next((d for d in documents if d['filename'] == selected_doc), None)
         
         if doc and 'text' in doc:
             with st.spinner("Analysing document with strict filtering..."):
                 try:
-                    # FIXED: Uses the strict extractor
+                    # Extract all recommendations (min_confidence=0.75 hardcoded for quality)
                     recommendations = extract_recommendations(
                         doc['text'],
-                        min_confidence=min_confidence
+                        min_confidence=0.75
                     )
                     
                     if recommendations:
+                        # SORT BY CONFIDENCE (highest first)
+                        recommendations = sorted(recommendations, key=lambda x: x.get('confidence', 0), reverse=True)
+                        
                         st.success(f"✅ Found {len(recommendations)} genuine recommendations")
                         
-                        # FIXED: Use StrictRecommendationExtractor for statistics
+                        # Statistics
                         extractor = StrictRecommendationExtractor()
                         stats = extractor.get_statistics(recommendations)
                         
@@ -113,14 +121,23 @@ def render_recommendations_tab():
                         with col4:
                             st.metric("Unique Verbs", len(stats.get('top_verbs', {})))
                         
-                        # Show method breakdown
-                        if stats.get('methods'):
-                            st.markdown("**Detection methods used:**")
-                            method_text = ", ".join([f"{m}: {c}" for m, c in stats['methods'].items()])
-                            st.caption(method_text)
+                        # CONFIDENCE LEGEND
+                        st.markdown("---")
+                        st.markdown("#### 🎨 Confidence Guide")
+                        legend_col1, legend_col2, legend_col3 = st.columns(3)
+                        with legend_col1:
+                            st.markdown("🟢 **High (≥95%)**")
+                            st.caption("Numbered recommendations (Recommendation 1, 2, etc.) or strong 'entity should' patterns")
+                        with legend_col2:
+                            st.markdown("🟡 **Medium (85-94%)**")
+                            st.caption("Passive recommendations ('should be completed', 'should be presented')")
+                        with legend_col3:
+                            st.markdown("🟠 **Standard (75-84%)**")
+                            st.caption("Modal verb patterns ('should review', 'should consider') - still valid recommendations")
                         
                         st.markdown("---")
                         st.subheader("📋 Extracted Recommendations")
+                        st.caption("Sorted by confidence (highest first)")
                         
                         for idx, rec in enumerate(recommendations, 1):
                             rec_text = rec.get('text', '[No text available]').strip()
@@ -137,8 +154,9 @@ def render_recommendations_tab():
                                 else:
                                     conf_icon = "🟠"
                                 
-                                title = f"{conf_icon} **{idx}. {verb}** (Confidence: {confidence:.0%})"
+                                title = f"{conf_icon} **{idx}. {verb}** ({confidence:.0%})"
                                 
+                                # Expand first 5 by default
                                 with st.expander(title, expanded=(idx <= 5)):
                                     st.markdown(rec_text)
                                     st.caption(f"Detection method: {method}")
@@ -713,6 +731,40 @@ def render_error_recovery():
         if st.button("📋 Show Debug Info"):
             show_debug_info()
 
+def create_sample_data():
+    """Create sample data for testing"""
+    sample_doc = {
+        'filename': 'sample_government_report.txt',
+        'text': """
+        Sample Government Report - Policy Review
+
+        Executive Summary:
+        This report contains several recommendations for improving government services.
+
+        Recommendations:
+        1. We recommend implementing new digital services to improve citizen access.
+        2. The committee suggests reviewing current budget allocations for healthcare.
+        3. We advise establishing a new framework for inter-departmental coordination.
+
+        Government Response:
+        1. The department agrees to implement digital services by Q4 2024.
+        2. Budget review has been scheduled for the next fiscal year.
+        3. The coordination framework proposal will be considered in the upcoming policy review.
+
+        Conclusion:
+        This demonstrates the alignment between recommendations and responses in government documentation.
+        """,
+        'word_count': 95,
+        'document_type': 'government',
+        'upload_time': datetime.now(),
+        'file_size': 756
+    }
+    
+    st.session_state.documents = [sample_doc]
+    st.success("✅ Sample data loaded! You can now test the application features.")
+
+
+            
 def show_debug_info():
     """Show debug information"""
     st.markdown("### 🔍 Debug Information")
