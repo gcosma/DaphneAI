@@ -1,570 +1,609 @@
-# government_search_engine.py
+# semantic_search_engine.py
 """
-Advanced Government Document Search Engine
-Designed for searching recommendations, responses, and other government content
+State-of-the-Art Semantic Search Engine
+Optimized for maximum relevance and accuracy
 """
 
-import re
-import time
 import logging
-from typing import List, Dict, Any, Tuple, Optional
-from dataclasses import dataclass
-from datetime import datetime
-import nltk
-from nltk.tokenize import sent_tokenize, word_tokenize
-from nltk.corpus import stopwords
+from typing import List, Dict, Any, Optional, Tuple
+from dataclasses import dataclass, field
+import numpy as np
+from collections import defaultdict
 
-# Download required NLTK data
-try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    nltk.download('punkt')
-
-try:
-    nltk.data.find('corpora/stopwords')
-except LookupError:
-    nltk.download('stopwords')
-
-# Import stemmer
-from nltk.stem import PorterStemmer
-stemmer = PorterStemmer()
-
-# Optional AI imports
+# Core dependencies
 try:
     from sentence_transformers import SentenceTransformer
     from sklearn.metrics.pairwise import cosine_similarity
-    import numpy as np
-    AI_AVAILABLE = True
+    import torch
+    SEMANTIC_AVAILABLE = True
 except ImportError:
-    AI_AVAILABLE = False
+    SEMANTIC_AVAILABLE = False
+    raise ImportError("Please install: pip install sentence-transformers torch scikit-learn")
+
+# Optional for advanced features
+try:
+    import nltk
+    from nltk.tokenize import sent_tokenize
+    nltk.download('punkt', quiet=True)
+    NLTK_AVAILABLE = True
+except:
+    NLTK_AVAILABLE = False
+
 
 @dataclass
-class SearchFragment:
-    """Individual search result fragment"""
+class SearchResult:
+    """Enhanced search result with rich metadata"""
     document_id: str
     filename: str
-    sentence: str
-    context: str  # Surrounding sentences for context
-    score: float
-    match_type: str  # 'exact', 'semantic', 'partial'
+    text_fragment: str
+    full_context: str
+    relevance_score: float
     sentence_index: int
-    highlights: List[str]
+    embedding_distance: float
+    cross_encoder_score: Optional[float] = None
+    snippet_preview: str = ""
+    matched_concepts: List[str] = field(default_factory=list)
+    
+    def __post_init__(self):
+        """Generate preview snippet"""
+        if not self.snippet_preview:
+            self.snippet_preview = self._create_snippet()
+    
+    def _create_snippet(self, max_length: int = 200) -> str:
+        """Create intelligently truncated snippet"""
+        if len(self.text_fragment) <= max_length:
+            return self.text_fragment
+        
+        # Find sentence boundary near max_length
+        truncated = self.text_fragment[:max_length]
+        last_period = truncated.rfind('.')
+        last_space = truncated.rfind(' ')
+        
+        cut_point = last_period if last_period > max_length * 0.7 else last_space
+        if cut_point == -1:
+            cut_point = max_length
+            
+        return truncated[:cut_point] + "..."
+
 
 @dataclass
-class DocumentSearchResult:
-    """Complete search result for a document"""
+class DocumentResult:
+    """Aggregated results for a single document"""
     document_id: str
     filename: str
-    total_score: float
-    fragments: List[SearchFragment]
-    document_type: str  # 'recommendation', 'response', 'policy', etc.
+    document_type: str
+    overall_score: float
+    best_match_score: float
+    total_matches: int
+    results: List[SearchResult]
+    
+    def get_top_results(self, n: int = 3) -> List[SearchResult]:
+        """Get top N results from this document"""
+        return sorted(self.results, key=lambda x: x.relevance_score, reverse=True)[:n]
 
-class GovernmentSearchEngine:
-    """Advanced search engine for government documents"""
+
+class SemanticSearchEngine:
+    """
+    Advanced semantic search engine with state-of-the-art NLP models
     
-    def __init__(self):
+    Features:
+    - Multiple embedding models (can switch between them)
+    - Query expansion and reformulation
+    - Re-ranking with cross-encoders (optional)
+    - Hybrid semantic + keyword boosting
+    - Contextual chunking for long documents
+    - Efficient caching and batch processing
+    """
+    
+    def __init__(
+        self,
+        model_name: str = 'all-MiniLM-L6-v2',
+        use_cross_encoder: bool = False,
+        device: str = None,
+        cache_embeddings: bool = True
+    ):
+        """
+        Initialize semantic search engine
+        
+        Args:
+            model_name: Hugging Face model name. Options:
+                - 'all-MiniLM-L6-v2': Fast, good quality (default)
+                - 'all-mpnet-base-v2': Higher quality, slower
+                - 'multi-qa-mpnet-base-dot-v1': Optimized for Q&A
+                - 'msmarco-distilbert-base-v4': Good for documents
+            use_cross_encoder: Enable re-ranking (slower but more accurate)
+            device: 'cuda', 'cpu', or None for auto-detect
+            cache_embeddings: Cache embeddings to speed up repeated searches
+        """
+        if not SEMANTIC_AVAILABLE:
+            raise RuntimeError("Semantic search dependencies not available")
+        
         self.logger = logging.getLogger(__name__)
-        self.documents = []
-        self.sentence_index = {}  # Maps doc_id -> list of sentences
-        self.stemmed_sentence_index = {}  # Maps doc_id -> list of stemmed sentences
-        self.semantic_model = None
-        self.sentence_embeddings = {}
-        self.stop_words = set(stopwords.words('english'))
-        self.stemmer = PorterStemmer()
         
-        # Government-specific keywords
-        self.gov_keywords = {
-            'recommendation': ['recommend', 'recommendation', 'suggests', 'proposes', 'advises'],
-            'response': ['response', 'accept', 'reject', 'implement', 'considers', 'agrees'],
-            'policy': ['policy', 'regulation', 'guideline', 'framework', 'strategy'],
-            'action': ['action', 'implementation', 'execute', 'deliver', 'establish'],
-            'priority': ['urgent', 'priority', 'immediate', 'critical', 'essential']
-        }
+        # Auto-detect device
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = device
         
-        # Initialize semantic model if available
-        if AI_AVAILABLE:
+        # Load bi-encoder model
+        self.logger.info(f"Loading semantic model: {model_name} on {device}")
+        self.model = SentenceTransformer(model_name, device=device)
+        self.model_name = model_name
+        
+        # Optional cross-encoder for re-ranking
+        self.cross_encoder = None
+        if use_cross_encoder:
             try:
-                self.semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
-                self.logger.info("Semantic search model loaded successfully")
+                from sentence_transformers import CrossEncoder
+                self.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device=device)
+                self.logger.info("Cross-encoder loaded for re-ranking")
             except Exception as e:
-                self.logger.warning(f"Failed to load semantic model: {e}")
-                self.semantic_model = None
-        else:
-            self.logger.warning("AI libraries not available - using advanced keyword search only")
-    
-    def add_documents(self, documents: List[Dict[str, Any]]) -> None:
-        """Add documents to the search index"""
-        self.documents = documents
-        self._build_sentence_index()
-        self._build_semantic_index()
-    
-    def _build_sentence_index(self) -> None:
-        """Build sentence-level index for all documents with stemming"""
-        self.sentence_index = {}
-        self.stemmed_sentence_index = {}
+                self.logger.warning(f"Could not load cross-encoder: {e}")
         
-        for i, doc in enumerate(self.documents):
+        # Storage
+        self.documents = []
+        self.document_chunks = {}  # doc_id -> list of text chunks
+        self.chunk_embeddings = {}  # doc_id -> numpy array of embeddings
+        self.cache_embeddings = cache_embeddings
+        
+        # Query cache
+        self.query_cache = {} if cache_embeddings else None
+        
+        # Statistics
+        self.stats = {
+            'total_searches': 0,
+            'cache_hits': 0,
+            'total_documents': 0,
+            'total_chunks': 0
+        }
+    
+    def add_documents(
+        self,
+        documents: List[Dict[str, Any]],
+        chunk_size: int = 300,
+        chunk_overlap: int = 50,
+        batch_size: int = 32
+    ) -> None:
+        """
+        Add documents and build semantic index
+        
+        Args:
+            documents: List of dicts with 'text'/'content' and metadata
+            chunk_size: Target characters per chunk
+            chunk_overlap: Overlapping characters between chunks
+            batch_size: Batch size for embedding generation
+        """
+        self.logger.info(f"Indexing {len(documents)} documents...")
+        
+        self.documents = documents
+        self.document_chunks = {}
+        self.chunk_embeddings = {}
+        
+        all_chunks = []
+        chunk_metadata = []  # Track which doc each chunk belongs to
+        
+        # Step 1: Chunk all documents
+        for i, doc in enumerate(documents):
             doc_id = doc.get('id', str(i))
             text = doc.get('text', doc.get('content', ''))
             
-            if text:
-                # Split into sentences
-                sentences = sent_tokenize(text)
-                self.sentence_index[doc_id] = sentences
-                
-                # Create stemmed versions
-                stemmed_sentences = []
-                for sentence in sentences:
-                    words = word_tokenize(sentence.lower())
-                    stemmed_words = [self.stemmer.stem(word) for word in words if word.isalnum()]
-                    stemmed_sentences.append(' '.join(stemmed_words))
-                
-                self.stemmed_sentence_index[doc_id] = stemmed_sentences
-                
-        self.logger.info(f"Built sentence and stemmed index for {len(self.documents)} documents")
-    
-    def _build_semantic_index(self) -> None:
-        """Build semantic embeddings for all sentences"""
-        if not self.semantic_model:
-            return
+            if not text:
+                continue
+            
+            # Create chunks with overlap
+            chunks = self._create_smart_chunks(text, chunk_size, chunk_overlap)
+            self.document_chunks[doc_id] = chunks
+            
+            # Track metadata
+            for chunk in chunks:
+                all_chunks.append(chunk)
+                chunk_metadata.append(doc_id)
         
-        try:
-            self.sentence_embeddings = {}
-            total_sentences = 0
-            
-            for doc_id, sentences in self.sentence_index.items():
-                if sentences:
-                    embeddings = self.semantic_model.encode(sentences)
-                    self.sentence_embeddings[doc_id] = embeddings
-                    total_sentences += len(sentences)
-            
-            self.logger.info(f"Built semantic embeddings for {total_sentences} sentences")
-        except Exception as e:
-            self.logger.error(f"Failed to build semantic index: {e}")
-            self.sentence_embeddings = {}
+        # Step 2: Generate embeddings in batches (much faster)
+        self.logger.info(f"Generating embeddings for {len(all_chunks)} chunks...")
+        
+        all_embeddings = []
+        for i in range(0, len(all_chunks), batch_size):
+            batch = all_chunks[i:i + batch_size]
+            batch_embeddings = self.model.encode(
+                batch,
+                convert_to_numpy=True,
+                show_progress_bar=False,
+                batch_size=batch_size
+            )
+            all_embeddings.append(batch_embeddings)
+        
+        all_embeddings = np.vstack(all_embeddings)
+        
+        # Step 3: Organize embeddings by document
+        chunk_idx = 0
+        for doc_id in self.document_chunks.keys():
+            num_chunks = len(self.document_chunks[doc_id])
+            self.chunk_embeddings[doc_id] = all_embeddings[chunk_idx:chunk_idx + num_chunks]
+            chunk_idx += num_chunks
+        
+        # Update statistics
+        self.stats['total_documents'] = len(documents)
+        self.stats['total_chunks'] = len(all_chunks)
+        
+        self.logger.info(f"✓ Indexed {len(documents)} documents into {len(all_chunks)} chunks")
     
-    def search(self, query: str, search_type: str = 'comprehensive', 
-               max_results_per_doc: int = 10, min_score: float = 0.1) -> List[DocumentSearchResult]:
+    def _create_smart_chunks(
+        self,
+        text: str,
+        target_size: int = 300,
+        overlap: int = 50
+    ) -> List[str]:
         """
-        Comprehensive search across all documents
+        Create intelligent text chunks that respect sentence boundaries
+        
+        This is much better than naive character-based chunking as it:
+        - Preserves complete sentences
+        - Maintains context with overlap
+        - Handles edge cases gracefully
+        """
+        if not text:
+            return []
+        
+        # Use sentence tokenization if available
+        if NLTK_AVAILABLE:
+            try:
+                sentences = sent_tokenize(text)
+            except:
+                # Fallback to simple splitting
+                sentences = [s.strip() + '.' for s in text.split('.') if s.strip()]
+        else:
+            sentences = [s.strip() + '.' for s in text.split('.') if s.strip()]
+        
+        if not sentences:
+            return [text]
+        
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        
+        for sentence in sentences:
+            sentence_len = len(sentence)
+            
+            # If single sentence exceeds target, add it as its own chunk
+            if sentence_len > target_size and not current_chunk:
+                chunks.append(sentence)
+                continue
+            
+            # If adding this sentence would exceed target, start new chunk
+            if current_length + sentence_len > target_size and current_chunk:
+                chunks.append(' '.join(current_chunk))
+                
+                # Add overlap: keep last few sentences
+                if overlap > 0 and len(current_chunk) > 1:
+                    overlap_text = ' '.join(current_chunk[-2:])
+                    if len(overlap_text) <= overlap:
+                        current_chunk = current_chunk[-2:]
+                        current_length = len(overlap_text)
+                    else:
+                        current_chunk = [current_chunk[-1]]
+                        current_length = len(current_chunk[0])
+                else:
+                    current_chunk = []
+                    current_length = 0
+            
+            current_chunk.append(sentence)
+            current_length += sentence_len + 1  # +1 for space
+        
+        # Add final chunk
+        if current_chunk:
+            chunks.append(' '.join(current_chunk))
+        
+        return chunks
+    
+    def search(
+        self,
+        query: str,
+        top_k: int = 20,
+        min_score: float = 0.3,
+        rerank: bool = None,
+        return_all_documents: bool = False,
+        keyword_boost: float = 0.1
+    ) -> List[DocumentResult]:
+        """
+        Perform semantic search across all documents
         
         Args:
             query: Search query
-            search_type: 'exact', 'semantic', 'comprehensive'
-            max_results_per_doc: Maximum fragments per document
-            min_score: Minimum relevance score threshold
-        """
-        start_time = time.time()
+            top_k: Maximum results per document
+            min_score: Minimum similarity threshold (0-1)
+            rerank: Use cross-encoder for re-ranking (uses default if None)
+            return_all_documents: Return docs even with no matches
+            keyword_boost: Boost score for keyword matches (0-0.3 recommended)
         
+        Returns:
+            List of DocumentResult objects sorted by relevance
+        """
         if not query.strip():
             return []
         
-        all_results = []
+        self.stats['total_searches'] += 1
+        
+        # Check cache
+        cache_key = f"{query}_{top_k}_{min_score}"
+        if self.query_cache is not None and cache_key in self.query_cache:
+            self.stats['cache_hits'] += 1
+            return self.query_cache[cache_key]
+        
+        # Expand query for better matching
+        expanded_queries = self._expand_query(query)
+        
+        # Encode all query variations
+        query_embeddings = self.model.encode(
+            expanded_queries,
+            convert_to_numpy=True,
+            show_progress_bar=False
+        )
+        
+        # Search each document
+        document_results = []
         
         for i, doc in enumerate(self.documents):
             doc_id = doc.get('id', str(i))
             
-            if search_type == 'exact':
-                fragments = self._exact_search_document(query, doc_id, doc)
-            elif search_type == 'semantic':
-                fragments = self._semantic_search_document(query, doc_id, doc)
-            else:  # comprehensive
-                exact_fragments = self._exact_search_document(query, doc_id, doc)
-                semantic_fragments = self._semantic_search_document(query, doc_id, doc)
-                fragments = self._merge_fragments(exact_fragments, semantic_fragments)
+            if doc_id not in self.chunk_embeddings:
+                continue
             
-            # Filter by minimum score and limit results
-            filtered_fragments = [f for f in fragments if f.score >= min_score]
-            filtered_fragments.sort(key=lambda x: x.score, reverse=True)
-            limited_fragments = filtered_fragments[:max_results_per_doc]
+            # Find best matching chunks
+            search_results = self._search_document(
+                doc_id=doc_id,
+                doc=doc,
+                query=query,
+                query_embeddings=query_embeddings,
+                top_k=top_k,
+                min_score=min_score,
+                keyword_boost=keyword_boost
+            )
             
-            if limited_fragments:
-                total_score = sum(f.score for f in limited_fragments) / len(limited_fragments)
-                doc_result = DocumentSearchResult(
+            if search_results or return_all_documents:
+                # Calculate document-level score
+                if search_results:
+                    best_score = max(r.relevance_score for r in search_results)
+                    avg_score = sum(r.relevance_score for r in search_results) / len(search_results)
+                    overall_score = 0.7 * best_score + 0.3 * avg_score
+                else:
+                    best_score = 0.0
+                    overall_score = 0.0
+                
+                doc_result = DocumentResult(
                     document_id=doc_id,
                     filename=doc.get('filename', f'Document {i+1}'),
-                    total_score=total_score,
-                    fragments=limited_fragments,
-                    document_type=self._classify_document_type(doc)
+                    document_type=self._classify_document(doc),
+                    overall_score=overall_score,
+                    best_match_score=best_score,
+                    total_matches=len(search_results),
+                    results=search_results
                 )
-                all_results.append(doc_result)
+                document_results.append(doc_result)
         
-        # Sort documents by total score
-        all_results.sort(key=lambda x: x.total_score, reverse=True)
+        # Re-rank documents if cross-encoder available
+        if (rerank or (rerank is None and self.cross_encoder)) and document_results:
+            document_results = self._rerank_documents(query, document_results)
         
-        search_time = time.time() - start_time
-        total_fragments = sum(len(result.fragments) for result in all_results)
+        # Sort by overall score
+        document_results.sort(key=lambda x: x.overall_score, reverse=True)
         
-        self.logger.info(f"Search completed in {search_time:.3f}s - Query: '{query}', "
-                        f"Documents: {len(all_results)}, Fragments: {total_fragments}")
+        # Cache results
+        if self.query_cache is not None:
+            self.query_cache[cache_key] = document_results
         
-        return all_results
+        return document_results
     
-    def _exact_search_document(self, query: str, doc_id: str, doc: Dict) -> List[SearchFragment]:
-        """Advanced exact search with stemming and context"""
-        fragments = []
-        sentences = self.sentence_index.get(doc_id, [])
-        stemmed_sentences = self.stemmed_sentence_index.get(doc_id, [])
+    def _search_document(
+        self,
+        doc_id: str,
+        doc: Dict[str, Any],
+        query: str,
+        query_embeddings: np.ndarray,
+        top_k: int,
+        min_score: float,
+        keyword_boost: float
+    ) -> List[SearchResult]:
+        """Search within a single document"""
         
-        if not sentences:
-            return fragments
+        chunks = self.document_chunks.get(doc_id, [])
+        chunk_embeddings = self.chunk_embeddings.get(doc_id)
         
-        # Prepare query variations for stemming-based matching
-        query_variations = self._generate_stemmed_query_variations(query)
+        if chunk_embeddings is None or len(chunks) == 0:
+            return []
         
-        for sentence_idx, (sentence, stemmed_sentence) in enumerate(zip(sentences, stemmed_sentences)):
-            sentence_lower = sentence.lower()
-            best_score = 0
-            best_match_type = 'none'
-            highlights = []
+        # Calculate similarities with all query variations
+        # Shape: (num_query_variations, num_chunks)
+        similarities = cosine_similarity(query_embeddings, chunk_embeddings)
+        
+        # Take maximum similarity across query variations for each chunk
+        max_similarities = np.max(similarities, axis=0)
+        
+        # Apply keyword boosting
+        if keyword_boost > 0:
+            query_terms = set(query.lower().split())
+            for idx, chunk in enumerate(chunks):
+                chunk_lower = chunk.lower()
+                matching_terms = sum(1 for term in query_terms if term in chunk_lower)
+                if matching_terms > 0:
+                    boost = min(keyword_boost * matching_terms, 0.3)
+                    max_similarities[idx] = min(1.0, max_similarities[idx] + boost)
+        
+        # Get top-k chunks above threshold
+        top_indices = np.argsort(max_similarities)[::-1][:top_k]
+        top_indices = [idx for idx in top_indices if max_similarities[idx] >= min_score]
+        
+        # Create search results
+        results = []
+        for idx in top_indices:
+            chunk = chunks[idx]
+            score = float(max_similarities[idx])
             
-            # Test each query variation
-            for variation, stemmed_variation, variation_score in query_variations:
-                variation_lower = variation.lower()
-                
-                # 1. Exact phrase match (highest priority)
-                if variation_lower in sentence_lower:
-                    score = variation_score * 1.0
-                    if score > best_score:
-                        best_score = score
-                        best_match_type = 'exact'
-                        highlights = [variation]
-                
-                # 2. Stemmed phrase match
-                if stemmed_variation in stemmed_sentence:
-                    score = variation_score * 0.9
-                    if score > best_score:
-                        best_score = score
-                        best_match_type = 'stemmed'
-                        highlights = variation.split()
-                
-                # 3. Individual word matches (original and stemmed)
-                original_words = variation.split()
-                stemmed_words = stemmed_variation.split()
-                
-                word_matches = 0
-                matched_words = []
-                
-                for orig_word, stem_word in zip(original_words, stemmed_words):
-                    # Check original word
-                    if orig_word.lower() in sentence_lower:
-                        word_matches += 1
-                        matched_words.append(orig_word)
-                    # Check stemmed word
-                    elif stem_word in stemmed_sentence:
-                        word_matches += 1
-                        # Find the original word in sentence that matches the stem
-                        sentence_words = word_tokenize(sentence.lower())
-                        for sent_word in sentence_words:
-                            if self.stemmer.stem(sent_word) == stem_word:
-                                matched_words.append(sent_word)
-                                break
-                
-                if word_matches > 0:
-                    word_score = (word_matches / len(original_words)) * variation_score * 0.7
-                    if word_score > best_score:
-                        best_score = word_score
-                        best_match_type = 'partial'
-                        highlights = matched_words
+            # Extract matched concepts (terms that appear in both query and chunk)
+            matched_concepts = self._extract_matched_concepts(query, chunk)
             
-            # Government keyword boost
-            gov_boost = self._calculate_government_relevance(sentence, query)
-            best_score += gov_boost
-            
-            if best_score > 0:
-                context = self._get_sentence_context(sentences, sentence_idx)
-                
-                fragment = SearchFragment(
-                    document_id=doc_id,
-                    filename=doc.get('filename', ''),
-                    sentence=sentence,
-                    context=context,
-                    score=best_score,
-                    match_type=best_match_type,
-                    sentence_index=sentence_idx,
-                    highlights=highlights
-                )
-                fragments.append(fragment)
+            result = SearchResult(
+                document_id=doc_id,
+                filename=doc.get('filename', ''),
+                text_fragment=chunk,
+                full_context=self._get_extended_context(chunks, idx),
+                relevance_score=score,
+                sentence_index=idx,
+                embedding_distance=1.0 - score,
+                matched_concepts=matched_concepts
+            )
+            results.append(result)
         
-        return fragments
+        return results
     
-    def _semantic_search_document(self, query: str, doc_id: str, doc: Dict) -> List[SearchFragment]:
-        """Semantic search with contextual understanding"""
-        fragments = []
+    def _expand_query(self, query: str) -> List[str]:
+        """
+        Expand query with variations for better semantic matching
         
-        if not self.semantic_model or doc_id not in self.sentence_embeddings:
-            return fragments
+        Returns multiple query formulations to capture different aspects
+        """
+        queries = [query]
         
-        try:
-            sentences = self.sentence_index.get(doc_id, [])
-            sentence_embeddings = self.sentence_embeddings[doc_id]
-            
-            # Encode query with government context
-            gov_enhanced_query = self._enhance_query_with_context(query)
-            query_embedding = self.semantic_model.encode([gov_enhanced_query])
-            
-            # Calculate similarities
-            similarities = cosine_similarity(query_embedding, sentence_embeddings)[0]
-            
-            for sentence_idx, (sentence, similarity) in enumerate(zip(sentences, similarities)):
-                if similarity > 0.1:  # Minimum semantic threshold
-                    context = self._get_sentence_context(sentences, sentence_idx)
-                    
-                    fragment = SearchFragment(
-                        document_id=doc_id,
-                        filename=doc.get('filename', ''),
-                        sentence=sentence,
-                        context=context,
-                        score=float(similarity),
-                        match_type='semantic',
-                        sentence_index=sentence_idx,
-                        highlights=self._extract_semantic_highlights(sentence, query)
-                    )
-                    fragments.append(fragment)
+        # Add question variations
+        if not query.strip().endswith('?'):
+            queries.append(f"What about {query}?")
+            queries.append(f"Information about {query}")
         
-        except Exception as e:
-            self.logger.error(f"Semantic search failed for doc {doc_id}: {e}")
+        # Add context variations for government documents
+        if any(term in query.lower() for term in ['recommendation', 'response', 'policy', 'action']):
+            queries.append(f"government {query}")
         
-        return fragments
+        return queries
     
-    def _generate_stemmed_query_variations(self, query: str) -> List[Tuple[str, str, float]]:
-        """Generate query variations with original, stemmed forms, and importance scores"""
-        variations = []
+    def _extract_matched_concepts(self, query: str, text: str) -> List[str]:
+        """Extract concepts that appear in both query and text"""
+        query_words = set(query.lower().split())
+        text_words = set(text.lower().split())
         
-        # Original query (highest priority)
-        stemmed_query = self._stem_text(query)
-        variations.append((query, stemmed_query, 1.0))
+        matched = query_words & text_words
         
-        # Remove common stopwords
-        words = query.split()
-        important_words = [w for w in words if w.lower() not in self.stop_words]
-        if len(important_words) != len(words):
-            important_query = ' '.join(important_words)
-            stemmed_important = self._stem_text(important_query)
-            variations.append((important_query, stemmed_important, 0.9))
+        # Filter out very common words
+        stopwords = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with'}
+        matched = [w for w in matched if w not in stopwords and len(w) > 2]
         
-        # Individual important words with their stems
-        for word in important_words:
-            if len(word) > 3:  # Skip very short words
-                stemmed_word = self.stemmer.stem(word.lower())
-                variations.append((word, stemmed_word, 0.6))
-        
-        # Government synonyms and variations
-        gov_variations = self._generate_government_stemmed_variations(query)
-        variations.extend(gov_variations)
-        
-        return variations
+        return sorted(matched)[:5]
     
-    def _stem_text(self, text: str) -> str:
-        """Stem a text string"""
-        words = word_tokenize(text.lower())
-        stemmed_words = [self.stemmer.stem(word) for word in words if word.isalnum()]
-        return ' '.join(stemmed_words)
+    def _get_extended_context(self, chunks: List[str], index: int, window: int = 1) -> str:
+        """Get extended context around a chunk"""
+        start = max(0, index - window)
+        end = min(len(chunks), index + window + 1)
+        
+        return ' ... '.join(chunks[start:end])
     
-    def _generate_government_stemmed_variations(self, query: str) -> List[Tuple[str, str, float]]:
-        """Generate government-specific query variations with stemming"""
-        variations = []
-        query_lower = query.lower()
+    def _rerank_documents(
+        self,
+        query: str,
+        document_results: List[DocumentResult]
+    ) -> List[DocumentResult]:
+        """Re-rank documents using cross-encoder"""
+        if not self.cross_encoder:
+            return document_results
         
-        # Synonym mapping for government terms
-        gov_synonyms = {
-            'recommendation': ['advice', 'suggestion', 'proposal', 'guidance'],
-            'response': ['reply', 'answer', 'reaction', 'feedback'],
-            'implement': ['execute', 'carry out', 'deliver', 'enact'],
-            'policy': ['strategy', 'framework', 'guideline', 'directive'],
-            'government': ['department', 'ministry', 'authority', 'administration'],
-            'accept': ['approve', 'endorse', 'support', 'agree'],
-            'reject': ['decline', 'refuse', 'dismiss', 'oppose']
-        }
+        # Prepare query-document pairs for cross-encoder
+        pairs = []
+        pair_metadata = []
         
-        for original, synonyms in gov_synonyms.items():
-            if original in query_lower:
-                for synonym in synonyms:
-                    new_query = query_lower.replace(original, synonym)
-                    stemmed_new_query = self._stem_text(new_query)
-                    variations.append((new_query, stemmed_new_query, 0.8))
+        for doc_result in document_results:
+            # Use top result from each document
+            if doc_result.results:
+                best_result = doc_result.results[0]
+                pairs.append([query, best_result.text_fragment])
+                pair_metadata.append((doc_result, best_result))
         
-        return variations
+        if not pairs:
+            return document_results
+        
+        # Get cross-encoder scores
+        cross_scores = self.cross_encoder.predict(pairs)
+        
+        # Update scores
+        for (doc_result, search_result), cross_score in zip(pair_metadata, cross_scores):
+            # Blend bi-encoder and cross-encoder scores
+            search_result.cross_encoder_score = float(cross_score)
+            blended_score = 0.6 * search_result.relevance_score + 0.4 * cross_score
+            doc_result.overall_score = blended_score
+        
+        return document_results
     
-    def _calculate_government_relevance(self, sentence: str, query: str) -> float:
-        """Calculate additional relevance for government-specific content with stemming"""
-        boost = 0.0
-        sentence_lower = sentence.lower()
-        query_lower = query.lower()
-        
-        # Stem both sentence and query for better matching
-        stemmed_sentence = self._stem_text(sentence)
-        stemmed_query = self._stem_text(query)
-        
-        # Boost for government keywords (check both original and stemmed)
-        for category, keywords in self.gov_keywords.items():
-            for keyword in keywords:
-                stemmed_keyword = self.stemmer.stem(keyword)
-                
-                # Check original forms
-                if keyword in sentence_lower:
-                    if keyword in query_lower:
-                        boost += 0.3  # Query contains government term
-                    else:
-                        boost += 0.1  # Sentence contains government term
-                
-                # Check stemmed forms
-                elif stemmed_keyword in stemmed_sentence:
-                    if stemmed_keyword in stemmed_query:
-                        boost += 0.25  # Stemmed query matches stemmed sentence
-                    else:
-                        boost += 0.08  # Stemmed sentence contains government term
-        
-        # Boost for numbered recommendations/responses
-        if re.search(r'\b\d+[.)\]]\s*(recommendation|response)', sentence_lower):
-            boost += 0.2
-        
-        # Boost for action words near query terms (with stemming)
-        action_words = ['accept', 'reject', 'implement', 'consider', 'propose']
-        stemmed_action_words = [self.stemmer.stem(word) for word in action_words]
-        
-        query_words = query_lower.split()
-        stemmed_query_words = stemmed_query.split()
-        
-        for action, stemmed_action in zip(action_words, stemmed_action_words):
-            # Check original action words
-            if action in sentence_lower and any(word in sentence_lower for word in query_words):
-                boost += 0.15
-            # Check stemmed action words
-            elif stemmed_action in stemmed_sentence and any(word in stemmed_sentence for word in stemmed_query_words):
-                boost += 0.12
-        
-        return min(boost, 0.5)  # Cap the boost
-    
-    def _enhance_query_with_context(self, query: str) -> str:
-        """Enhance query with government context for better semantic search"""
-        enhanced = query
-        
-        # Add government context if not present
-        gov_terms = ['government', 'policy', 'recommendation', 'response']
-        if not any(term in query.lower() for term in gov_terms):
-            enhanced = f"government policy {query}"
-        
-        return enhanced
-    
-    def _extract_semantic_highlights(self, sentence: str, query: str) -> List[str]:
-        """Extract relevant highlights from semantic matches with stemming awareness"""
-        words = query.split()
-        highlights = []
-        
-        # Find exact word matches
-        for word in words:
-            if len(word) > 2 and word.lower() in sentence.lower():
-                highlights.append(word)
-        
-        # Find stemmed matches
-        sentence_words = word_tokenize(sentence.lower())
-        query_stems = [self.stemmer.stem(word.lower()) for word in words]
-        
-        for sent_word in sentence_words:
-            if len(sent_word) > 3:
-                sent_stem = self.stemmer.stem(sent_word)
-                if sent_stem in query_stems and sent_word not in [h.lower() for h in highlights]:
-                    highlights.append(sent_word)
-        
-        # Add semantically related terms (simplified)
-        for word in sentence_words:
-            if len(word) > 4 and word.lower() not in [h.lower() for h in highlights]:
-                # Simple heuristic for semantic relation using stemming
-                for query_word in words:
-                    query_stem = self.stemmer.stem(query_word.lower())
-                    word_stem = self.stemmer.stem(word.lower())
-                    
-                    # If stems are similar or word contains query stem
-                    if (query_stem in word_stem or word_stem in query_stem) and len(query_word) > 3:
-                        highlights.append(word)
-                        break
-        
-        return highlights[:5]  # Limit highlights
-    
-    def _get_sentence_context(self, sentences: List[str], sentence_idx: int, 
-                            context_window: int = 2) -> str:
-        """Get surrounding sentences for context"""
-        start = max(0, sentence_idx - context_window)
-        end = min(len(sentences), sentence_idx + context_window + 1)
-        
-        context_sentences = sentences[start:end]
-        return ' '.join(context_sentences)
-    
-    def _merge_fragments(self, exact_fragments: List[SearchFragment], 
-                        semantic_fragments: List[SearchFragment]) -> List[SearchFragment]:
-        """Merge exact and semantic fragments, avoiding duplicates"""
-        merged = []
-        exact_sentences = {f.sentence_index for f in exact_fragments}
-        
-        # Add all exact matches
-        merged.extend(exact_fragments)
-        
-        # Add semantic matches that don't overlap with exact matches
-        for semantic_frag in semantic_fragments:
-            if semantic_frag.sentence_index not in exact_sentences:
-                merged.append(semantic_frag)
-        
-        return merged
-    
-    def _classify_document_type(self, doc: Dict) -> str:
-        """Classify document type based on content"""
+    def _classify_document(self, doc: Dict[str, Any]) -> str:
+        """Classify document type"""
         text = doc.get('text', '').lower()
         filename = doc.get('filename', '').lower()
         
-        if 'recommendation' in text or 'recommend' in text:
+        if 'recommendation' in text or 'recommend' in filename:
             return 'recommendation'
-        elif 'response' in text or 'accept' in text or 'reject' in text:
+        elif 'response' in text or 'response' in filename:
             return 'response'
         elif 'policy' in text or 'policy' in filename:
             return 'policy'
         else:
-            return 'general'
+            return 'document'
     
-    def get_search_statistics(self) -> Dict[str, Any]:
+    def get_statistics(self) -> Dict[str, Any]:
         """Get search engine statistics"""
-        total_sentences = sum(len(sentences) for sentences in self.sentence_index.values())
+        cache_hit_rate = 0
+        if self.stats['total_searches'] > 0:
+            cache_hit_rate = self.stats['cache_hits'] / self.stats['total_searches']
         
         return {
-            'total_documents': len(self.documents),
-            'total_sentences': total_sentences,
-            'semantic_enabled': self.semantic_model is not None,
-            'embeddings_built': len(self.sentence_embeddings) > 0,
-            'average_sentences_per_doc': total_sentences / len(self.documents) if self.documents else 0
-        }
-
-
-class SearchResultDisplay:
-    """Display and formatting utilities for search results"""
-    
-    @staticmethod
-    def format_results_for_display(results: List[DocumentSearchResult]) -> Dict[str, Any]:
-        """Format search results for UI display"""
-        total_fragments = sum(len(result.fragments) for result in results)
-        
-        return {
-            'total_documents': len(results),
-            'total_fragments': total_fragments,
-            'results': results,
-            'by_document_type': SearchResultDisplay._group_by_document_type(results)
+            'model': self.model_name,
+            'device': self.device,
+            'cross_encoder_enabled': self.cross_encoder is not None,
+            'total_documents': self.stats['total_documents'],
+            'total_chunks': self.stats['total_chunks'],
+            'total_searches': self.stats['total_searches'],
+            'cache_hit_rate': f"{cache_hit_rate:.1%}",
+            'embeddings_cached': self.cache_embeddings
         }
     
-    @staticmethod
-    def _group_by_document_type(results: List[DocumentSearchResult]) -> Dict[str, List[DocumentSearchResult]]:
-        """Group results by document type"""
-        grouped = {}
-        for result in results:
-            doc_type = result.document_type
-            if doc_type not in grouped:
-                grouped[doc_type] = []
-            grouped[doc_type].append(result)
-        return grouped
+    def clear_cache(self) -> None:
+        """Clear query cache"""
+        if self.query_cache is not None:
+            self.query_cache.clear()
+            self.logger.info("Query cache cleared")
+
+
+# Usage example
+if __name__ == "__main__":
+    # Initialize search engine
+    search_engine = SemanticSearchEngine(
+        model_name='all-MiniLM-L6-v2',  # or 'all-mpnet-base-v2' for better quality
+        use_cross_encoder=False,  # Set True for re-ranking (slower but better)
+        cache_embeddings=True
+    )
     
-    @staticmethod
-    def highlight_text(text: str, highlights: List[str]) -> str:
-        """Add highlighting to text"""
-        highlighted = text
-        for highlight in highlights:
-            pattern = re.compile(re.escape(highlight), re.IGNORECASE)
-            highlighted = pattern.sub(f'**{highlight}**', highlighted)
-        return highlighted
+    # Example documents
+    documents = [
+        {
+            'id': 'doc1',
+            'filename': 'policy_recommendations.pdf',
+            'text': 'The committee recommends implementing a new digital infrastructure policy...'
+        },
+        {
+            'id': 'doc2',
+            'filename': 'government_response.pdf',
+            'text': 'The government accepts the recommendation to modernize digital systems...'
+        }
+    ]
+    
+    # Index documents
+    search_engine.add_documents(documents, chunk_size=300)
+    
+    # Search
+    results = search_engine.search(
+        query="digital infrastructure recommendations",
+        top_k=5,
+        min_score=0.3
+    )
+    
+    # Display results
+    for doc_result in results:
+        print(f"\n{doc_result.filename} (score: {doc_result.overall_score:.3f})")
+        for result in doc_result.get_top_results(3):
+            print(f"  - {result.snippet_preview}")
+            print(f"    Relevance: {result.relevance_score:.3f}")
