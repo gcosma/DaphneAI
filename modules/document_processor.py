@@ -1,6 +1,5 @@
-# modules/document_processor.py
-# Improved document processor with TABLE-AWARE PDF extraction
-# v2.0 - Handles government reports with tabular recommendations
+# modules/document_processor.py - FIXED VERSION
+# Improved PDF extraction with better cleaning and table handling
 
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -32,7 +31,10 @@ except ImportError:
 
 
 def clean_extracted_text(text: str) -> str:
-    """Clean text extracted from documents"""
+    """
+    ENHANCED: Clean text extracted from documents
+    Removes PDF artifacts, duplicate text, and formatting issues
+    """
     if not text:
         return ""
     
@@ -62,10 +64,64 @@ def clean_extracted_text(text: str) -> str:
     text = text.replace('\u2028', '\n')
     text = text.replace('\u2029', '\n\n')
     
+    # ===================================================================
+    # NEW: Remove PDF artifacts and repeated text
+    # ===================================================================
+    
+    # Remove page numbers (various formats)
+    text = re.sub(r'\n\s*\d+\s*\n', '\n', text)
+    text = re.sub(r'\n\s*Page\s+\d+\s*\n', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'\n\s*\d+\s+of\s+\d+\s*\n', '\n', text, flags=re.IGNORECASE)
+    
+    # Remove headers/footers that repeat on every page
+    # Look for lines that appear multiple times
+    lines = text.split('\n')
+    line_counts = {}
+    for line in lines:
+        stripped = line.strip()
+        if len(stripped) > 10 and len(stripped) < 100:
+            line_counts[stripped] = line_counts.get(stripped, 0) + 1
+    
+    # Remove lines that appear more than 3 times (likely headers/footers)
+    frequent_lines = {line for line, count in line_counts.items() if count > 3}
+    filtered_lines = []
+    for line in lines:
+        if line.strip() not in frequent_lines:
+            filtered_lines.append(line)
+    
+    text = '\n'.join(filtered_lines)
+    
+    # Remove "Recommendation N" followed immediately by "N" (duplicate numbering)
+    text = re.sub(r'(Recommendation\s+\d+[a-z]?)\s+\1', r'\1', text, flags=re.IGNORECASE)
+    text = re.sub(r'(Recommendation\s+)(\d+[a-z]?)\s+\2', r'\1\2', text, flags=re.IGNORECASE)
+    
+    # Remove standalone numbers that are likely reference numbers
+    text = re.sub(r'\n\s*\d+[a-z]?\s*\n', '\n', text)
+    
+    # Fix broken sentences (remove mid-sentence line breaks)
+    text = re.sub(r'([a-z,;])\n([a-z])', r'\1 \2', text)
+    
+    # Clean up whitespace
     text = re.sub(r' {2,}', ' ', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
     
-    return text
+    # Remove lines that are just numbers or letters (artifacts)
+    lines = text.split('\n')
+    clean_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Skip lines that are:
+        # - Just numbers
+        # - Just letters (a, b, c, etc.)
+        # - Very short (< 10 chars) and don't look like real content
+        if len(stripped) < 10:
+            if stripped.isdigit() or (len(stripped) <= 3 and stripped.isalpha()):
+                continue
+        clean_lines.append(line)
+    
+    text = '\n'.join(clean_lines)
+    
+    return text.strip()
 
 
 def process_uploaded_files(uploaded_files: List) -> List[Dict[str, Any]]:
@@ -95,6 +151,7 @@ def process_uploaded_files(uploaded_files: List) -> List[Dict[str, Any]]:
                 })
                 continue
             
+            # ENHANCED: Better text cleaning
             text = clean_extracted_text(text)
             
             doc = {
@@ -187,7 +244,7 @@ def extract_recommendation_table(table: List[List[str]], headers: List[str]) -> 
                 output_parts.append(current_recommendation)
             
             rec_text = row[rec_col].strip()
-            rec_match = re.match(r'^(\d+)\s*\.?\s*(.+)', rec_text)
+            rec_match = re.match(r'^(\d+[a-z]?)\s*\.?\s*(.+)', rec_text)
             if rec_match:
                 rec_num = rec_match.group(1)
                 rec_content = rec_match.group(2)
@@ -238,7 +295,9 @@ def extract_generic_table(table: List[List[str]], headers: List[str]) -> str:
 
 
 def extract_pdf_text(uploaded_file) -> str:
-    """Extract text from PDF with TABLE-AWARE processing."""
+    """
+    ENHANCED: Extract text from PDF with better cleaning and deduplication
+    """
     if not PDFPLUMBER_AVAILABLE and not PYPDF2_AVAILABLE:
         raise ImportError("No PDF library available")
     
@@ -247,6 +306,7 @@ def extract_pdf_text(uploaded_file) -> str:
             import pdfplumber
             with pdfplumber.open(uploaded_file) as pdf:
                 text_parts = []
+                seen_texts = set()  # NEW: Track seen text to avoid duplicates
                 
                 for page_num, page in enumerate(pdf.pages):
                     page_text_parts = []
@@ -263,12 +323,17 @@ def extract_pdf_text(uploaded_file) -> str:
                             if table and len(table) > 1:
                                 table_text = extract_table_as_structured_text(table)
                                 if table_text.strip():
-                                    page_text_parts.append(table_text)
+                                    # NEW: Check for duplicates
+                                    table_hash = hash(table_text.strip()[:100])
+                                    if table_hash not in seen_texts:
+                                        page_text_parts.append(table_text)
+                                        seen_texts.add(table_hash)
                         
                         # Get non-table text
                         full_page_text = page.extract_text() or ""
                         non_table_lines = []
                         for line in full_page_text.split('\n'):
+                            # Skip lines that look like table data
                             if not re.match(r'^(\S+\s{3,}){2,}', line):
                                 non_table_lines.append(line)
                         
@@ -281,9 +346,15 @@ def extract_pdf_text(uploaded_file) -> str:
                             page_text_parts.append(page_text)
                     
                     if page_text_parts:
-                        text_parts.append('\n\n'.join(page_text_parts))
+                        combined = '\n\n'.join(page_text_parts)
+                        text_parts.append(combined)
                 
                 full_text = '\n\n'.join(text_parts)
+                
+                # NEW: Remove repeated sections (common in PDFs with headers/footers)
+                full_text = remove_repeated_sections(full_text)
+                
+                # Clean up spacing
                 full_text = re.sub(r' {2,}', ' ', full_text)
                 full_text = re.sub(r'(?<!\n)\n(?!\n)', ' ', full_text)
                 
@@ -309,6 +380,43 @@ def extract_pdf_text(uploaded_file) -> str:
     except Exception as e:
         logging.error(f"PDF extraction error: {e}")
         raise Exception(f"Failed to extract PDF text: {str(e)}")
+
+
+def remove_repeated_sections(text: str, min_length: int = 50) -> str:
+    """
+    NEW: Remove sections that repeat multiple times (headers/footers/page numbers)
+    """
+    if not text or len(text) < 100:
+        return text
+    
+    # Split into paragraphs
+    paragraphs = text.split('\n\n')
+    
+    # Count paragraph occurrences
+    para_counts = {}
+    for para in paragraphs:
+        para_clean = para.strip()
+        if len(para_clean) >= min_length:
+            para_counts[para_clean] = para_counts.get(para_clean, 0) + 1
+    
+    # Find paragraphs that appear more than once
+    repeated = {para for para, count in para_counts.items() if count > 1}
+    
+    # Keep only the first occurrence of repeated paragraphs
+    seen = set()
+    filtered_paragraphs = []
+    
+    for para in paragraphs:
+        para_clean = para.strip()
+        
+        if para_clean in repeated:
+            if para_clean not in seen:
+                filtered_paragraphs.append(para)
+                seen.add(para_clean)
+        else:
+            filtered_paragraphs.append(para)
+    
+    return '\n\n'.join(filtered_paragraphs)
 
 
 def extract_txt_text(uploaded_file) -> str:
