@@ -1,5 +1,5 @@
 # Updated app.py - DaphneAI Government Document Analysis
-# ADDED: Semantic Search tab with new search engine
+# OPTIMIZED: Fast loading with cached NLTK downloads
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -8,6 +8,33 @@ from typing import Dict, List, Any
 import logging
 import traceback
 from collections import Counter
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# OPTIMIZED: Download NLTK data once at startup (cached)
+@st.cache_resource
+def initialize_nltk():
+    """Initialize NLTK - runs once and caches"""
+    try:
+        import nltk
+        # Check if already downloaded
+        try:
+            nltk.data.find('tokenizers/punkt')
+            nltk.data.find('taggers/averaged_perceptron_tagger')
+            nltk.data.find('tokenizers/punkt_tab')
+        except LookupError:
+            # Download only if not found
+            nltk.download('punkt', quiet=True)
+            nltk.download('averaged_perceptron_tagger', quiet=True)
+            nltk.download('punkt_tab', quiet=True)
+        return True
+    except:
+        return False
+
+# Initialize NLTK at app startup
+NLP_AVAILABLE = initialize_nltk()
 
 # FIXED IMPORT - Use the strict extractor instead of the old one
 from modules.simple_recommendation_extractor import (
@@ -21,42 +48,7 @@ try:
     SEMANTIC_SEARCH_AVAILABLE = True
 except ImportError:
     SEMANTIC_SEARCH_AVAILABLE = False
-
-# Try to import NLTK - download once at startup
-try:
-    import nltk
-    from nltk import pos_tag, word_tokenize
-    
-    # Download NLTK data only once at app startup (cached after first download)
-    @st.cache_resource
-    def download_nltk_data():
-        """Download NLTK data once and cache it"""
-        try:
-            nltk.data.find('tokenizers/punkt')
-        except LookupError:
-            nltk.download('punkt', quiet=True)
-        
-        try:
-            nltk.data.find('taggers/averaged_perceptron_tagger')
-        except LookupError:
-            nltk.download('averaged_perceptron_tagger', quiet=True)
-        
-        try:
-            nltk.data.find('tokenizers/punkt_tab')
-        except LookupError:
-            nltk.download('punkt_tab', quiet=True)
-        
-        return True
-    
-    # Download at startup
-    download_nltk_data()
-    NLP_AVAILABLE = True
-except ImportError:
-    NLP_AVAILABLE = False
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+    logger.warning("Semantic search not available")
 
 
 def safe_import_with_fallback():
@@ -138,6 +130,8 @@ def render_semantic_search_tab():
                 
             except Exception as e:
                 st.error(f"Failed to initialize search engine: {str(e)}")
+                with st.expander("Show error details"):
+                    st.code(traceback.format_exc())
                 return
     
     search_engine = st.session_state.semantic_search_engine
@@ -296,10 +290,6 @@ def render_semantic_search_tab():
 def render_recommendations_tab():
     """Render the improved recommendations extraction tab"""
     st.header("🎯 Extract Recommendations")
-    
-    # Show loading message on first load
-    if not NLP_AVAILABLE:
-        st.warning("⚠️ NLP libraries not available. Recommendation extraction may be limited.")
     
     if 'documents' not in st.session_state or not st.session_state.documents:
         st.warning("📁 Please upload documents first in the Upload tab.")
@@ -502,45 +492,10 @@ def main():
         logger.error(traceback.format_exc())
         render_error_recovery()
 
-# [Rest of the helper functions remain the same - keeping them for completeness]
-
+# Helper functions
 def render_fallback_interface():
     """Render a basic fallback interface when modules aren't available"""
     st.warning("🔧 Module loading issues detected. Using fallback interface.")
-    
-    # Basic file upload
-    st.header("📁 Basic Document Upload")
-    uploaded_files = st.file_uploader(
-        "Choose files",
-        accept_multiple_files=True,
-        type=['pdf', 'docx', 'txt'],
-        help="Upload PDF, DOCX, or TXT files"
-    )
-    
-    if uploaded_files:
-        if st.button("🚀 Process Files (Basic)", type="primary"):
-            documents = []
-            for file in uploaded_files:
-                try:
-                    # Basic text extraction
-                    if file.type == "text/plain":
-                        text = str(file.read(), "utf-8")
-                    else:
-                        text = f"[Content from {file.name} - processing not available]"
-                    
-                    doc = {
-                        'filename': file.name,
-                        'text': text,
-                        'word_count': len(text.split()),
-                        'upload_time': datetime.now()
-                    }
-                    documents.append(doc)
-                except Exception as e:
-                    st.error(f"Error processing {file.name}: {str(e)}")
-            
-            if documents:
-                st.session_state.documents = documents
-                st.success(f"✅ Processed {len(documents)} documents in basic mode")
 
 def render_upload_tab_safe(prepare_documents_for_search, extract_text_from_file):
     """Safe document upload with error handling"""
@@ -612,7 +567,6 @@ def render_extract_tab_safe():
             if doc and 'text' in doc:
                 text = doc['text']
                 
-                # Safe statistics calculation
                 word_count = len(text.split()) if text else 0
                 char_count = len(text) if text else 0
                 estimated_pages = max(1, char_count // 2000)
@@ -623,17 +577,15 @@ def render_extract_tab_safe():
                 with col2:
                     st.metric("Words", f"{word_count:,}")
                 with col3:
-                    # Safe sentence count
                     try:
                         sentences = re.split(r'[.!?]+', text)
                         sentence_count = len([s for s in sentences if s.strip()])
                     except:
-                        sentence_count = word_count // 10  # Estimate
+                        sentence_count = word_count // 10
                     st.metric("Sentences", f"{sentence_count:,}")
                 with col4:
                     st.metric("Est. Pages", estimated_pages)
                 
-                # Preview
                 st.markdown("### 📖 Document Preview")
                 preview_length = st.slider(
                     "Preview length (characters)", 
@@ -653,7 +605,6 @@ def render_extract_tab_safe():
                     disabled=True
                 )
                 
-                # Download option
                 st.download_button(
                     label="📥 Download Extracted Text",
                     data=text,
@@ -665,7 +616,6 @@ def render_extract_tab_safe():
                 
     except Exception as e:
         st.error(f"Extract tab error: {str(e)}")
-        logger.error(f"Extract tab error: {e}")
 
 def render_search_tab_safe(setup_search_tab):
     """Safe search tab with error handling"""
@@ -676,7 +626,6 @@ def render_search_tab_safe(setup_search_tab):
             st.warning("Keyword search not available")
     except Exception as e:
         st.error(f"Search tab error: {str(e)}")
-        logger.error(f"Search tab error: {e}")
 
 def render_alignment_tab_safe():
     """Safe alignment tab with error handling"""
@@ -688,7 +637,6 @@ def render_alignment_tab_safe():
             return
         
         try:
-            # Try to import the alignment interface
             from modules.ui.simplified_alignment_ui import render_simple_alignment_interface
             documents = st.session_state.documents
             render_simple_alignment_interface(documents)
@@ -697,7 +645,6 @@ def render_alignment_tab_safe():
             
     except Exception as e:
         st.error(f"Alignment tab error: {str(e)}")
-        logger.error(f"Alignment tab error: {e}")
 
 def render_analytics_tab_safe(render_analytics_tab):
     """Safe analytics tab with error handling"""
@@ -708,15 +655,13 @@ def render_analytics_tab_safe(render_analytics_tab):
             st.warning("Analytics not available")
     except Exception as e:
         st.error(f"Analytics tab error: {str(e)}")
-        logger.error(f"Analytics tab error: {e}")
 
 def fallback_process_documents(uploaded_files):
-    """Fallback document processing when modules aren't available"""
+    """Fallback document processing"""
     documents = []
     
     for uploaded_file in uploaded_files:
         try:
-            # Basic text extraction
             if uploaded_file.type == "text/plain":
                 text = str(uploaded_file.read(), "utf-8")
             else:
@@ -735,7 +680,6 @@ def fallback_process_documents(uploaded_files):
         except Exception as e:
             st.error(f"Error processing {uploaded_file.name}: {str(e)}")
     
-    # Store in session state
     st.session_state.documents = documents
     return documents
 
@@ -748,7 +692,6 @@ def render_error_recovery():
     
     with col1:
         if st.button("🔄 Reset Application"):
-            # Clear session state
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.success("Application reset. Please refresh the page.")
