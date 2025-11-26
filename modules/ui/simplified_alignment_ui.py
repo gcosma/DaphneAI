@@ -667,7 +667,7 @@ def get_matcher():
 def render_simple_alignment_interface(documents: List[Dict]):
     """Render the alignment interface with semantic matching"""
     
-    st.markdown("### 🔗 Find Responses")
+    st.markdown("### 🔗 Match Recommendations to Responses")
     
     # Check matcher status
     matcher = get_matcher()
@@ -676,150 +676,130 @@ def render_simple_alignment_interface(documents: List[Dict]):
     else:
         st.info("📊 Using keyword matching (install sentence-transformers for better results)")
     
-    # DEBUG: Show all session state keys related to recommendations
-    rec_keys = [k for k in st.session_state.keys() if 'rec' in k.lower()]
-    
-    # Check multiple possible session state keys (in case of naming differences)
-    recommendations = None
-    source_key = None
-    
-    # Try different possible keys
-    possible_keys = [
-        'extracted_recommendations',
-        'recommendations', 
-        'recs',
-        'extracted_recs'
-    ]
-    
-    for key in possible_keys:
-        if key in st.session_state and st.session_state[key]:
-            recommendations = st.session_state[key]
-            source_key = key
-            break
-    
-    # Check for recommendations
-    if not recommendations:
-        st.warning("⚠️ No recommendations loaded!")
-        
-        # Debug expander
-        with st.expander("🔧 Debug Info", expanded=False):
-            st.write("Session state keys:", list(st.session_state.keys()))
-            st.write("Keys containing 'rec':", rec_keys)
-            for key in rec_keys:
-                val = st.session_state.get(key)
-                if isinstance(val, list):
-                    st.write(f"  {key}: list with {len(val)} items")
-                else:
-                    st.write(f"  {key}: {type(val)}")
-        
-        st.info("""
-        **How to use:**
-        1. Go to the **🎯 Recommendations** tab first
-        2. Select your recommendation document and click "Extract Recommendations"
-        3. Return here to find responses
-        """)
-        
-        # Quick extract option
-        st.markdown("---")
-        st.markdown("**Or extract recommendations directly here:**")
-        
-        doc_names = [doc['filename'] for doc in documents]
-        rec_doc = st.selectbox("Select recommendation document:", doc_names, key="align_rec_doc")
-        
-        if st.button("🔍 Extract Recommendations Now", type="primary"):
-            doc = next((d for d in documents if d['filename'] == rec_doc), None)
-            if doc and 'text' in doc:
-                try:
-                    from modules.simple_recommendation_extractor import extract_recommendations
-                    with st.spinner("Extracting recommendations..."):
-                        recs = extract_recommendations(doc['text'], min_confidence=0.75)
-                    if recs:
-                        st.session_state.extracted_recommendations = recs
-                        st.success(f"✅ Extracted {len(recs)} recommendations!")
-                        st.rerun()
-                    else:
-                        st.warning("No recommendations found in this document.")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
+    if not documents:
+        st.warning("📁 Please upload documents first in the Upload tab.")
         return
-    
-    # Show loaded recommendations
-    st.success(f"✅ **{len(recommendations)}** recommendations loaded (from {source_key})")
-    
-    # Option to clear and re-extract
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        if st.button("🔄 Clear & Re-extract"):
-            if source_key:
-                del st.session_state[source_key]
-            st.rerun()
-    
-    with st.expander("📋 View Loaded Recommendations", expanded=False):
-        for i, rec in enumerate(recommendations[:10], 1):
-            text = rec.get('text', '[No text]')
-            conf = rec.get('confidence', 0)
-            st.markdown(f"**{i}.** ({conf:.0%}) {text[:150]}...")
-        if len(recommendations) > 10:
-            st.caption(f"... and {len(recommendations) - 10} more")
-    
-    st.markdown("---")
-    
-    # Select response documents
-    st.markdown("#### 📄 Select Government Response Document(s)")
     
     doc_names = [doc['filename'] for doc in documents]
     
-    # Auto-detect response docs
-    suggested = [n for n in doc_names if any(t in n.lower() for t in ['response', 'government', 'reply'])]
+    st.markdown("---")
     
-    resp_docs = st.multiselect(
-        "Select response documents:",
-        options=doc_names,
-        default=suggested,
-        help="Select documents containing government responses"
+    # Step 1: Select document(s)
+    st.markdown("#### 📄 Step 1: Select Documents")
+    
+    # Option for same file or different files
+    doc_mode = st.radio(
+        "Are recommendations and responses in the same document?",
+        ["Same document", "Different documents"],
+        horizontal=True,
+        help="Select 'Same document' if both recommendations and responses are in one file"
     )
     
-    if not resp_docs:
-        st.info("👆 Select at least one response document")
-        return
+    if doc_mode == "Same document":
+        selected_doc = st.selectbox(
+            "Select document containing both recommendations and responses:",
+            doc_names,
+            key="single_doc_select"
+        )
+        rec_docs = [selected_doc]
+        resp_docs = [selected_doc]
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            rec_doc = st.selectbox(
+                "📋 Recommendation document:",
+                doc_names,
+                key="rec_doc_select"
+            )
+            rec_docs = [rec_doc]
+        with col2:
+            # Auto-suggest response docs
+            suggested = [n for n in doc_names if any(t in n.lower() for t in ['response', 'reply', 'answer'])]
+            default_resp = suggested[0] if suggested else doc_names[0]
+            
+            resp_doc = st.selectbox(
+                "📢 Response document:",
+                doc_names,
+                index=doc_names.index(default_resp) if default_resp in doc_names else 0,
+                key="resp_doc_select"
+            )
+            resp_docs = [resp_doc]
     
-    # Run alignment
-    if st.button("🔗 Find Responses", type="primary"):
+    st.markdown("---")
+    
+    # Step 2: Extract and Match
+    st.markdown("#### 🔍 Step 2: Extract & Match")
+    
+    if st.button("🚀 Extract Recommendations & Find Responses", type="primary"):
         
-        with st.spinner("Analysing documents..."):
+        # Get document texts
+        rec_text = ""
+        for doc_name in rec_docs:
+            doc = next((d for d in documents if d['filename'] == doc_name), None)
+            if doc and 'text' in doc:
+                rec_text += doc['text'] + "\n\n"
+        
+        resp_text = ""
+        for doc_name in resp_docs:
+            doc = next((d for d in documents if d['filename'] == doc_name), None)
+            if doc and 'text' in doc:
+                resp_text += doc['text'] + "\n\n"
+        
+        if not rec_text:
+            st.error("Could not read recommendation document")
+            return
+        
+        if not resp_text:
+            st.error("Could not read response document")
+            return
+        
+        # Progress tracking
+        progress = st.progress(0, text="Extracting recommendations...")
+        
+        try:
+            # Step 1: Extract recommendations
+            from modules.simple_recommendation_extractor import extract_recommendations
+            recommendations = extract_recommendations(rec_text, min_confidence=0.75)
             
-            # Extract responses from selected documents
-            all_responses = []
-            for doc_name in resp_docs:
-                doc = next((d for d in documents if d['filename'] == doc_name), None)
-                if doc and 'text' in doc:
-                    doc_responses = extract_response_sentences(doc['text'])
-                    for resp in doc_responses:
-                        resp['source_document'] = doc_name
-                    all_responses.extend(doc_responses)
-            
-            if not all_responses:
-                st.warning("⚠️ No response patterns found in selected documents.")
+            if not recommendations:
+                st.warning("⚠️ No recommendations found in the document.")
+                progress.empty()
                 return
             
-            st.info(f"Found **{len(all_responses)}** potential responses")
+            progress.progress(33, text=f"Found {len(recommendations)} recommendations. Extracting responses...")
             
-            # Use semantic matcher
-            progress = st.progress(0)
-            progress.progress(50)
+            # Step 2: Extract responses
+            responses = extract_response_sentences(resp_text)
             
-            alignments = matcher.find_best_matches(recommendations, all_responses)
+            if not responses:
+                st.warning("⚠️ No response patterns found in the document.")
+                progress.empty()
+                return
             
-            progress.progress(100)
+            progress.progress(66, text=f"Found {len(responses)} responses. Matching...")
+            
+            # Step 3: Match recommendations to responses
+            alignments = matcher.find_best_matches(recommendations, responses)
+            
+            progress.progress(100, text="Complete!")
             progress.empty()
             
             # Store results
             st.session_state.alignment_results = alignments
+            st.session_state.extracted_recommendations = recommendations
+            
+            st.success(f"✅ Matched {len(recommendations)} recommendations with {len(responses)} responses")
+            
+        except Exception as e:
+            progress.empty()
+            st.error(f"Error: {e}")
+            import traceback
+            with st.expander("Show error details"):
+                st.code(traceback.format_exc())
+            return
     
-    # Display results
-    if 'alignment_results' in st.session_state:
+    # Display results if available
+    if 'alignment_results' in st.session_state and st.session_state.alignment_results:
         display_alignment_results(st.session_state.alignment_results)
 
 
