@@ -520,8 +520,8 @@ def main():
                 "🔍 Extract", 
                 "🔍 Keyword Search",
                 "🤖 AI Search",  # NEW TAB
-                "🔗 Align Recommendations-Responses",
                 "🎯 Recommendations",
+                "🔗 Align Recommendations-Responses",
                 "📊 Analytics"
             ])
             
