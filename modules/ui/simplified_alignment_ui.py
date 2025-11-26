@@ -110,9 +110,18 @@ class RecommendationResponseMatcher:
     
     def _semantic_matching(self, recommendations: List[Dict], responses: List[Dict],
                            top_k: int) -> List[Dict]:
-        """Use sentence transformer for semantic matching"""
+        """Use sentence transformer for semantic matching with number-based priority"""
         
-        # Encode all texts
+        # First, create a map of responses by recommendation number
+        responses_by_number = {}
+        for resp in responses:
+            if resp.get('rec_number'):
+                num = resp['rec_number']
+                if num not in responses_by_number:
+                    responses_by_number[num] = []
+                responses_by_number[num].append(resp)
+        
+        # Encode all texts for semantic matching
         rec_texts = [r['text'] for r in recommendations]
         resp_texts = [r['cleaned_text'] for r in responses]
         
@@ -123,58 +132,88 @@ class RecommendationResponseMatcher:
             if rec_embeddings is None or resp_embeddings is None:
                 return self._keyword_matching(recommendations, responses, top_k)
             
-            # Calculate similarity matrix
-            # Normalise embeddings
+            # Normalise embeddings for cosine similarity
             rec_norms = np.linalg.norm(rec_embeddings, axis=1, keepdims=True)
             resp_norms = np.linalg.norm(resp_embeddings, axis=1, keepdims=True)
             
             rec_embeddings_norm = rec_embeddings / rec_norms
             resp_embeddings_norm = resp_embeddings / resp_norms
             
-            # Cosine similarity matrix
             similarity_matrix = np.dot(rec_embeddings_norm, resp_embeddings_norm.T)
             
-            # Find best matches for each recommendation
             alignments = []
             
             for rec_idx, rec in enumerate(recommendations):
-                similarities = similarity_matrix[rec_idx]
-                
-                # Get top_k indices
-                top_indices = np.argsort(similarities)[::-1][:top_k * 2]  # Get extra to filter
-                
                 best_match = None
                 best_score = 0.0
                 
-                for resp_idx in top_indices:
-                    resp = responses[resp_idx]
-                    score = similarities[resp_idx]
+                # PRIORITY 1: Try to match by recommendation number
+                rec_num = self._extract_rec_number(rec['text'])
+                
+                if rec_num and rec_num in responses_by_number:
+                    # Found responses explicitly for this recommendation number
+                    for resp in responses_by_number[rec_num]:
+                        resp_text = resp['cleaned_text']
+                        
+                        # Skip self-matches
+                        if self._is_self_match(rec['text'], resp_text):
+                            continue
+                        
+                        # Get semantic score for ranking multiple responses
+                        resp_idx = next((i for i, r in enumerate(responses) if r is resp), None)
+                        score = similarity_matrix[rec_idx][resp_idx] if resp_idx is not None else 0.7
+                        
+                        # Strong boost for number match
+                        score = min(score + 0.4, 1.0)
+                        
+                        if score > best_score:
+                            best_score = score
+                            status, status_conf = self._classify_response_status(resp_text)
+                            best_match = {
+                                'response_text': resp_text,
+                                'similarity': score,
+                                'status': status,
+                                'status_confidence': status_conf,
+                                'source_document': resp.get('source_document', 'unknown'),
+                                'match_method': 'number_match'
+                            }
+                
+                # PRIORITY 2: If no number match, use semantic similarity
+                if best_match is None:
+                    similarities = similarity_matrix[rec_idx]
+                    top_indices = np.argsort(similarities)[::-1][:top_k * 2]
                     
-                    # Skip if too similar (self-match)
-                    if self._is_self_match(rec['text'], resp['cleaned_text']):
-                        continue
-                    
-                    # Skip if response doesn't have government language
-                    if not self._has_government_response_language(resp['cleaned_text']):
-                        score *= 0.5  # Penalise
-                    
-                    # Boost for matching recommendation numbers
-                    rec_num = self._extract_rec_number(rec['text'])
-                    resp_num = self._extract_rec_number(resp['cleaned_text'])
-                    if rec_num and resp_num and rec_num == resp_num:
-                        score += 0.3
-                    
-                    if score > best_score and score >= 0.3:
-                        best_score = score
-                        status, status_conf = self._classify_response_status(resp['cleaned_text'])
-                        best_match = {
-                            'response_text': resp['cleaned_text'],
-                            'similarity': min(score, 1.0),
-                            'status': status,
-                            'status_confidence': status_conf,
-                            'source_document': resp.get('source_document', 'unknown'),
-                            'match_method': 'semantic'
-                        }
+                    for resp_idx in top_indices:
+                        resp = responses[resp_idx]
+                        score = similarities[resp_idx]
+                        
+                        # Skip if too low
+                        if score < 0.4:
+                            continue
+                        
+                        # Skip self-matches
+                        if self._is_self_match(rec['text'], resp['cleaned_text']):
+                            continue
+                        
+                        # Skip if it's recommendation text
+                        if is_recommendation_text(resp['cleaned_text']):
+                            continue
+                        
+                        # Must have government response language
+                        if not self._has_government_response_language(resp['cleaned_text']):
+                            score *= 0.7  # Penalise
+                        
+                        if score > best_score:
+                            best_score = score
+                            status, status_conf = self._classify_response_status(resp['cleaned_text'])
+                            best_match = {
+                                'response_text': resp['cleaned_text'],
+                                'similarity': min(score, 1.0),
+                                'status': status,
+                                'status_confidence': status_conf,
+                                'source_document': resp.get('source_document', 'unknown'),
+                                'match_method': 'semantic'
+                            }
                 
                 alignments.append({
                     'recommendation': rec,
@@ -397,77 +436,209 @@ class RecommendationResponseMatcher:
 
 
 # =============================================================================
-# RESPONSE EXTRACTION
+# RESPONSE EXTRACTION - STRICT FILTERING
 # =============================================================================
 
+def is_recommendation_text(text: str) -> bool:
+    """
+    Check if text looks like a recommendation (should be excluded from responses).
+    Recommendations use imperative language with 'should'.
+    """
+    text_lower = text.lower().strip()
+    
+    # Patterns that indicate this is recommendation text, NOT a response
+    recommendation_starters = [
+        r'^nhs\s+england\s+should',
+        r'^providers?\s+should',
+        r'^trusts?\s+should',
+        r'^boards?\s+should',
+        r'^icss?\s+should',
+        r'^ics\s+and\s+provider',
+        r'^cqc\s+should',
+        r'^dhsc\s+should',
+        r'^dhsc,?\s+in\s+partnership',  # This is rec text being quoted
+        r'^every\s+provider',
+        r'^all\s+providers?\s+should',
+        r'^provider\s+boards?\s+should',
+        r'^this\s+multi-professional\s+alliance\s+should',
+        r'^the\s+review\s+should',
+        r'^commissioners?\s+should',
+        r'^regulators?\s+should',
+        r'^recommendation\s+\d+\s+[a-z]',
+        r'^we\s+recommend',
+        r'^it\s+should\s+also',
+        r'^they\s+should',
+        r'^this\s+forum\s+should',
+        r'^this\s+programme\s+should',
+        r'^these\s+systems\s+should',
+        r'^the\s+digital\s+platforms',
+        r'^the\s+output\s+of\s+the',
+        r'^including,?\s+where\s+appropriate',
+        r'^to\s+facilitate\s+this',
+    ]
+    
+    for pattern in recommendation_starters:
+        if re.search(pattern, text_lower):
+            return True
+    
+    return False
+
+
+def is_genuine_response(text: str) -> bool:
+    """
+    Check if text looks like a genuine government response.
+    Must START with response language, not just contain it.
+    """
+    text_lower = text.lower().strip()
+    
+    # Strong indicators - text STARTS with these
+    strong_starters = [
+        r'^government\s+response',
+        r'^the\s+government\s+supports?',
+        r'^the\s+government\s+accepts?',
+        r'^the\s+government\s+agrees?',
+        r'^the\s+government\s+notes?',
+        r'^the\s+government\s+rejects?',
+        r'^the\s+government\s+recognises?',
+        r'^the\s+government\s+is\s+committed',
+        r'^the\s+government\s+will',
+        r'^we\s+support',
+        r'^we\s+accept',
+        r'^we\s+agree',
+        r'^dhsc\s+and\s+nhs\s+england\s+support',
+        r'^nhs\s+england\s+will',  # Response saying what NHS will do
+    ]
+    
+    for pattern in strong_starters:
+        if re.search(pattern, text_lower):
+            return True
+    
+    return False
+
+
+def has_pdf_artifacts(text: str) -> bool:
+    """Check if text contains PDF extraction artifacts"""
+    artifacts = [
+        r'\d{1,2}/\d{1,2}/\d{2,4},?\s+\d{1,2}:\d{2}\s*(AM|PM)?',  # Timestamps
+        r'GOV\.UK',
+        r'https?://www\.gov\.uk',
+        r'https?://www\.england\.nhs\.uk',
+        r'\d+/\d+\s*$',  # Page numbers at end
+    ]
+    for pattern in artifacts:
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+    return False
+
+
+def clean_pdf_artifacts(text: str) -> str:
+    """Remove PDF artifacts from text"""
+    # Remove timestamps
+    text = re.sub(r'\d{1,2}/\d{1,2}/\d{2,4},?\s+\d{1,2}:\d{2}\s*(AM|PM)?\s*', '', text)
+    # Remove URLs
+    text = re.sub(r'https?://[^\s]+', '', text)
+    # Remove "GOV.UK" references
+    text = re.sub(r'Government response to the rapid review.*?GOV\.UK[^\n]*', '', text, flags=re.IGNORECASE)
+    # Clean up whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
 def extract_response_sentences(text: str) -> List[Dict]:
-    """Extract sentences that are government responses"""
+    """
+    Extract sentences that are government responses.
+    Uses strict filtering to exclude recommendation text.
+    """
     
     if not text:
         return []
     
-    responses = []
+    # Clean PDF artifacts first
+    text = clean_pdf_artifacts(text)
     
-    # Method 1: Find "Government response to recommendation N" blocks
-    gov_resp_pattern = r'Government response to recommendation\s+\d+[^G]*?(?=Government response to recommendation|\Z)'
+    responses = []
+    seen_responses = set()  # Track duplicates
+    
+    # Method 1: Find structured "Government response to recommendation N" blocks
+    # This is the most reliable method
+    gov_resp_pattern = r'Government\s+response\s+to\s+recommendation\s+(\d+)\s*(.+?)(?=Government\s+response\s+to\s+recommendation|\Z)'
     matches = re.finditer(gov_resp_pattern, text, re.IGNORECASE | re.DOTALL)
     
     for match in matches:
-        resp_text = match.group().strip()
-        if len(resp_text) > 50:
-            # Extract recommendation number
-            num_match = re.search(r'recommendation\s+(\d+)', resp_text.lower())
-            rec_num = num_match.group(1) if num_match else None
-            
-            responses.append({
-                'text': resp_text,
-                'position': match.start(),
-                'response_type': 'government_response',
-                'confidence': 0.95,
-                'rec_number': rec_num
-            })
+        rec_num = match.group(1)
+        resp_text = f"Government response to recommendation {rec_num} {match.group(2).strip()}"
+        
+        # Clean the response text
+        resp_text = clean_pdf_artifacts(resp_text)
+        
+        # Skip if too short
+        if len(resp_text) < 50:
+            continue
+        
+        # Skip duplicates
+        resp_key = resp_text[:100].lower()
+        if resp_key in seen_responses:
+            continue
+        seen_responses.add(resp_key)
+        
+        # Skip if this looks like recommendation text (quoted in response)
+        # Check the part AFTER "Government response to recommendation N"
+        after_header = match.group(2).strip()
+        if is_recommendation_text(after_header):
+            # Try to extract just the response part
+            # Look for "The government supports/accepts/etc"
+            gov_match = re.search(r'(The\s+government\s+(?:supports?|accepts?|agrees?|notes?|rejects?|recognises?|is\s+committed|will).+)', 
+                                  after_header, re.IGNORECASE | re.DOTALL)
+            if gov_match:
+                resp_text = f"Government response to recommendation {rec_num} {gov_match.group(1).strip()}"
+            else:
+                continue  # Skip - can't find actual response
+        
+        responses.append({
+            'text': resp_text,
+            'position': match.start(),
+            'response_type': 'structured',
+            'confidence': 0.95,
+            'rec_number': rec_num
+        })
     
-    # Method 2: If no structured responses found, try sentence-level extraction
-    if not responses:
+    # Method 2: Find standalone response sentences (if Method 1 didn't find enough)
+    # Only use if we found fewer than expected responses
+    if len(responses) < 5:
         sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
         
         for idx, sentence in enumerate(sentences):
             sentence = sentence.strip()
-            if len(sentence) < 30:
+            sentence = clean_pdf_artifacts(sentence)
+            
+            if len(sentence) < 40 or len(sentence) > 1000:
                 continue
             
-            sentence_lower = sentence.lower()
-            
-            # Skip if looks like recommendation
-            if any(sentence_lower.startswith(p) for p in [
-                'nhs england should', 'providers should', 'trusts should',
-                'recommendation', 'we recommend', 'all providers should'
-            ]):
+            # STRICT: Must be a genuine response, not recommendation text
+            if is_recommendation_text(sentence):
                 continue
             
-            # Check for response language
-            is_response = False
-            confidence = 0.0
+            if not is_genuine_response(sentence):
+                continue
             
-            if sentence_lower.startswith('government response') or sentence_lower.startswith('the government'):
-                is_response = True
-                confidence = 0.9
-            elif any(term in sentence_lower for term in ['accept', 'support', 'agree', 'reject', 'note']):
-                if 'recommendation' in sentence_lower or 'government' in sentence_lower:
-                    is_response = True
-                    confidence = 0.7
+            # Skip duplicates
+            resp_key = sentence[:100].lower()
+            if resp_key in seen_responses:
+                continue
+            seen_responses.add(resp_key)
             
-            if is_response:
-                rec_ref = re.search(r'recommendation\s+(\d+)', sentence_lower)
-                
-                responses.append({
-                    'text': sentence,
-                    'position': idx,
-                    'response_type': 'extracted',
-                    'confidence': confidence,
-                    'rec_number': rec_ref.group(1) if rec_ref else None
-                })
+            # Extract recommendation number if present
+            rec_ref = re.search(r'recommendation\s+(\d+)', sentence.lower())
+            
+            responses.append({
+                'text': sentence,
+                'position': idx,
+                'response_type': 'sentence',
+                'confidence': 0.85,
+                'rec_number': rec_ref.group(1) if rec_ref else None
+            })
     
+    logger.info(f"Extracted {len(responses)} genuine responses")
     return responses
 
 
