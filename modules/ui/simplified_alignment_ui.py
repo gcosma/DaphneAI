@@ -386,8 +386,17 @@ def perform_alignment(recommendations: List[Dict], response_documents: List[Dict
 # UI RENDERING
 # =============================================================================
 
-def render_simple_alignment_interface():
-    """Render the simplified alignment interface"""
+def render_simple_alignment_interface(documents=None):
+    """
+    Render the simplified alignment interface
+    
+    Args:
+        documents: Optional list of documents (for backward compatibility with app.py)
+                   If provided, stores in session_state for use
+    """
+    # Store documents in session state if provided (backward compatibility)
+    if documents is not None:
+        st.session_state.documents = documents
     
     st.header("🔗 Recommendation-Response Alignment")
     
