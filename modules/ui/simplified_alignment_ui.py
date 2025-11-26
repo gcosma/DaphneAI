@@ -676,45 +676,62 @@ def render_simple_alignment_interface(documents: List[Dict]):
     else:
         st.info("📊 Using keyword matching (install sentence-transformers for better results)")
     
+    # Debug: Show session state status
+    has_recs = 'extracted_recommendations' in st.session_state
+    rec_count = len(st.session_state.extracted_recommendations) if has_recs else 0
+    
     # Check for recommendations
-    if 'extracted_recommendations' not in st.session_state or not st.session_state.extracted_recommendations:
-        st.warning("⚠️ No recommendations extracted yet!")
+    if not has_recs or rec_count == 0:
+        st.warning("⚠️ No recommendations loaded!")
         st.info("""
         **How to use:**
-        1. Go to the **🎯 Recommendations** tab
-        2. Extract recommendations from your document
+        1. Go to the **🎯 Recommendations** tab first
+        2. Select your recommendation document and click "Extract Recommendations"
         3. Return here to find government responses
         """)
         
         # Quick extract option
         st.markdown("---")
-        st.markdown("**Or extract recommendations directly:**")
+        st.markdown("**Or extract recommendations directly here:**")
         
         doc_names = [doc['filename'] for doc in documents]
         rec_doc = st.selectbox("Select recommendation document:", doc_names, key="align_rec_doc")
         
-        if st.button("🔍 Extract Recommendations Now"):
+        if st.button("🔍 Extract Recommendations Now", type="primary"):
             doc = next((d for d in documents if d['filename'] == rec_doc), None)
             if doc and 'text' in doc:
                 try:
                     from modules.simple_recommendation_extractor import extract_recommendations
-                    recs = extract_recommendations(doc['text'], min_confidence=0.75)
+                    with st.spinner("Extracting recommendations..."):
+                        recs = extract_recommendations(doc['text'], min_confidence=0.75)
                     if recs:
                         st.session_state.extracted_recommendations = recs
                         st.success(f"✅ Extracted {len(recs)} recommendations!")
                         st.rerun()
                     else:
-                        st.warning("No recommendations found.")
+                        st.warning("No recommendations found in this document.")
                 except Exception as e:
                     st.error(f"Error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
         return
     
+    # Show loaded recommendations
     recommendations = st.session_state.extracted_recommendations
-    st.success(f"✅ Using **{len(recommendations)}** recommendations")
+    st.success(f"✅ **{len(recommendations)}** recommendations loaded")
     
-    with st.expander("📋 View Recommendations", expanded=False):
+    # Option to clear and re-extract
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("🔄 Clear & Re-extract"):
+            del st.session_state.extracted_recommendations
+            st.rerun()
+    
+    with st.expander("📋 View Loaded Recommendations", expanded=False):
         for i, rec in enumerate(recommendations[:10], 1):
-            st.markdown(f"**{i}.** {rec['text'][:150]}...")
+            text = rec.get('text', '[No text]')
+            conf = rec.get('confidence', 0)
+            st.markdown(f"**{i}.** ({conf:.0%}) {text[:150]}...")
         if len(recommendations) > 10:
             st.caption(f"... and {len(recommendations) - 10} more")
     
