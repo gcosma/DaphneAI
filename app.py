@@ -363,15 +363,18 @@ def render_recommendations_tab():
     
     selected_doc = st.selectbox("Select document to analyse:", doc_names)
     
-    # FIX: Clear old results when document selection changes
+    # Track which document was analysed (but don't auto-clear results)
     if 'last_analysed_doc' not in st.session_state:
         st.session_state.last_analysed_doc = None
     
-    if selected_doc != st.session_state.last_analysed_doc:
-        # Document changed - clear previous results
-        if 'extracted_recommendations' in st.session_state:
-            del st.session_state.extracted_recommendations
-        st.session_state.last_analysed_doc = selected_doc
+    # Show which document the current results are from (if any)
+    if 'extracted_recommendations' in st.session_state and st.session_state.extracted_recommendations:
+        if st.session_state.last_analysed_doc and st.session_state.last_analysed_doc != selected_doc:
+            st.info(f"📋 Current results are from: **{st.session_state.last_analysed_doc}**")
+            if st.button("🗑️ Clear results to analyse new document"):
+                del st.session_state.extracted_recommendations
+                st.session_state.last_analysed_doc = None
+                st.rerun()
     
     if st.button("🔍 Extract Recommendations", type="primary"):
         doc = next((d for d in documents if d['filename'] == selected_doc), None)
@@ -461,7 +464,9 @@ def render_recommendations_tab():
                                 mime="text/csv"
                             )
                         
+                        # FIXED: Save to session state AND update last_analysed_doc
                         st.session_state.extracted_recommendations = valid_recs
+                        st.session_state.last_analysed_doc = selected_doc
                         
                     else:
                         st.warning("⚠️ No recommendations found. Try lowering the confidence threshold to 0.6.")
@@ -472,6 +477,21 @@ def render_recommendations_tab():
                         st.code(traceback.format_exc())
         else:
             st.error("Document text not available")
+    
+    # FIXED: Display existing results if they exist (even when returning to tab)
+    if 'extracted_recommendations' in st.session_state and st.session_state.extracted_recommendations:
+        recommendations = st.session_state.extracted_recommendations
+        
+        st.markdown("---")
+        st.success(f"✅ {len(recommendations)} recommendations available (from {st.session_state.last_analysed_doc})")
+        
+        with st.expander("📋 View Extracted Recommendations", expanded=False):
+            for idx, rec in enumerate(recommendations[:10], 1):
+                text = rec.get('text', '[No text]')
+                conf = rec.get('confidence', 0)
+                st.markdown(f"**{idx}.** ({conf:.0%}) {text[:150]}...")
+            if len(recommendations) > 10:
+                st.caption(f"... and {len(recommendations) - 10} more")
 
 
 def main():
