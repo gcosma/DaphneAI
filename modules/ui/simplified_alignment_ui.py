@@ -469,6 +469,31 @@ def extract_response_sentences(text: str) -> List[Dict]:
                 continue  # Skip - this is just quoting the recommendation
         
         # =================================================================
+        # CRITICAL: Skip if sentence looks like a recommendation, not a response
+        # =================================================================
+        
+        # If sentence starts with recommendation-style language and doesn't start with gov response
+        starts_like_recommendation = any(sentence_lower.startswith(pattern) for pattern in [
+            'nhs england should', 'providers should', 'trusts should', 'boards should',
+            'icss should', 'ics should', 'cqc should', 'dhsc should', 'every provider',
+            'all providers', 'provider boards', 'this multi-professional alliance should',
+            'the review should', 'commissioners should', 'regulators should'
+        ])
+        
+        starts_with_gov_response = sentence_lower.startswith('government response') or \
+                                   sentence_lower.startswith('the government')
+        
+        if starts_like_recommendation and not starts_with_gov_response:
+            # Check if "Government response" appears later in the sentence
+            gov_response_pos = sentence_lower.find('government response to recommendation')
+            if gov_response_pos > 0:
+                # Extract only the government response part
+                sentence = sentence[gov_response_pos:]
+                sentence_lower = sentence.lower()
+            else:
+                continue  # Skip - this looks like a recommendation
+        
+        # =================================================================
         # Detect "Government response to recommendation N" headers
         # =================================================================
         gov_resp_match = re.search(r'government\s+response\s+to\s+recommendation\s+(\d+)', sentence_lower)
@@ -482,16 +507,23 @@ def extract_response_sentences(text: str) -> List[Dict]:
         response_type = 'unknown'
         confidence = 0.0
         
+        # PRIORITY: Sentences starting with "Government response" are definitely responses
+        if starts_with_gov_response:
+            is_response = True
+            response_type = 'government_response'
+            confidence = 0.95
+        
         # Check for response patterns
-        for status, patterns in RESPONSE_PATTERNS.items():
-            for pattern in patterns:
-                if re.search(pattern, sentence_lower):
-                    is_response = True
-                    response_type = status
-                    confidence = 0.9
+        if not is_response:
+            for status, patterns in RESPONSE_PATTERNS.items():
+                for pattern in patterns:
+                    if re.search(pattern, sentence_lower):
+                        is_response = True
+                        response_type = status
+                        confidence = 0.9
+                        break
+                if is_response:
                     break
-            if is_response:
-                break
         
         # Check for general response indicators (must have multiple)
         if not is_response:
@@ -636,6 +668,51 @@ def is_self_match(rec_text: str, resp_text: str) -> bool:
     return False
 
 
+def is_response_identical_to_recommendation(rec_text: str, resp_text: str) -> bool:
+    """
+    Check if the response text is identical or nearly identical to the recommendation.
+    This catches cases where recommendation text is being matched as a response.
+    """
+    # Clean and normalise both texts
+    rec_clean = re.sub(r'\s+', ' ', rec_text.lower().strip())
+    resp_clean = re.sub(r'\s+', ' ', resp_text.lower().strip())
+    
+    # Check 1: Exact match
+    if rec_clean == resp_clean:
+        return True
+    
+    # Check 2: Response is contained within recommendation
+    if resp_clean in rec_clean:
+        return True
+    
+    # Check 3: Recommendation is contained within response (response is just expanded rec)
+    if rec_clean in resp_clean:
+        # But allow if response has genuine government response language BEFORE the rec text
+        resp_before_rec = resp_clean.split(rec_clean)[0]
+        if 'government response' in resp_before_rec or 'the government supports' in resp_before_rec:
+            return False  # This is a genuine response that quotes the recommendation
+        return True
+    
+    # Check 4: Response starts with the same text as recommendation (first 150 chars)
+    if len(rec_clean) > 150 and len(resp_clean) > 150:
+        if rec_clean[:150] == resp_clean[:150]:
+            return True
+    
+    # Check 5: Very high word overlap without government response markers at the start
+    rec_words = set(rec_clean.split())
+    resp_words = set(resp_clean.split())
+    
+    if len(rec_words) > 20 and len(resp_words) > 20:
+        overlap = len(rec_words & resp_words) / min(len(rec_words), len(resp_words))
+        if overlap > 0.8:
+            # Check if response starts with government language
+            resp_start = resp_clean[:100]
+            if not any(marker in resp_start for marker in ['government response', 'the government supports', 'the government accepts', 'we accept', 'we support']):
+                return True
+    
+    return False
+
+
 def find_best_response(recommendation: Dict, responses: List[Dict], 
                        min_similarity: float = 0.15) -> Dict:
     """Find the best matching response for a recommendation"""
@@ -649,6 +726,10 @@ def find_best_response(recommendation: Dict, responses: List[Dict],
         
         # Skip self-matches
         if is_self_match(rec_text, resp_text):
+            continue
+        
+        # Skip if response is identical/near-identical to recommendation
+        if is_response_identical_to_recommendation(rec_text, resp_text):
             continue
         
         # Calculate base similarity
