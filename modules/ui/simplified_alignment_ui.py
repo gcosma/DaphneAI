@@ -667,7 +667,7 @@ def get_matcher():
 def render_simple_alignment_interface(documents: List[Dict]):
     """Render the alignment interface with semantic matching"""
     
-    st.markdown("### 🔗 Find Government Responses")
+    st.markdown("### 🔗 Find Responses")
     
     # Check matcher status
     matcher = get_matcher()
@@ -676,18 +676,47 @@ def render_simple_alignment_interface(documents: List[Dict]):
     else:
         st.info("📊 Using keyword matching (install sentence-transformers for better results)")
     
-    # Debug: Show session state status
-    has_recs = 'extracted_recommendations' in st.session_state
-    rec_count = len(st.session_state.extracted_recommendations) if has_recs else 0
+    # DEBUG: Show all session state keys related to recommendations
+    rec_keys = [k for k in st.session_state.keys() if 'rec' in k.lower()]
+    
+    # Check multiple possible session state keys (in case of naming differences)
+    recommendations = None
+    source_key = None
+    
+    # Try different possible keys
+    possible_keys = [
+        'extracted_recommendations',
+        'recommendations', 
+        'recs',
+        'extracted_recs'
+    ]
+    
+    for key in possible_keys:
+        if key in st.session_state and st.session_state[key]:
+            recommendations = st.session_state[key]
+            source_key = key
+            break
     
     # Check for recommendations
-    if not has_recs or rec_count == 0:
+    if not recommendations:
         st.warning("⚠️ No recommendations loaded!")
+        
+        # Debug expander
+        with st.expander("🔧 Debug Info", expanded=False):
+            st.write("Session state keys:", list(st.session_state.keys()))
+            st.write("Keys containing 'rec':", rec_keys)
+            for key in rec_keys:
+                val = st.session_state.get(key)
+                if isinstance(val, list):
+                    st.write(f"  {key}: list with {len(val)} items")
+                else:
+                    st.write(f"  {key}: {type(val)}")
+        
         st.info("""
         **How to use:**
         1. Go to the **🎯 Recommendations** tab first
         2. Select your recommendation document and click "Extract Recommendations"
-        3. Return here to find government responses
+        3. Return here to find responses
         """)
         
         # Quick extract option
@@ -717,14 +746,14 @@ def render_simple_alignment_interface(documents: List[Dict]):
         return
     
     # Show loaded recommendations
-    recommendations = st.session_state.extracted_recommendations
-    st.success(f"✅ **{len(recommendations)}** recommendations loaded")
+    st.success(f"✅ **{len(recommendations)}** recommendations loaded (from {source_key})")
     
     # Option to clear and re-extract
     col1, col2 = st.columns([3, 1])
     with col2:
         if st.button("🔄 Clear & Re-extract"):
-            del st.session_state.extracted_recommendations
+            if source_key:
+                del st.session_state[source_key]
             st.rerun()
     
     with st.expander("📋 View Loaded Recommendations", expanded=False):
