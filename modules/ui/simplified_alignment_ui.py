@@ -560,20 +560,37 @@ def extract_response_sentences(text: str) -> List[Dict]:
     seen_responses = set()  # Track duplicates
     
     # Method 1: Find structured "Government response to recommendation N" blocks
-    # This is the most reliable method
-    gov_resp_pattern = r'Government\s+response\s+to\s+recommendation\s+(\d+)\s*(.+?)(?=Government\s+response\s+to\s+recommendation|\Z)'
+    # CRITICAL: Stop at EITHER the next "Government response" OR "Recommendation N"
+    # The document structure is: Gov Response 1 -> Rec 2 -> Gov Response 2 -> Rec 3 -> ...
+    
+    gov_resp_pattern = r'Government\s+response\s+to\s+recommendation\s+(\d+)\s*(.+?)(?=Government\s+response\s+to\s+recommendation|Recommendation\s+\d+\s+[A-Z]|\Z)'
     matches = re.finditer(gov_resp_pattern, text, re.IGNORECASE | re.DOTALL)
     
     for match in matches:
         rec_num = match.group(1)
-        resp_text = f"Government response to recommendation {rec_num} {match.group(2).strip()}"
+        resp_content = match.group(2).strip()
         
         # Clean the response text
-        resp_text = clean_pdf_artifacts(resp_text)
+        resp_content = clean_pdf_artifacts(resp_content)
         
         # Skip if too short
-        if len(resp_text) < 50:
+        if len(resp_content) < 30:
             continue
+        
+        # Truncate if too long (likely extraction error) - max ~800 chars for a response
+        if len(resp_content) > 1000:
+            # Try to find a natural break point
+            # Look for sentence endings
+            sentences = re.split(r'(?<=[.!?])\s+', resp_content)
+            truncated = ""
+            for sent in sentences:
+                if len(truncated) + len(sent) < 800:
+                    truncated += sent + " "
+                else:
+                    break
+            resp_content = truncated.strip() if truncated else resp_content[:800]
+        
+        resp_text = f"Government response to recommendation {rec_num} {resp_content}"
         
         # Skip duplicates
         resp_key = resp_text[:100].lower()
@@ -581,29 +598,23 @@ def extract_response_sentences(text: str) -> List[Dict]:
             continue
         seen_responses.add(resp_key)
         
-        # Skip if this looks like recommendation text (quoted in response)
-        # Check the part AFTER "Government response to recommendation N"
-        after_header = match.group(2).strip()
-        if is_recommendation_text(after_header):
-            # Try to extract just the response part
-            # Look for "The government supports/accepts/etc"
-            gov_match = re.search(r'(The\s+government\s+(?:supports?|accepts?|agrees?|notes?|rejects?|recognises?|is\s+committed|will).+)', 
-                                  after_header, re.IGNORECASE | re.DOTALL)
-            if gov_match:
-                resp_text = f"Government response to recommendation {rec_num} {gov_match.group(1).strip()}"
-            else:
-                continue  # Skip - can't find actual response
+        # Final check: reject if it still contains "Recommendation N [A-Z]" pattern
+        if re.search(r'Recommendation\s+\d+\s+[A-Z][a-z]', resp_text):
+            # Try to cut off at that point
+            cut_match = re.search(r'Recommendation\s+\d+\s+[A-Z]', resp_text)
+            if cut_match:
+                resp_text = resp_text[:cut_match.start()].strip()
         
-        responses.append({
-            'text': resp_text,
-            'position': match.start(),
-            'response_type': 'structured',
-            'confidence': 0.95,
-            'rec_number': rec_num
-        })
+        if len(resp_text) > 50:
+            responses.append({
+                'text': resp_text,
+                'position': match.start(),
+                'response_type': 'structured',
+                'confidence': 0.95,
+                'rec_number': rec_num
+            })
     
     # Method 2: Find standalone response sentences (if Method 1 didn't find enough)
-    # Only use if we found fewer than expected responses
     if len(responses) < 5:
         sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
         
@@ -611,7 +622,7 @@ def extract_response_sentences(text: str) -> List[Dict]:
             sentence = sentence.strip()
             sentence = clean_pdf_artifacts(sentence)
             
-            if len(sentence) < 40 or len(sentence) > 1000:
+            if len(sentence) < 40 or len(sentence) > 500:
                 continue
             
             # STRICT: Must be a genuine response, not recommendation text
