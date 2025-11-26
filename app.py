@@ -538,10 +538,10 @@ def main():
                 render_semantic_search_tab()
             
             with tab5:
-                render_alignment_tab_safe()
+                render_recommendations_tab()
                 
             with tab6:
-                render_recommendations_tab()
+                render_alignment_tab_safe()
                 
             with tab7:
                 render_analytics_tab_safe(render_analytics_tab)
