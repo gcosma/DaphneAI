@@ -18,6 +18,352 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# DOCX REPORT GENERATION
+# =============================================================================
+
+def generate_docx_report(alignments: List[Dict], status_counts: Dict, total: int, with_response: int) -> bytes:
+    """Generate a Word document report of the alignment results"""
+    import subprocess
+    import tempfile
+    import os
+    
+    # Create JavaScript file for docx generation
+    js_content = create_docx_js(alignments, status_counts, total, with_response)
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        js_path = os.path.join(tmpdir, 'generate_report.js')
+        docx_path = os.path.join(tmpdir, 'report.docx')
+        
+        with open(js_path, 'w') as f:
+            f.write(js_content)
+        
+        # Run the JavaScript to generate the docx
+        result = subprocess.run(
+            ['node', js_path],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            raise Exception(f"Failed to generate docx: {result.stderr}")
+        
+        with open(docx_path, 'rb') as f:
+            return f.read()
+
+
+def create_docx_js(alignments: List[Dict], status_counts: Dict, total: int, with_response: int) -> str:
+    """Create JavaScript code to generate the Word document"""
+    import json
+    
+    # Prepare data for JavaScript
+    details = []
+    for idx, a in enumerate(alignments, 1):
+        rec = a['recommendation']
+        resp = a['response']
+        details.append({
+            'number': idx,
+            'status': resp['status'] if resp else 'No Response',
+            'recommendation': rec['text'][:2000],  # Limit length
+            'response': resp['response_text'][:2000] if resp else 'No response found',
+            'match_confidence': f"{resp['similarity']:.0%}" if resp else 'N/A'
+        })
+    
+    # Escape for JavaScript
+    details_json = json.dumps(details)
+    
+    js_code = f'''
+const {{ Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, 
+        Header, Footer, AlignmentType, BorderStyle, WidthType, HeadingLevel,
+        ShadingType, PageNumber }} = require('docx');
+const fs = require('fs');
+
+const statusCounts = {json.dumps(dict(status_counts))};
+const total = {total};
+const withResponse = {with_response};
+const details = {details_json};
+
+// Status colors
+const statusColors = {{
+    'Accepted': '92D050',
+    'Partial': 'FFC000', 
+    'Rejected': 'FF6B6B',
+    'Noted': '87CEEB',
+    'No Response': 'D3D3D3',
+    'Unclear': 'D3D3D3'
+}};
+
+const tableBorder = {{ style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" }};
+const cellBorders = {{ top: tableBorder, bottom: tableBorder, left: tableBorder, right: tableBorder }};
+
+// Build document sections
+const children = [];
+
+// Title
+children.push(new Paragraph({{
+    heading: HeadingLevel.TITLE,
+    alignment: AlignmentType.CENTER,
+    spacing: {{ after: 400 }},
+    children: [new TextRun({{ text: "Recommendation-Response Alignment Report", bold: true, size: 48 }})]
+}}));
+
+// Generated date
+children.push(new Paragraph({{
+    alignment: AlignmentType.CENTER,
+    spacing: {{ after: 400 }},
+    children: [new TextRun({{ text: "Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", size: 22, color: "666666" }})]
+}}));
+
+// Summary section
+children.push(new Paragraph({{
+    heading: HeadingLevel.HEADING_1,
+    spacing: {{ before: 400, after: 200 }},
+    children: [new TextRun({{ text: "Summary", bold: true, size: 32 }})]
+}}));
+
+// Summary table
+children.push(new Table({{
+    columnWidths: [4680, 4680],
+    rows: [
+        new TableRow({{
+            children: [
+                new TableCell({{
+                    borders: cellBorders,
+                    width: {{ size: 4680, type: WidthType.DXA }},
+                    children: [new Paragraph({{ children: [new TextRun({{ text: "Total Recommendations", bold: true }})] }})]
+                }}),
+                new TableCell({{
+                    borders: cellBorders,
+                    width: {{ size: 4680, type: WidthType.DXA }},
+                    children: [new Paragraph({{ children: [new TextRun(String(total))] }})]
+                }})
+            ]
+        }}),
+        new TableRow({{
+            children: [
+                new TableCell({{
+                    borders: cellBorders,
+                    width: {{ size: 4680, type: WidthType.DXA }},
+                    children: [new Paragraph({{ children: [new TextRun({{ text: "Responses Found", bold: true }})] }})]
+                }}),
+                new TableCell({{
+                    borders: cellBorders,
+                    width: {{ size: 4680, type: WidthType.DXA }},
+                    children: [new Paragraph({{ children: [new TextRun(String(withResponse))] }})]
+                }})
+            ]
+        }}),
+        new TableRow({{
+            children: [
+                new TableCell({{
+                    borders: cellBorders,
+                    width: {{ size: 4680, type: WidthType.DXA }},
+                    shading: {{ fill: "92D050", type: ShadingType.CLEAR }},
+                    children: [new Paragraph({{ children: [new TextRun({{ text: "Accepted", bold: true }})] }})]
+                }}),
+                new TableCell({{
+                    borders: cellBorders,
+                    width: {{ size: 4680, type: WidthType.DXA }},
+                    children: [new Paragraph({{ children: [new TextRun(String(statusCounts['Accepted'] || 0))] }})]
+                }})
+            ]
+        }}),
+        new TableRow({{
+            children: [
+                new TableCell({{
+                    borders: cellBorders,
+                    width: {{ size: 4680, type: WidthType.DXA }},
+                    shading: {{ fill: "FFC000", type: ShadingType.CLEAR }},
+                    children: [new Paragraph({{ children: [new TextRun({{ text: "Partial", bold: true }})] }})]
+                }}),
+                new TableCell({{
+                    borders: cellBorders,
+                    width: {{ size: 4680, type: WidthType.DXA }},
+                    children: [new Paragraph({{ children: [new TextRun(String(statusCounts['Partial'] || 0))] }})]
+                }})
+            ]
+        }}),
+        new TableRow({{
+            children: [
+                new TableCell({{
+                    borders: cellBorders,
+                    width: {{ size: 4680, type: WidthType.DXA }},
+                    shading: {{ fill: "FF6B6B", type: ShadingType.CLEAR }},
+                    children: [new Paragraph({{ children: [new TextRun({{ text: "Rejected", bold: true }})] }})]
+                }}),
+                new TableCell({{
+                    borders: cellBorders,
+                    width: {{ size: 4680, type: WidthType.DXA }},
+                    children: [new Paragraph({{ children: [new TextRun(String(statusCounts['Rejected'] || 0))] }})]
+                }})
+            ]
+        }}),
+        new TableRow({{
+            children: [
+                new TableCell({{
+                    borders: cellBorders,
+                    width: {{ size: 4680, type: WidthType.DXA }},
+                    shading: {{ fill: "D3D3D3", type: ShadingType.CLEAR }},
+                    children: [new Paragraph({{ children: [new TextRun({{ text: "No Response", bold: true }})] }})]
+                }}),
+                new TableCell({{
+                    borders: cellBorders,
+                    width: {{ size: 4680, type: WidthType.DXA }},
+                    children: [new Paragraph({{ children: [new TextRun(String(statusCounts['No Response'] || 0))] }})]
+                }})
+            ]
+        }})
+    ]
+}}));
+
+// Details section
+children.push(new Paragraph({{
+    heading: HeadingLevel.HEADING_1,
+    spacing: {{ before: 600, after: 200 }},
+    children: [new TextRun({{ text: "Detailed Results", bold: true, size: 32 }})]
+}}));
+
+// Add each recommendation
+details.forEach((item, index) => {{
+    const statusColor = statusColors[item.status] || 'D3D3D3';
+    
+    // Recommendation heading
+    children.push(new Paragraph({{
+        heading: HeadingLevel.HEADING_2,
+        spacing: {{ before: 400, after: 100 }},
+        children: [
+            new TextRun({{ text: `Recommendation ${{item.number}}`, bold: true, size: 26 }}),
+            new TextRun({{ text: "  |  ", size: 26, color: "999999" }}),
+            new TextRun({{ text: item.status, bold: true, size: 26, color: statusColor.replace('#', '') }})
+        ]
+    }}));
+    
+    // Recommendation text
+    children.push(new Paragraph({{
+        spacing: {{ before: 100, after: 100 }},
+        children: [new TextRun({{ text: "Recommendation: ", bold: true }})]
+    }}));
+    children.push(new Paragraph({{
+        spacing: {{ after: 200 }},
+        shading: {{ fill: "F0F8FF", type: ShadingType.CLEAR }},
+        children: [new TextRun({{ text: item.recommendation, size: 22 }})]
+    }}));
+    
+    // Response text
+    children.push(new Paragraph({{
+        spacing: {{ before: 100, after: 100 }},
+        children: [new TextRun({{ text: "Government Response: ", bold: true }})]
+    }}));
+    children.push(new Paragraph({{
+        spacing: {{ after: 100 }},
+        shading: {{ fill: "F0FFF0", type: ShadingType.CLEAR }},
+        children: [new TextRun({{ text: item.response, size: 22 }})]
+    }}));
+    
+    // Match confidence
+    children.push(new Paragraph({{
+        spacing: {{ after: 300 }},
+        children: [new TextRun({{ text: `Match Confidence: ${{item.match_confidence}}`, size: 20, color: "666666", italics: true }})]
+    }}));
+}});
+
+const doc = new Document({{
+    styles: {{
+        default: {{
+            document: {{
+                run: {{ font: "Arial", size: 24 }}
+            }}
+        }},
+        paragraphStyles: [
+            {{ id: "Title", name: "Title", basedOn: "Normal",
+                run: {{ size: 48, bold: true, color: "000000", font: "Arial" }},
+                paragraph: {{ spacing: {{ before: 240, after: 120 }}, alignment: AlignmentType.CENTER }} }},
+            {{ id: "Heading1", name: "Heading 1", basedOn: "Normal", next: "Normal", quickFormat: true,
+                run: {{ size: 32, bold: true, color: "2E74B5", font: "Arial" }},
+                paragraph: {{ spacing: {{ before: 240, after: 120 }} }} }},
+            {{ id: "Heading2", name: "Heading 2", basedOn: "Normal", next: "Normal", quickFormat: true,
+                run: {{ size: 26, bold: true, color: "404040", font: "Arial" }},
+                paragraph: {{ spacing: {{ before: 200, after: 100 }} }} }}
+        ]
+    }},
+    sections: [{{
+        properties: {{
+            page: {{
+                margin: {{ top: 1440, right: 1440, bottom: 1440, left: 1440 }}
+            }}
+        }},
+        headers: {{
+            default: new Header({{
+                children: [new Paragraph({{
+                    alignment: AlignmentType.RIGHT,
+                    children: [new TextRun({{ text: "Recommendation-Response Alignment Report", size: 20, color: "999999" }})]
+                }})]
+            }})
+        }},
+        footers: {{
+            default: new Footer({{
+                children: [new Paragraph({{
+                    alignment: AlignmentType.CENTER,
+                    children: [
+                        new TextRun({{ text: "Page ", size: 20 }}),
+                        new TextRun({{ children: [PageNumber.CURRENT], size: 20 }}),
+                        new TextRun({{ text: " of ", size: 20 }}),
+                        new TextRun({{ children: [PageNumber.TOTAL_PAGES], size: 20 }})
+                    ]
+                }})]
+            }})
+        }},
+        children: children
+    }}]
+}});
+
+Packer.toBuffer(doc).then(buffer => {{
+    fs.writeFileSync("report.docx", buffer);
+    console.log("Report generated successfully");
+}}).catch(err => {{
+    console.error("Error generating report:", err);
+    process.exit(1);
+}});
+'''
+    return js_code
+
+
+def generate_markdown_report(alignments: List[Dict], status_counts: Dict, total: int, with_response: int) -> str:
+    """Generate markdown report as fallback"""
+    report = f"""# Recommendation-Response Alignment Report
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## Summary
+- Total Recommendations: {total}
+- Responses Found: {with_response}
+- Accepted: {status_counts.get('Accepted', 0)}
+- Partial: {status_counts.get('Partial', 0)}
+- Rejected: {status_counts.get('Rejected', 0)}
+- Noted: {status_counts.get('Noted', 0)}
+- No Response: {status_counts.get('No Response', 0)}
+
+## Details
+"""
+    for idx, a in enumerate(alignments, 1):
+        rec = a['recommendation']
+        resp = a['response']
+        status = resp['status'] if resp else 'No Response'
+        report += f"""
+### Recommendation {idx}
+**Status:** {status}
+
+**Recommendation:**
+> {rec['text']}
+
+**Response:**
+> {resp['response_text'] if resp else 'No response found'}
+
+---
+"""
+    return report
+
+
+# =============================================================================
 # RESPONSE STATUS CLASSIFICATION - UPDATED PATTERNS
 # =============================================================================
 
@@ -630,44 +976,26 @@ def display_alignment_results(alignments: List[Dict]):
         )
     
     with col2:
-        # Summary report
-        report = f"""# Recommendation-Response Alignment Report
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-## Summary
-- Total Recommendations: {total}
-- Responses Found: {with_response}
-- Accepted: {status_counts.get('Accepted', 0)}
-- Partial: {status_counts.get('Partial', 0)}
-- Rejected: {status_counts.get('Rejected', 0)}
-- Noted: {status_counts.get('Noted', 0)}
-- No Response: {status_counts.get('No Response', 0)}
-
-## Details
-"""
-        for idx, a in enumerate(alignments, 1):
-            rec = a['recommendation']
-            resp = a['response']
-            status = resp['status'] if resp else 'No Response'
-            report += f"""
-### Recommendation {idx}
-**Status:** {status}
-
-**Recommendation:**
-> {rec['text']}
-
-**Response:**
-> {resp['response_text'] if resp else 'No response found'}
-
----
-"""
-        
-        st.download_button(
-            "📥 Download Report",
-            report,
-            f"alignment_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
-            "text/markdown"
-        )
+        # Generate Word document
+        if st.button("📥 Generate Word Report"):
+            try:
+                docx_buffer = generate_docx_report(alignments, status_counts, total, with_response)
+                st.download_button(
+                    "📥 Download Word Report",
+                    docx_buffer,
+                    f"alignment_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+            except Exception as e:
+                st.error(f"Error generating Word document: {e}")
+                # Fallback to markdown
+                report = generate_markdown_report(alignments, status_counts, total, with_response)
+                st.download_button(
+                    "📥 Download Report (MD)",
+                    report,
+                    f"alignment_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                    "text/markdown"
+                )
 
 
 # Export
