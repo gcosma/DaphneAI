@@ -30,7 +30,8 @@ class StrictRecommendationExtractor:
     """
     
     # Maximum length for a single recommendation (characters)
-    MAX_RECOMMENDATION_LENGTH = 1500
+    # Most genuine recommendations are 1-3 sentences, rarely over 400 chars
+    MAX_RECOMMENDATION_LENGTH = 500
     
     def __init__(self):
         """Initialise with strict patterns"""
@@ -354,18 +355,39 @@ class StrictRecommendationExtractor:
         return recommendations
     
     def _deduplicate(self, recommendations: List[Dict]) -> List[Dict]:
-        """Remove duplicate recommendations"""
-        seen = set()
+        """Remove duplicate recommendations, including substring matches"""
+        seen_keys = set()
+        seen_texts = []  # Keep full texts for substring checking
         unique = []
         
-        for rec in recommendations:
-            key = re.sub(r'\s+', ' ', rec['text'].lower().strip())[:100]
-            
-            if key not in seen:
-                seen.add(key)
-                unique.append(rec)
+        # Sort by confidence (highest first) so we keep the best version
+        sorted_recs = sorted(recommendations, key=lambda r: r['confidence'], reverse=True)
         
-        return unique
+        for rec in sorted_recs:
+            text_lower = re.sub(r'\s+', ' ', rec['text'].lower().strip())
+            key = text_lower[:100]
+            
+            # Check for exact duplicate
+            if key in seen_keys:
+                continue
+            
+            # Check if this text is contained within a previously seen text
+            # or if a previously seen text is contained within this one
+            is_substring = False
+            for seen_text in seen_texts:
+                if text_lower in seen_text or seen_text in text_lower:
+                    is_substring = True
+                    break
+            
+            if is_substring:
+                continue
+            
+            seen_keys.add(key)
+            seen_texts.append(text_lower)
+            unique.append(rec)
+        
+        # Re-sort by position for consistent output order
+        return sorted(unique, key=lambda r: r['position'])
     
     def get_statistics(self, recommendations: List[Dict]) -> Dict:
         """Get statistics about extracted recommendations."""
