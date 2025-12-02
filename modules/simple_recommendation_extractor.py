@@ -1,12 +1,12 @@
 """
-Improved Strict Recommendation Extractor v2.2
+Improved Strict Recommendation Extractor v2.3
 Eliminates false positives from PDF artifacts, URLs, timestamps, and meta-commentary.
 Designed for government/policy documents with numbered recommendations.
 
-v2.2 Changes:
-- Better sentence splitting that handles pdfplumber output
-- Splits on "Recommendation N" boundaries first
-- More aggressive timestamp/artifact removal
+v2.3 Changes:
+- Fixed chunking to handle multiple numbering formats (Recommendation N, N. Title, etc.)
+- Added maximum length filter to reject entire documents/sections as single recommendations
+- Better handling of numbered list formats common in operational documents
 
 Usage:
     from simple_recommendation_extractor import extract_recommendations
@@ -28,6 +28,9 @@ class StrictRecommendationExtractor:
     """
     Extract genuine recommendations with aggressive pre-filtering.
     """
+    
+    # Maximum length for a single recommendation (characters)
+    MAX_RECOMMENDATION_LENGTH = 1500
     
     def __init__(self):
         """Initialise with strict patterns"""
@@ -135,6 +138,10 @@ class StrictRecommendationExtractor:
         if len(cleaned) < 40:
             return True, "too_short"
         
+        # NEW: Reject text that's too long to be a single recommendation
+        if len(cleaned) > self.MAX_RECOMMENDATION_LENGTH:
+            return True, "too_long"
+        
         # Just section headers
         if re.match(r'^(?:Appendix|Section|Chapter|Table|Figure|Footnote)\s+\d+', cleaned, re.IGNORECASE):
             return True, "header"
@@ -170,6 +177,10 @@ class StrictRecommendationExtractor:
             r'^when\s+we\s+(?:first\s+)?established',
             r'^we\s+found\s+that',
             r'^they\s+proposed\s+practical',
+            # NEW: Detect document introductions/preambles
+            r'^this\s+document\s+outlines',
+            r'^the\s+insights\s+below',
+            r'^the\s+goal\s+is\s+to\s+provide',
         ]
         
         for pattern in meta_patterns:
@@ -182,6 +193,10 @@ class StrictRecommendationExtractor:
         """Determine if text is a genuine recommendation."""
         cleaned = self.clean_text(text)
         text_lower = cleaned.lower()
+        
+        # EARLY EXIT: If text is too long, it's not a single recommendation
+        if len(cleaned) > self.MAX_RECOMMENDATION_LENGTH:
+            return False, 0.0, 'too_long', 'none'
         
         # Method 1: Explicit numbered recommendation (highest confidence)
         numbered_match = re.match(r'^(?:Recommendations?\s+)?Recommendation\s+(\d+)\s+(.+)', cleaned, re.IGNORECASE)
@@ -240,10 +255,6 @@ class StrictRecommendationExtractor:
             verb = should_match.group(1)
             if verb in self.action_verbs:
                 return verb
-            # if verb == 'be':
-            #     be_match = re.search(r'\bshould\s+be\s+(\w+)', text_lower)
-            #     if be_match:
-            #         return be_match.group(1)
         
         for verb in sorted(self.action_verbs, key=len, reverse=True):
             if re.search(rf'\b{verb}\b', text_lower):
@@ -261,23 +272,41 @@ class StrictRecommendationExtractor:
         
         logger.info(f"Extracting recommendations from text of length {len(text)}")
         
-        # IMPROVED: Split on "Recommendation N" boundaries FIRST
-        # This handles pdfplumber output where text is concatenated
+        # IMPROVED: Split on multiple recommendation boundary patterns
+        # Pattern 1: "Recommendation N" (government doc style)
+        # Pattern 2: "N. " at start of line or after paragraph break (numbered list style)
+        # Pattern 3: Paragraph breaks
+        
+        # First try "Recommendation N" boundaries
         chunks = re.split(r'(?=Recommendation\s+\d+\s)', text, flags=re.IGNORECASE)
         
-        logger.info(f"Split into {len(chunks)} chunks using 'Recommendation N' boundaries")
+        # If that didn't split much, try numbered list pattern
+        if len(chunks) <= 2:
+            # Split on "N. Title" patterns (numbered sections)
+            chunks = re.split(r'(?=(?:^|\n\s*)\d{1,2}\.\s+[A-Z])', text)
+        
+        logger.info(f"Split into {len(chunks)} chunks using boundary patterns")
         
         # Also extract sub-recommendations with entity+should patterns
         all_sentences = []
         for chunk in chunks:
-            # Add the chunk itself
-            all_sentences.append(chunk)
-            
-            # Also split on sentence boundaries for entity+should patterns
-            sub_sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', chunk)
-            for sub in sub_sentences:
-                if sub not in all_sentences and len(sub) > 50:
-                    all_sentences.append(sub)
+            # Skip chunks that are too long (likely entire documents or sections)
+            # A genuine recommendation should rarely exceed MAX_RECOMMENDATION_LENGTH
+            if len(chunk) > self.MAX_RECOMMENDATION_LENGTH:
+                # For long chunks, only extract sentences, don't add the chunk itself
+                sub_sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', chunk)
+                for sub in sub_sentences:
+                    if len(sub) > 50 and len(sub) <= self.MAX_RECOMMENDATION_LENGTH:
+                        all_sentences.append(sub)
+            else:
+                # Add the chunk itself if reasonable length
+                all_sentences.append(chunk)
+                
+                # Also split on sentence boundaries for entity+should patterns
+                sub_sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', chunk)
+                for sub in sub_sentences:
+                    if sub not in all_sentences and len(sub) > 50:
+                        all_sentences.append(sub)
         
         logger.info(f"Total sentences to process: {len(all_sentences)}")
         
@@ -289,7 +318,7 @@ class StrictRecommendationExtractor:
                 in_rec_section = True
                 continue
             
-            # Check garbage
+            # Check garbage (now includes length check)
             is_garbage, reason = self.is_garbage(sentence)
             if is_garbage:
                 continue
@@ -297,6 +326,10 @@ class StrictRecommendationExtractor:
             cleaned = self.clean_text(sentence)
             
             if len(cleaned) < 40:
+                continue
+            
+            # Double-check length after cleaning
+            if len(cleaned) > self.MAX_RECOMMENDATION_LENGTH:
                 continue
             
             if self.is_meta_recommendation(cleaned):
