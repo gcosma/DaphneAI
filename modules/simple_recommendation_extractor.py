@@ -240,10 +240,10 @@ class StrictRecommendationExtractor:
             verb = should_match.group(1)
             if verb in self.action_verbs:
                 return verb
-            if verb == 'be':
-                be_match = re.search(r'\bshould\s+be\s+(\w+)', text_lower)
-                if be_match:
-                    return be_match.group(1)
+            # if verb == 'be':
+            #     be_match = re.search(r'\bshould\s+be\s+(\w+)', text_lower)
+            #     if be_match:
+            #         return be_match.group(1)
         
         for verb in sorted(self.action_verbs, key=len, reverse=True):
             if re.search(rf'\b{verb}\b', text_lower):
