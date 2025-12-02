@@ -271,7 +271,7 @@ class StrictRecommendationExtractor:
         all_sentences = []
         for chunk in chunks:
             # Add the chunk itself
-            # all_sentences.append(chunk)
+            all_sentences.append(chunk)
             
             # Also split on sentence boundaries for entity+should patterns
             sub_sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', chunk)
