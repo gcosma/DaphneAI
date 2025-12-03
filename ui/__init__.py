@@ -1,12 +1,11 @@
-# modules/ui/__init__.py
 """
-DaphneAI Search UI Components Package (legacy shim).
+Streamlit UI package for DaphneAI.
 
-This re-exports the canonical ``ui`` package to preserve backward compatibility
-with callers that still import via ``modules.ui``.
+Canonical home of the UI components; kept API-compatible with the former
+``modules.ui`` package.
 """
 
-from ui.search_components import (
+from .search_components import (
     render_search_interface,
     render_recommendation_alignment_interface,
     check_rag_availability,

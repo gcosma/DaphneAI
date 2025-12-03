@@ -1,4 +1,4 @@
-# modules/ui/simplified_alignment_ui.py
+# modules/ui/alignment_ui.py
 """
 🔗 Enhanced Recommendation-Response Alignment Interface
 Uses sentence transformers for semantic matching between recommendations and responses.
@@ -788,7 +788,7 @@ def render_simple_alignment_interface(documents: List[Dict]):
         progress = st.progress(0, text="Extracting recommendations...")
         
         try:
-            from modules.simple_recommendation_extractor import extract_recommendations
+            from daphne_core.recommendation_extractor import extract_recommendations
             recommendations = extract_recommendations(rec_text, min_confidence=0.75)
             
             if not recommendations:

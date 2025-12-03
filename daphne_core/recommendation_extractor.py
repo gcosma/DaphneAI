@@ -1,15 +1,16 @@
 """
-Improved Strict Recommendation Extractor v2.3
-Eliminates false positives from PDF artifacts, URLs, timestamps, and meta-commentary.
-Designed for government/policy documents with numbered recommendations.
+Strict Recommendation Extractor v2.4
+Properly extracts full "Recommendation N" blocks from government documents.
+Falls back to sentence-based extraction for other document types.
 
-v2.3 Changes:
-- Fixed chunking to handle multiple numbering formats (Recommendation N, N. Title, etc.)
-- Added maximum length filter to reject entire documents/sections as single recommendations
-- Better handling of numbered list formats common in operational documents
+v2.4 Changes:
+- Removed aggressive length limits for numbered recommendations
+- "Recommendation N" blocks are extracted in full (can be 1000+ chars)
+- Length limits only apply to fallback sentence-based extraction
+- Better handling of government document structure
 
 Usage:
-    from simple_recommendation_extractor import extract_recommendations
+    from daphne_core.recommendation_extractor import extract_recommendations
     
     recommendations = extract_recommendations(document_text, min_confidence=0.75)
     for rec in recommendations:
@@ -27,11 +28,14 @@ logger = logging.getLogger(__name__)
 class StrictRecommendationExtractor:
     """
     Extract genuine recommendations with aggressive pre-filtering.
+    Handles both government-style numbered recommendations and general documents.
     """
     
-    # Maximum length for a single recommendation (characters)
-    # Most genuine recommendations are 1-3 sentences, rarely over 400 chars
-    MAX_RECOMMENDATION_LENGTH = 500
+    # Maximum length for SENTENCE-BASED extraction only (not numbered recommendations)
+    MAX_SENTENCE_LENGTH = 500
+    
+    # Maximum length for numbered recommendations (much higher - they can be long)
+    MAX_NUMBERED_REC_LENGTH = 2500
     
     def __init__(self):
         """Initialise with strict patterns"""
@@ -128,7 +132,7 @@ class StrictRecommendationExtractor:
         
         return text
     
-    def is_garbage(self, text: str) -> Tuple[bool, str]:
+    def is_garbage(self, text: str, is_numbered_rec: bool = False) -> Tuple[bool, str]:
         """FIRST-PASS filter: reject obvious garbage before any analysis."""
         if not text:
             return True, "empty"
@@ -139,8 +143,9 @@ class StrictRecommendationExtractor:
         if len(cleaned) < 40:
             return True, "too_short"
         
-        # NEW: Reject text that's too long to be a single recommendation
-        if len(cleaned) > self.MAX_RECOMMENDATION_LENGTH:
+        # Length limits depend on whether this is a numbered recommendation
+        max_length = self.MAX_NUMBERED_REC_LENGTH if is_numbered_rec else self.MAX_SENTENCE_LENGTH
+        if len(cleaned) > max_length:
             return True, "too_long"
         
         # Just section headers
@@ -152,9 +157,10 @@ class StrictRecommendationExtractor:
         if len(cleaned) > 0 and special_chars / len(cleaned) > 0.12:
             return True, "corrupted"
         
-        # Excessive numbers
+        # Excessive numbers (but allow more for numbered recs which have dates, stats etc)
         digits = sum(1 for c in cleaned if c.isdigit())
-        if len(cleaned) > 0 and digits / len(cleaned) > 0.15:
+        max_digit_ratio = 0.20 if is_numbered_rec else 0.15
+        if len(cleaned) > 0 and digits / len(cleaned) > max_digit_ratio:
             return True, "too_many_numbers"
         
         return False, ""
@@ -178,7 +184,6 @@ class StrictRecommendationExtractor:
             r'^when\s+we\s+(?:first\s+)?established',
             r'^we\s+found\s+that',
             r'^they\s+proposed\s+practical',
-            # NEW: Detect document introductions/preambles
             r'^this\s+document\s+outlines',
             r'^the\s+insights\s+below',
             r'^the\s+goal\s+is\s+to\s+provide',
@@ -190,16 +195,18 @@ class StrictRecommendationExtractor:
         
         return False
     
-    def is_genuine_recommendation(self, text: str) -> Tuple[bool, float, str, str]:
+    def is_genuine_recommendation(self, text: str, is_numbered_rec: bool = False) -> Tuple[bool, float, str, str]:
         """Determine if text is a genuine recommendation."""
         cleaned = self.clean_text(text)
         text_lower = cleaned.lower()
         
-        # EARLY EXIT: If text is too long, it's not a single recommendation
-        if len(cleaned) > self.MAX_RECOMMENDATION_LENGTH:
+        # Check length based on type
+        max_length = self.MAX_NUMBERED_REC_LENGTH if is_numbered_rec else self.MAX_SENTENCE_LENGTH
+        if len(cleaned) > max_length:
             return False, 0.0, 'too_long', 'none'
         
         # Method 1: Explicit numbered recommendation (highest confidence)
+        # These can be long - no length restriction here
         numbered_match = re.match(r'^(?:Recommendations?\s+)?Recommendation\s+(\d+)\s+(.+)', cleaned, re.IGNORECASE)
         if numbered_match:
             rec_num = numbered_match.group(1)
@@ -273,70 +280,30 @@ class StrictRecommendationExtractor:
         
         logger.info(f"Extracting recommendations from text of length {len(text)}")
         
-        # IMPROVED: Split on multiple recommendation boundary patterns
-        # Pattern 1: "Recommendation N" (government doc style)
-        # Pattern 2: "N. " at start of line or after paragraph break (numbered list style)
-        # Pattern 3: Paragraph breaks
+        # =======================================================================
+        # PHASE 1: Extract numbered "Recommendation N" blocks (government style)
+        # These are extracted in FULL regardless of length
+        # =======================================================================
         
-        # First try "Recommendation N" boundaries
-        chunks = re.split(r'(?=Recommendation\s+\d+\s)', text, flags=re.IGNORECASE)
+        # Split on "Recommendation N" boundaries
+        rec_pattern = r'(Recommendation\s+\d+\s+.+?)(?=Recommendation\s+\d+\s+[A-Z]|\Z)'
+        numbered_matches = re.findall(rec_pattern, text, re.IGNORECASE | re.DOTALL)
         
-        # If that didn't split much, try numbered list pattern
-        if len(chunks) <= 2:
-            # Split on "N. Title" patterns (numbered sections)
-            chunks = re.split(r'(?=(?:^|\n\s*)\d{1,2}\.\s+[A-Z])', text)
+        logger.info(f"Found {len(numbered_matches)} numbered recommendation blocks")
         
-        logger.info(f"Split into {len(chunks)} chunks using boundary patterns")
-        
-        # Also extract sub-recommendations with entity+should patterns
-        all_sentences = []
-        for chunk in chunks:
-            # Skip chunks that are too long (likely entire documents or sections)
-            # A genuine recommendation should rarely exceed MAX_RECOMMENDATION_LENGTH
-            if len(chunk) > self.MAX_RECOMMENDATION_LENGTH:
-                # For long chunks, only extract sentences, don't add the chunk itself
-                sub_sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', chunk)
-                for sub in sub_sentences:
-                    if len(sub) > 50 and len(sub) <= self.MAX_RECOMMENDATION_LENGTH:
-                        all_sentences.append(sub)
-            else:
-                # Add the chunk itself if reasonable length
-                all_sentences.append(chunk)
-                
-                # Also split on sentence boundaries for entity+should patterns
-                sub_sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', chunk)
-                for sub in sub_sentences:
-                    if sub not in all_sentences and len(sub) > 50:
-                        all_sentences.append(sub)
-        
-        logger.info(f"Total sentences to process: {len(all_sentences)}")
-        
-        in_rec_section = False
-        
-        for idx, sentence in enumerate(all_sentences):
-            # Check for section markers
-            if re.search(r'^#+\s*Recommendations?\s*$|^Recommendations?\s*$', sentence.strip(), re.IGNORECASE):
-                in_rec_section = True
-                continue
+        for idx, match in enumerate(numbered_matches):
+            cleaned = self.clean_text(match)
             
-            # Check garbage (now includes length check)
-            is_garbage, reason = self.is_garbage(sentence)
+            # Check garbage with numbered_rec flag (allows longer text)
+            is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=True)
             if is_garbage:
-                continue
-            
-            cleaned = self.clean_text(sentence)
-            
-            if len(cleaned) < 40:
-                continue
-            
-            # Double-check length after cleaning
-            if len(cleaned) > self.MAX_RECOMMENDATION_LENGTH:
+                logger.debug(f"Skipping numbered rec {idx}: {reason}")
                 continue
             
             if self.is_meta_recommendation(cleaned):
                 continue
             
-            is_rec, confidence, method, verb = self.is_genuine_recommendation(cleaned)
+            is_rec, confidence, method, verb = self.is_genuine_recommendation(cleaned, is_numbered_rec=True)
             
             if is_rec and confidence >= min_confidence:
                 recommendations.append({
@@ -345,8 +312,42 @@ class StrictRecommendationExtractor:
                     'method': method,
                     'confidence': round(confidence, 3),
                     'position': idx,
-                    'in_section': in_rec_section,
+                    'in_section': True,
                 })
+        
+        # =======================================================================
+        # PHASE 2: If no numbered recommendations found, fall back to sentence extraction
+        # These have stricter length limits
+        # =======================================================================
+        
+        if len(recommendations) == 0:
+            logger.info("No numbered recommendations found, falling back to sentence extraction")
+            
+            # Split into sentences
+            sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
+            
+            for idx, sentence in enumerate(sentences):
+                cleaned = self.clean_text(sentence)
+                
+                # Strict length limit for sentence-based extraction
+                is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=False)
+                if is_garbage:
+                    continue
+                
+                if self.is_meta_recommendation(cleaned):
+                    continue
+                
+                is_rec, confidence, method, verb = self.is_genuine_recommendation(cleaned, is_numbered_rec=False)
+                
+                if is_rec and confidence >= min_confidence:
+                    recommendations.append({
+                        'text': cleaned,
+                        'verb': verb,
+                        'method': method,
+                        'confidence': round(confidence, 3),
+                        'position': idx,
+                        'in_section': False,
+                    })
         
         recommendations = self._deduplicate(recommendations)
         
@@ -355,39 +356,19 @@ class StrictRecommendationExtractor:
         return recommendations
     
     def _deduplicate(self, recommendations: List[Dict]) -> List[Dict]:
-        """Remove duplicate recommendations, including substring matches"""
-        seen_keys = set()
-        seen_texts = []  # Keep full texts for substring checking
+        """Remove duplicate recommendations"""
+        seen = set()
         unique = []
         
-        # Sort by confidence (highest first) so we keep the best version
-        sorted_recs = sorted(recommendations, key=lambda r: r['confidence'], reverse=True)
+        for rec in recommendations:
+            # Use first 150 chars as key to catch duplicates
+            key = re.sub(r'\s+', ' ', rec['text'].lower().strip())[:150]
+            
+            if key not in seen:
+                seen.add(key)
+                unique.append(rec)
         
-        for rec in sorted_recs:
-            text_lower = re.sub(r'\s+', ' ', rec['text'].lower().strip())
-            key = text_lower[:100]
-            
-            # Check for exact duplicate
-            if key in seen_keys:
-                continue
-            
-            # Check if this text is contained within a previously seen text
-            # or if a previously seen text is contained within this one
-            is_substring = False
-            for seen_text in seen_texts:
-                if text_lower in seen_text or seen_text in text_lower:
-                    is_substring = True
-                    break
-            
-            if is_substring:
-                continue
-            
-            seen_keys.add(key)
-            seen_texts.append(text_lower)
-            unique.append(rec)
-        
-        # Re-sort by position for consistent output order
-        return sorted(unique, key=lambda r: r['position'])
+        return unique
     
     def get_statistics(self, recommendations: List[Dict]) -> Dict:
         """Get statistics about extracted recommendations."""

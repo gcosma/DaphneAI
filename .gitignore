@@ -206,3 +206,4 @@ docker-compose.override.yml
 .env.production
 
 /recsandresps
+PLAN.md

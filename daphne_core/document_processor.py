@@ -9,7 +9,8 @@ import re
 # PDF processing with fallbacks
 try:
     import pdfplumber
-    PDFPLUMBER_AVAILABLE = True
+    # FORCE DISABLED to match production environment behavior (fallback to PyPDF2)
+    PDFPLUMBER_AVAILABLE = False 
 except ImportError:
     PDFPLUMBER_AVAILABLE = False
     logging.warning("pdfplumber not available")

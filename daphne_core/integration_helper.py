@@ -153,7 +153,7 @@ def get_document_statistics() -> Dict[str, Any]:
 def setup_search_tab():
     """Setup the search tab with interface"""
     try:
-        from .ui.search_components import render_search_interface
+        from ui.search_components import render_search_interface
         
         documents = st.session_state.get('documents', [])
         render_search_interface(documents)
