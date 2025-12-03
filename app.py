@@ -37,14 +37,14 @@ def initialize_nltk():
 NLP_AVAILABLE = initialize_nltk()
 
 # FIXED IMPORT - Use the strict extractor instead of the old one
-from modules.recommendation_extractor import (
+from daphne_core.recommendation_extractor import (
     extract_recommendations, 
     StrictRecommendationExtractor
 )
 
 # Try to import the new semantic search engine
 try:
-    from modules.search_engine import SemanticSearchEngine
+    from daphne_core.search_engine import SemanticSearchEngine
     SEMANTIC_SEARCH_AVAILABLE = True
 except ImportError:
     SEMANTIC_SEARCH_AVAILABLE = False
@@ -54,7 +54,7 @@ except ImportError:
 def safe_import_with_fallback():
     """Safely import modules with comprehensive fallbacks"""
     try:
-        from modules.integration_helper import (
+        from daphne_core.integration_helper import (
             setup_search_tab, 
             prepare_documents_for_search, 
             extract_text_from_file,
@@ -699,7 +699,7 @@ def render_alignment_tab_safe():
             return
         
         try:
-            from modules.ui.alignment_ui import render_simple_alignment_interface
+            from ui.alignment_ui import render_simple_alignment_interface
             documents = st.session_state.documents
             render_simple_alignment_interface(documents)
         except ImportError:
