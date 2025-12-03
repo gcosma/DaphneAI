@@ -14,9 +14,9 @@ from typing import Dict, List, Any
 import logging
 import difflib
 
-# Import the beautiful display functions from the separate file
+# Import the display helper functions from the separate file
 # DIRECT IMPORT - no conditional logic
-from .beautiful_display import (
+from .display_utils import (
     display_search_results_beautiful,
     display_alignment_results_beautiful,
     display_manual_search_results_beautiful,

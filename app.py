@@ -37,7 +37,7 @@ def initialize_nltk():
 NLP_AVAILABLE = initialize_nltk()
 
 # FIXED IMPORT - Use the strict extractor instead of the old one
-from modules.simple_recommendation_extractor import (
+from modules.recommendation_extractor import (
     extract_recommendations, 
     StrictRecommendationExtractor
 )
@@ -699,7 +699,7 @@ def render_alignment_tab_safe():
             return
         
         try:
-            from modules.ui.simplified_alignment_ui import render_simple_alignment_interface
+            from modules.ui.alignment_ui import render_simple_alignment_interface
             documents = st.session_state.documents
             render_simple_alignment_interface(documents)
         except ImportError:

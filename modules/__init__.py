@@ -16,12 +16,12 @@ __author__ = "DaphneAI Team"
 # =============================================================================
 # RECOMMENDATION EXTRACTOR - UPDATED to use StrictRecommendationExtractor
 # =============================================================================
-# Priority: Use the strict extractor (simple_recommendation_extractor.py)
+# Priority: Use the strict extractor (recommendation_extractor.py)
 # which eliminates ~90% of false positives from PDF artifacts, URLs, timestamps
 
 try:
     # FIRST: Try to import the STRICT extractor (the good one)
-    from .simple_recommendation_extractor import (
+    from .recommendation_extractor import (
         extract_recommendations,
         StrictRecommendationExtractor,
     )
@@ -31,7 +31,7 @@ try:
     logging.info("Using StrictRecommendationExtractor (improved filtering)")
     
 except ImportError as e:
-    logging.warning(f"Could not import simple_recommendation_extractor: {e}")
+    logging.warning(f"Could not import recommendation_extractor: {e}")
     
     # FALLBACK: Try the old extractor
     try:
