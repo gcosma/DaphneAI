@@ -1,9 +1,25 @@
 """
 Streamlit UI package for DaphneAI.
 
-This is a thin wrapper around the legacy ``modules.ui`` package so that
-the application can import ``ui.*`` without changing any behaviour.
+Canonical home of the UI components; kept API-compatible with the former
+``modules.ui`` package.
 """
 
-from modules.ui import *  # type: ignore  # noqa: F401,F403
+from .search_components import (
+    render_search_interface,
+    render_recommendation_alignment_interface,
+    check_rag_availability,
+    filter_stop_words,
+    STOP_WORDS,
+)
 
+__version__ = "2.0.0"
+__author__ = "DaphneAI Team"
+
+__all__ = [
+    "render_search_interface",
+    "render_recommendation_alignment_interface",
+    "check_rag_availability",
+    "filter_stop_words",
+    "STOP_WORDS",
+]
