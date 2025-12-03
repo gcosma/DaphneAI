@@ -15,18 +15,13 @@ import logging
 import difflib
 
 # Import the beautiful display functions from the separate file
-try:
-    from .beautiful_display import (
-        display_search_results_beautiful,
-        display_alignment_results_beautiful,
-        display_manual_search_results_beautiful,
-        show_alignment_feature_info_beautiful,
-        format_as_beautiful_paragraphs
-    )
-    BEAUTIFUL_DISPLAY_AVAILABLE = True
-except ImportError:
-    BEAUTIFUL_DISPLAY_AVAILABLE = False
-    logging.warning("Beautiful display not available - using basic display")
+# DIRECT IMPORT - no conditional logic
+from .beautiful_display import (
+    display_search_results_beautiful,
+    display_alignment_results_beautiful,
+    display_manual_search_results_beautiful,
+    show_alignment_feature_info_beautiful
+)
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -169,11 +164,8 @@ def render_auto_alignment_with_extractor(documents: List[Dict[str, Any]]):
                 
                 st.success(f"✅ Created {len(alignments)} alignments")
                 
-                # Display results
-                if BEAUTIFUL_DISPLAY_AVAILABLE:
-                    display_alignment_results_beautiful(alignments, show_ai_summaries=False)
-                else:
-                    display_advanced_alignment_results(alignments)
+                # Display results - DIRECTLY CALLING BEAUTIFUL DISPLAY
+                display_alignment_results_beautiful(alignments, show_ai_summaries=False)
                 
                 # Export option
                 if alignments:
@@ -244,81 +236,9 @@ def align_recommendations_with_responses(recommendations: List[Dict], responses:
 
 
 def display_advanced_alignment_results(alignments: List[Dict]):
-    """Display advanced alignment results"""
-    
-    if not alignments:
-        st.warning("No alignments found")
-        return
-    
-    # Summary statistics
-    st.markdown("### 📊 Alignment Summary")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total Recommendations", len(alignments))
-    
-    with col2:
-        aligned = sum(1 for a in alignments if a['responses'])
-        st.metric("With Responses", aligned)
-    
-    with col3:
-        strong = sum(1 for a in alignments if a['alignment_status'] == "Strong Alignment")
-        st.metric("Strong Alignments", strong)
-    
-    with col4:
-        avg_confidence = sum(a['detection_confidence'] for a in alignments) / len(alignments)
-        st.metric("Avg Detection Confidence", f"{avg_confidence:.0%}")
-    
-    st.markdown("---")
-    
-    # Display each alignment
-    st.markdown("### 🔗 Recommendation-Response Pairs")
-    
-    for idx, alignment in enumerate(alignments, 1):
-        rec = alignment['recommendation']
-        responses = alignment['responses']
-        status = alignment['alignment_status']
-        method = alignment['detection_method']
-        verb = alignment['action_verb']
-        
-        # Status color
-        if status == "Strong Alignment":
-            status_color = "🟢"
-        elif status == "Good Alignment":
-            status_color = "🟡"
-        else:
-            status_color = "🔴"
-        
-        with st.expander(
-            f"{status_color} **{idx}. {verb.upper()}** - {status} (Method: {method})",
-            expanded=(idx <= 3)
-        ):
-            # Recommendation
-            st.markdown("**🎯 Recommendation:**")
-            st.info(rec['sentence'])
-            
-            st.caption(f"Document: {rec['document']['filename']} | Confidence: {rec['confidence']:.0%} | Method: {method}")
-            
-            # Responses
-            if responses:
-                st.markdown("**↩️ Responses:**")
-                
-                for i, resp_data in enumerate(responses, 1):
-                    resp = resp_data['response']
-                    score = resp_data['combined_score']
-                    same_doc = resp_data.get('same_document', False)
-                    
-                    doc_icon = "📄" if same_doc else "📋"
-                    
-                    st.success(f"{doc_icon} **Response {i}** (Similarity: {score:.0%})")
-                    st.write(resp['sentence'])
-                    st.caption(f"Document: {resp['document']['filename']} | Pattern: {resp['pattern']}")
-                    
-                    if i < len(responses):
-                        st.markdown("---")
-            else:
-                st.warning("❌ No matching responses found")
+    """Display advanced alignment results using beautiful display"""
+    # Redirect to the beautiful display function
+    display_alignment_results_beautiful(alignments, show_ai_summaries=False)
 
 
 def export_alignments_to_csv(alignments: List[Dict], selected_docs: List[str]):
@@ -490,17 +410,14 @@ def render_search_interface(documents: List[Dict[str, Any]]):
             
             search_time = time.time() - start_time
             
-            # Display results
-            if BEAUTIFUL_DISPLAY_AVAILABLE:
-                display_search_results_beautiful(
-                    results=results,
-                    query=query,
-                    search_time=search_time,
-                    show_context=show_context,
-                    highlight_matches=highlight_matches
-                )
-            else:
-                display_search_results_basic(results, query, search_time, show_context, highlight_matches)
+            # Display results - ALWAYS BEAUTIFUL
+            display_search_results_beautiful(
+                results=results,
+                query=query,
+                search_time=search_time,
+                show_context=show_context,
+                highlight_matches=highlight_matches
+            )
 
 def render_recommendation_alignment_interface(documents: List[Dict[str, Any]]):
     """Recommendation-response alignment interface"""
@@ -510,10 +427,8 @@ def render_recommendation_alignment_interface(documents: List[Dict[str, Any]]):
     
     if not documents:
         st.warning("📁 Please upload documents first")
-        if BEAUTIFUL_DISPLAY_AVAILABLE:
-            show_alignment_feature_info_beautiful()
-        else:
-            show_alignment_feature_info_basic()
+        # ALWAYS SHOW BEAUTIFUL INFO
+        show_alignment_feature_info_beautiful()
         return
     
     # Simple tab structure
@@ -678,10 +593,8 @@ def render_auto_alignment_fixed(documents: List[Dict[str, Any]]):
                 if EXTRACTOR_AVAILABLE:
                     display_advanced_alignment_results(alignments)
                 else:
-                    if BEAUTIFUL_DISPLAY_AVAILABLE:
-                        display_alignment_results_beautiful(alignments, show_ai_summaries=False)
-                    else:
-                        display_alignment_results_basic(alignments)
+                    # ALWAYS USE BEAUTIFUL DISPLAY
+                    display_alignment_results_beautiful(alignments, show_ai_summaries=False)
                 
                 # Export option
                 if alignments:
@@ -745,12 +658,10 @@ def render_manual_search_fixed(documents: List[Dict[str, Any]]):
                 
                 search_time = time.time() - search_start
                 
-                if BEAUTIFUL_DISPLAY_AVAILABLE:
-                    display_manual_search_results_beautiful(
-                        matches, search_sentence, search_time, show_scores, search_type.lower()
-                    )
-                else:
-                    display_manual_search_results_basic(matches, search_sentence, search_time, show_scores)
+                # ALWAYS USE BEAUTIFUL DISPLAY
+                display_manual_search_results_beautiful(
+                    matches, search_sentence, search_time, show_scores, search_type.lower()
+                )
                 
             except Exception as e:
                 logger.error(f"Manual search error: {e}")
@@ -1182,42 +1093,6 @@ def semantic_fallback_search(text: str, query: str, case_sensitive: bool = False
     
     return matches
 
-def hybrid_search_smart_ai(text: str, query: str, case_sensitive: bool = False) -> List[Dict]:
-    """Hybrid search combining smart search and AI semantic search"""
-    
-    # Get smart search results
-    smart_results = smart_search_filtered(text, query, case_sensitive)
-    
-    # Get AI semantic results
-    ai_results = ai_semantic_search(text, query, case_sensitive)
-    
-    # Combine and deduplicate
-    all_matches = smart_results + ai_results
-    
-    # Remove overlapping matches
-    unique_matches = remove_overlapping_matches(all_matches)
-    
-    # Boost scores for matches found by both methods
-    position_scores = {}
-    for match in all_matches:
-        pos = match['position']
-        if pos in position_scores:
-            position_scores[pos] += match['score']
-        else:
-            position_scores[pos] = match['score']
-    
-    # Update scores for matches found by multiple methods
-    for match in unique_matches:
-        pos = match['position']
-        if pos in position_scores:
-            match['score'] = min(position_scores[pos], 100)  # Cap at 100
-            match['match_type'] = 'hybrid'
-    
-    # Sort by score
-    unique_matches.sort(key=lambda x: x['score'], reverse=True)
-    
-    return unique_matches
-
 def find_similar_content_filtered(documents: List[Dict], target_sentence: str, search_type: str, 
                                 threshold: float, max_matches: int) -> List[Dict]:
     """Find similar content using meaningful words only"""
@@ -1410,212 +1285,9 @@ def check_rag_availability() -> bool:
     except Exception:
         return False
 
-# =============================================================================
-# ALIGNMENT FUNCTIONS
-# =============================================================================
-
-def find_pattern_matches(documents: List[Dict], patterns: List[str], match_type: str) -> List[Dict]:
-    """Find pattern matches in documents"""
-    
-    matches = []
-    
-    for doc in documents:
-        text = doc.get('text', '')
-        if not text:
-            continue
-        
-        text_lower = text.lower()
-        
-        for pattern in patterns:
-            pattern_lower = pattern.lower()
-            
-            start = 0
-            while True:
-                pos = text_lower.find(pattern_lower, start)
-                if pos == -1:
-                    break
-                
-                # Extract sentence containing the pattern
-                sentence_start = max(0, text.rfind('.', 0, pos) + 1)
-                sentence_end = text.find('.', pos)
-                if sentence_end == -1:
-                    sentence_end = len(text)
-                
-                sentence = text[sentence_start:sentence_end].strip()
-                
-                # Get context
-                sentences = re.split(r'[.!?]+', text)
-                sentence_index = -1
-                for i, sent in enumerate(sentences):
-                    if sentence in sent:
-                        sentence_index = i
-                        break
-                
-                context = get_context_simple(sentences, sentence_index, 2) if sentence_index != -1 else sentence
-                
-                match = {
-                    'id': f"{match_type}_{len(matches) + 1}",
-                    'document': doc,
-                    'pattern': pattern,
-                    'sentence': sentence,
-                    'context': context,
-                    'position': pos,
-                    'page_number': max(1, pos // 2000 + 1),
-                    'match_type': match_type,
-                    'recommendation_type': classify_content_type(sentence),
-                    'response_type': classify_content_type(sentence)
-                }
-                
-                matches.append(match)
-                start = pos + 1
-    
-    return matches
-
-def create_simple_alignments(recommendations: List[Dict], responses: List[Dict]) -> List[Dict]:
-    """Create alignments between recommendations and responses"""
-    
-    alignments = []
-    
-    for rec in recommendations:
-        # Find responses in the same document
-        rec_doc = rec['document']['filename']
-        related_responses = [r for r in responses if r['document']['filename'] == rec_doc]
-        
-        # Calculate similarity using meaningful words
-        best_responses = []
-        for resp in related_responses:
-            similarity = calculate_simple_similarity(rec['sentence'], resp['sentence'])
-            if similarity > 0.2:
-                best_responses.append({
-                    'response': resp,
-                    'combined_score': similarity,
-                    'similarity_score': similarity,
-                    'topic_similarity': similarity
-                })
-        
-        # Sort by similarity
-        best_responses.sort(key=lambda x: x['combined_score'], reverse=True)
-        
-        alignment = {
-            'recommendation': rec,
-            'responses': best_responses[:3],
-            'alignment_confidence': best_responses[0]['combined_score'] if best_responses else 0,
-            'alignment_status': determine_alignment_status(best_responses)
-        }
-        
-        alignments.append(alignment)
-    
-    return alignments
-
-def determine_alignment_status(responses: List[Dict]) -> str:
-    """Determine alignment status"""
-    if not responses:
-        return "No Response Found"
-    
-    best_score = responses[0]['combined_score']
-    
-    if best_score > 0.7:
-        return "Strong Alignment"
-    elif best_score > 0.5:
-        return "Good Alignment"
-    elif best_score > 0.3:
-        return "Weak Alignment"
-    else:
-        return "Poor Alignment"
-
-# =============================================================================
-# BASIC DISPLAY FUNCTIONS (FALLBACK)
-# =============================================================================
-
-def display_search_results_basic(results: List[Dict], query: str, search_time: float, 
-                                show_context: bool, highlight_matches: bool):
-    """Basic display when beautiful display is not available"""
-    
-    if not results:
-        st.warning(f"No results found for '{query}'")
-        return
-    
-    meaningful_words = get_meaningful_words(query)
-    st.success(f"🎯 Found {len(results)} results in {search_time:.3f} seconds")
-    if meaningful_words:
-        st.info(f"Searched meaningful words: {', '.join(meaningful_words)}")
-    
-    for i, result in enumerate(results, 1):
-        doc_name = result['document']['filename']
-        score = result.get('score', 0)
-        method = result.get('match_type', 'unknown')
-        
-        st.write(f"**{i}. {doc_name}** - {method} (Score: {score:.1f})")
-        
-        if method == 'smart' and 'meaningful_words_found' in result:
-            words_found = result['meaningful_words_found']
-            st.caption(f"Words found: {', '.join(words_found)}")
-        
-        if show_context:
-            context = result.get('context', '')
-            st.write(f"Context: {context[:200]}...")
-
-def display_alignment_results_basic(alignments: List[Dict]):
-    """Basic alignment display"""
-    
-    st.write(f"Found {len(alignments)} recommendations")
-    
-    for i, alignment in enumerate(alignments, 1):
-        rec = alignment.get('recommendation', {})
-        responses = alignment.get('responses', [])
-        
-        st.write(f"**{i}. Recommendation:** {rec.get('sentence', '')[:100]}...")
-        st.write(f"**Responses:** {len(responses)}")
-
-def display_manual_search_results_basic(matches: List[Dict], target: str, search_time: float, show_scores: bool):
-    """Basic manual search display"""
-    
-    if not matches:
-        st.warning("No matches found")
-        return
-    
-    meaningful_words = get_meaningful_words(target)
-    st.success(f"Found {len(matches)} matches in {search_time:.3f} seconds")
-    if meaningful_words:
-        st.info(f"Based on meaningful words: {', '.join(meaningful_words)}")
-    
-    for i, match in enumerate(matches, 1):
-        similarity = match.get('similarity_score', 0)
-        sentence = match.get('sentence', '')
-        
-        st.write(f"**{i}.** {sentence[:100]}...")
-        if show_scores:
-            st.write(f"Similarity: {similarity:.3f}")
-        
-        if 'matched_meaningful_words' in match:
-            matched_words = match['matched_meaningful_words']
-            if matched_words:
-                st.caption(f"Matched words: {', '.join(matched_words)}")
-
-def show_basic_pattern_analysis(documents: List[Dict], rec_patterns: List[str], resp_patterns: List[str]):
-    """Basic pattern analysis"""
-    
-    total_rec = 0
-    total_resp = 0
-    
-    for doc in documents:
-        text = doc.get('text', '').lower()
-        for pattern in rec_patterns:
-            total_rec += text.count(pattern.lower())
-        for pattern in resp_patterns:
-            total_resp += text.count(pattern.lower())
-    
-    st.metric("Recommendation Patterns", total_rec)
-    st.metric("Response Patterns", total_resp)
-
-def show_alignment_feature_info_basic():
-    """Basic alignment info"""
-    st.info("Upload documents to use the alignment feature")
-
 # Export all functions for compatibility
 __all__ = [
     'render_search_interface',
-    'render_recommendation_alignment_interface',
     'check_rag_availability',
     'filter_stop_words',
     'STOP_WORDS'
