@@ -443,166 +443,6 @@ def display_single_search_result_beautiful(result: Dict, index: int, query: str,
             percentage = result.get('percentage_through', 0)
             st.caption(f"💡 This content appears around page {page}, {percentage:.1f}% through the document")
 
-def display_alignment_results_beautiful(alignments: List[Dict], show_ai_summaries: bool):
-    """Display alignment results with WORKING highlighting"""
-    
-    if not alignments:
-        st.warning("No recommendations found in the uploaded documents")
-        return
-    
-    # Summary statistics
-    st.markdown("### 📊 Analysis Summary")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total Recommendations", len(alignments))
-    
-    with col2:
-        aligned_count = sum(1 for a in alignments if a.get('responses', []))
-        st.metric("Recommendations with Responses", aligned_count)
-    
-    with col3:
-        avg_confidence = sum(a.get('alignment_confidence', 0) for a in alignments) / len(alignments) if alignments else 0
-        st.metric("Avg Alignment Confidence", f"{avg_confidence:.2f}")
-    
-    with col4:
-        high_confidence = sum(1 for a in alignments if a.get('alignment_confidence', 0) > 0.7)
-        st.metric("High Confidence Alignments", high_confidence)
-    
-    # Display individual alignments
-    st.markdown("### 🔗 Recommendation-Response Alignments")
-    
-    for i, alignment in enumerate(alignments, 1):
-        display_single_alignment_beautiful(alignment, i, show_ai_summaries)
-
-def display_single_alignment_beautiful(alignment: Dict, index: int, show_ai_summaries: bool):
-    """Display a single alignment with WORKING highlighting"""
-    
-    rec = alignment.get('recommendation', {})
-    responses = alignment.get('responses', [])
-    confidence = alignment.get('alignment_confidence', 0)
-    
-    # Confidence indicator
-    confidence_color = "🟢" if confidence > 0.7 else "🟡" if confidence > 0.4 else "🔴"
-    rec_type = rec.get('recommendation_type', 'General')
-    
-    with st.expander(f"{confidence_color} Recommendation {index} - {rec_type} (Confidence: {confidence:.2f})", 
-                    expanded=index <= 3):
-        
-        st.markdown("### 📋 Complete Extract")
-        
-        # Recommendation section
-        st.markdown("#### 🎯 Recommendation")
-        
-        doc_name = rec.get('document', {}).get('filename', 'Unknown Document')
-        page_num = rec.get('page_number', 1)
-        st.info(f"📄 **Document:** {doc_name} | **Page:** {page_num}")
-        
-        # Display recommendation with WORKING highlighting
-        full_sentence = rec.get('sentence', 'No sentence available')
-        clean_sentence = clean_html_artifacts(full_sentence)
-        
-        st.markdown("**📝 Full Recommendation:**")
-        
-        # Apply government term highlighting
-        highlighted_sentence, highlight_method = highlight_government_terms(clean_sentence)
-        
-        if highlight_method == "html":
-            st.markdown(f"> {highlighted_sentence}", unsafe_allow_html=True)
-        elif highlight_method == "bold":
-            st.markdown(f"> {highlighted_sentence}")
-        elif highlight_method == "brackets":
-            st.markdown(f"> {highlighted_sentence}")
-            st.caption("💡 Government terms are shown in [brackets]")
-        else:
-            st.markdown(f"> {clean_sentence}")
-        
-        st.markdown("")
-        
-        # Show context with WORKING highlighting
-        full_context = rec.get('context', 'No context available')
-        if full_context and full_context != full_sentence:
-            st.markdown("#### 📖 Complete Context")
-            
-            clean_context = clean_html_artifacts(full_context)
-            highlighted_context, context_method = highlight_government_terms(clean_context)
-            formatted_context = format_text_as_clean_paragraphs(highlighted_context)
-            
-            if context_method == "html":
-                st.markdown(formatted_context, unsafe_allow_html=True)
-            else:
-                st.markdown(formatted_context)
-                if context_method == "brackets":
-                    st.caption("💡 Government terms are shown in [brackets]")
-        
-        # Responses section
-        if responses:
-            st.markdown("#### ↩️ Related Responses")
-            
-            for j, resp_match in enumerate(responses, 1):
-                resp = resp_match.get('response', {})
-                similarity = resp_match.get('combined_score', 0)
-                
-                # Color code by similarity
-                if similarity > 0.7:
-                    confidence_text = "High Confidence"
-                elif similarity > 0.5:
-                    confidence_text = "Medium Confidence"
-                else:
-                    confidence_text = "Lower Confidence"
-                
-                resp_doc_name = resp.get('document', {}).get('filename', 'Unknown Document')
-                resp_page_num = resp.get('page_number', 1)
-                
-                # Display response with WORKING highlighting
-                full_resp_sentence = resp.get('sentence', 'No sentence available')
-                full_resp_context = resp.get('context', 'No context available')
-                
-                clean_resp_sentence = clean_html_artifacts(full_resp_sentence)
-                clean_resp_context = clean_html_artifacts(full_resp_context)
-                
-                st.markdown(f"**📄 Response {j} - {confidence_text} ({similarity:.2f})**")
-                st.info(f"📄 **Document:** {resp_doc_name} | **Page:** {resp_page_num}")
-                
-                st.markdown("**📝 Full Response:**")
-                
-                # Highlight response based on recommendation terms
-                rec_sentence = str(rec.get('sentence', ''))
-                highlighted_response, resp_method = smart_highlight_text(clean_resp_sentence, rec_sentence, "auto")
-                
-                if resp_method == "html":
-                    st.markdown(f"> {highlighted_response}", unsafe_allow_html=True)
-                elif resp_method in ["bold", "caps"]:
-                    st.markdown(f"> {highlighted_response}")
-                elif resp_method == "brackets":
-                    st.markdown(f"> {highlighted_response}")
-                    st.caption("💡 Related terms are shown in [brackets]")
-                else:
-                    st.markdown(f"> {clean_resp_sentence}")
-                
-                if clean_resp_context and clean_resp_context != clean_resp_sentence:
-                    st.markdown("**📖 Complete Context:**")
-                    formatted_context = format_text_as_clean_paragraphs(clean_resp_context)
-                    st.markdown(formatted_context)
-                
-                if j < len(responses):
-                    st.markdown("---")
-        else:
-            st.markdown(f"""
-            <div style="
-                background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%);
-                border-left: 4px solid #dc3545;
-                padding: 20px;
-                border-radius: 8px;
-                margin: 10px 0;
-                text-align: center;
-            ">
-                <strong>❌ No matching responses found for this recommendation</strong><br>
-                <small>This recommendation may be awaiting a response or responses may be in separate documents</small>
-            </div>
-            """, unsafe_allow_html=True)
-
 def display_manual_search_results_beautiful(matches: List[Dict], target_sentence: str, 
                                           search_time: float, show_scores: bool, search_mode: str):
     """Display manual search results with WORKING highlighting"""
@@ -1236,6 +1076,16 @@ def render_highlighted_content_with_legend(content: str, query: str, context_typ
     if show_legend and words_found and method_used != "none":
         legend = create_highlighting_legend(words_found, method_used)
         st.caption(legend)
+
+# -----------------------------------------------------------------------------
+# Alignment display re-exports (to keep legacy imports working while we refactor)
+# -----------------------------------------------------------------------------
+from .alignment_display import (  # noqa: E402
+    display_alignment_results_beautiful,
+    display_single_alignment_beautiful,
+    show_alignment_feature_info_beautiful,
+    highlight_government_terms,
+)
 
 # Export all functions (COMPLETE LIST)
 __all__ = [
