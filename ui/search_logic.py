@@ -10,107 +10,16 @@ from typing import Any, Dict, List
 
 import streamlit as st
 
+from daphne_core.alignment_engine import (
+    align_recommendations_with_responses,
+    calculate_simple_similarity,
+    classify_content_type,
+    determine_alignment_status,
+    find_pattern_matches,
+)
 from daphne_core.search_utils import STOP_WORDS
 
 logger = logging.getLogger(__name__)
-
-
-# --------------------------------------------------------------------------- #
-# Alignment helpers
-# --------------------------------------------------------------------------- #
-
-def find_pattern_matches(documents: List[Dict[str, Any]], patterns: List[str], match_type: str) -> List[Dict[str, Any]]:
-    """Find sentences containing any of the provided patterns."""
-    matches: List[Dict[str, Any]] = []
-    normalized = [p.lower() for p in patterns]
-
-    for doc in documents:
-        text = doc.get("text", "")
-        if not text:
-            continue
-
-        for sentence in re.split(r"[.!?]+", text):
-            sentence_clean = sentence.strip()
-            if not sentence_clean:
-                continue
-
-            sentence_lower = sentence_clean.lower()
-            if any(pat in sentence_lower for pat in normalized):
-                pos = text.find(sentence_clean)
-                matches.append(
-                    {
-                        "sentence": sentence_clean,
-                        "document": doc,
-                        "pattern": match_type,
-                        "position": pos,
-                        "page_number": max(1, pos // 2000 + 1) if pos >= 0 else 1,
-                        "content_type": classify_content_type(sentence_clean),
-                    }
-                )
-
-    return matches
-
-
-def determine_alignment_status(responses: List[Dict[str, Any]]) -> str:
-    """Heuristic alignment status for a recommendation."""
-    if not responses:
-        return "No response found"
-
-    top_response = responses[0]
-    if top_response.get("same_document"):
-        return "Direct response"
-
-    if top_response.get("combined_score", 0) >= 0.5:
-        return "Possible response"
-
-    return "Uncertain"
-
-
-def align_recommendations_with_responses(
-    recommendations: List[Dict[str, Any]], responses: List[Dict[str, Any]], similarity_threshold: float
-) -> List[Dict[str, Any]]:
-    """Align recommendations with responses using semantic similarity."""
-    alignments = []
-
-    for rec in recommendations:
-        rec_doc = rec["document"]["filename"]
-        best_responses = []
-
-        for resp in responses:
-            similarity = calculate_simple_similarity(rec["sentence"], resp["sentence"])
-
-            if resp["document"]["filename"] == rec_doc:
-                similarity *= 1.2
-
-            if resp.get("document", {}).get("filename") == rec_doc and resp.get("position", 0) > rec.get("position", 0):
-                similarity *= 1.1
-
-            if similarity >= similarity_threshold:
-                best_responses.append(
-                    {
-                        "response": resp,
-                        "combined_score": min(similarity, 1.0),
-                        "similarity_score": similarity,
-                        "same_document": resp["document"]["filename"] == rec_doc,
-                    }
-                )
-
-        best_responses.sort(key=lambda x: x["combined_score"], reverse=True)
-
-        alignment = {
-            "recommendation": rec,
-            "responses": best_responses[:3],
-            "alignment_confidence": best_responses[0]["combined_score"] if best_responses else 0,
-            "alignment_status": determine_alignment_status(best_responses),
-            "detection_method": rec.get("method", "unknown"),
-            "detection_confidence": rec.get("confidence", 0),
-            "action_verb": rec.get("verb", "unknown"),
-        }
-
-        alignments.append(alignment)
-
-    alignments.sort(key=lambda x: x["detection_confidence"], reverse=True)
-    return alignments
 
 
 # --------------------------------------------------------------------------- #
@@ -571,30 +480,6 @@ def get_context_simple(sentences: List[str], index: int, window: int = 1) -> str
     end = min(len(sentences), index + window + 1)
     context_sentences = [s.strip() for s in sentences[start:end] if s.strip()]
     return " ".join(context_sentences)
-
-
-def calculate_simple_similarity(text1: str, text2: str) -> float:
-    """Calculate similarity using meaningful words only."""
-    words1 = set(get_meaningful_words(text1))
-    words2 = set(get_meaningful_words(text2))
-    if not words1 or not words2:
-        return 0.0
-
-    intersection = len(words1 & words2)
-    union = len(words1 | words2)
-    return intersection / union if union > 0 else 0.0
-
-
-def classify_content_type(sentence: str) -> str:
-    """Classify content type."""
-    sentence_lower = sentence.lower()
-    if any(word in sentence_lower for word in ["urgent", "immediate", "critical"]):
-        return "Urgent"
-    if any(word in sentence_lower for word in ["policy", "framework", "guideline"]):
-        return "Policy"
-    if any(word in sentence_lower for word in ["financial", "budget", "cost"]):
-        return "Financial"
-    return "General"
 
 
 def remove_overlapping_matches(matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
