@@ -46,6 +46,11 @@ The app will be available at `http://localhost:8501`
    - Handles misspellings and variations
    - Best for: When you're not sure of exact spelling
 
+### 📌 Recommendation ↔ Response Alignment
+- Extracts recommendations and surfaces likely responses/snippets.
+- Uses lexical + heuristic alignment (with optional semantic search inputs).
+- View and review alignments in the Alignment tab.
+
 ### 📁 Supported File Types
 
 - **PDF** - Uses pdfplumber + PyPDF2 for text extraction
@@ -121,16 +126,17 @@ pip install PyPDF2 pdfplumber
 
 ```
 DaphneAI/
-├── app.py                          # Main application
+├── app.py                          # Main Streamlit application
 ├── requirements.txt                # Dependencies
-├── SETUP.md                        # This guide
-├── modules/
-│   ├── __init__.py                # Package init
-│   ├── core_utils.py              # Logging & analytics
-│   ├── document_processor.py      # File processing
-│   └── ui/
-│       ├── __init__.py            # UI package
-│       └── search_components.py   # Search interface
+├── config.toml                     # Streamlit config (if used)
+├── daphne_core/                    # Core logic (search, extraction, alignment, utils)
+├── ui/                             # UI modules (tabs, display helpers, search orchestration)
+├── documentation/                  # Architecture and feature docs (new)
+├── recsandresps/                   # Dataset/table-of-contents reference
+├── samplepdfs/                     # Sample documents
+├── PLAN.md                         # Work plan
+├── licence.txt
+└── README.md
 ```
 
 ## Next Steps
