@@ -143,10 +143,13 @@ class StrictRecommendationExtractor:
         if len(cleaned) < 40:
             return True, "too_short"
         
-        # Length limits depend on whether this is a numbered recommendation
-        max_length = self.MAX_NUMBERED_REC_LENGTH if is_numbered_rec else self.MAX_SENTENCE_LENGTH
-        if len(cleaned) > max_length:
-            return True, "too_long"
+        # Length limits depend on whether this is a numbered recommendation.
+        # For numbered recommendations we allow long text blocks, as they often
+        # contain multiple sub-actions and explanatory context.
+        if not is_numbered_rec:
+            max_length = self.MAX_SENTENCE_LENGTH
+            if len(cleaned) > max_length:
+                return True, "too_long"
         
         # Just section headers
         if re.match(r'^(?:Appendix|Section|Chapter|Table|Figure|Footnote)\s+\d+', cleaned, re.IGNORECASE):
@@ -200,10 +203,12 @@ class StrictRecommendationExtractor:
         cleaned = self.clean_text(text)
         text_lower = cleaned.lower()
         
-        # Check length based on type
-        max_length = self.MAX_NUMBERED_REC_LENGTH if is_numbered_rec else self.MAX_SENTENCE_LENGTH
-        if len(cleaned) > max_length:
-            return False, 0.0, 'too_long', 'none'
+        # Length checks:
+        # - Numbered recommendations are treated as sections and can be long.
+        # - Sentence-based recommendations should remain within a strict limit.
+        if not is_numbered_rec:
+            if len(cleaned) > self.MAX_SENTENCE_LENGTH:
+                return False, 0.0, 'too_long', 'none'
         
         # Method 1: Explicit numbered recommendation (highest confidence)
         # These can be long - no length restriction here
@@ -299,9 +304,10 @@ class StrictRecommendationExtractor:
             if is_garbage:
                 logger.debug(f"Skipping numbered rec {idx}: {reason}")
                 continue
-            
-            if self.is_meta_recommendation(cleaned):
-                continue
+
+            # Meta-recommendation filtering is intended for narrative/scattered
+            # sentences; for explicit "Recommendation N" sections we keep them
+            # even if they contain meta-style wording (e.g. implementation timing).
             
             is_rec, confidence, method, verb = self.is_genuine_recommendation(cleaned, is_numbered_rec=True)
             

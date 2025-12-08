@@ -3,11 +3,17 @@
 Overview of how recommendations are paired with responses and where to extend the logic.
 
 ### Pipeline
-- Inputs: list of extracted recommendations (text + metadata) and candidate response text/snippets from search.
-- Pattern matching: `find_pattern_matches` scans responses for explicit references (ids/keywords).
-- Similarity scoring: `calculate_simple_similarity` uses meaningful-word Jaccard over recommendations vs. response snippets.
-- Status classification: `determine_alignment_status` tags each pair (e.g., matched/partial/none) based on thresholds and pattern hits.
-- Assembly: `align_recommendations_with_responses` produces alignment rows consumed by the UI.
+- Canonical UI path (current app):
+  - Recommendations: `extract_recommendations` from `daphne_core.recommendation_extractor` (strict extractor).
+  - Responses: `extract_response_sentences` from `daphne_core.alignment_engine` (government response headers + sentence-level filters).
+  - Alignment: `RecommendationResponseMatcher.find_best_matches` (semantic model if available, keyword fallback).
+- Lightweight alignment helpers (legacy/secondary path):
+  - Pattern matching: `find_pattern_matches` scans responses for explicit references (ids/keywords).
+  - Similarity scoring: `calculate_simple_similarity` uses meaningful-word Jaccard over recommendations vs. response snippets.
+  - Status classification: `determine_alignment_status` tags each pair (e.g., matched/partial/none) based on thresholds and pattern hits.
+  - Assembly: `align_recommendations_with_responses` produces alignment rows for simpler UIs/tools.
+
+> Note: The canonical Streamlit alignment tab (`alignment_ui.render_simple_alignment_interface`) uses the strict extractor + `extract_response_sentences` + `RecommendationResponseMatcher`. The older `ui.alignment_workflows` path is kept for now as a legacy/secondary interface and may be simplified or removed once tests are in place.
 
 ### Assumptions and limits
 - Relies on cleaned text; noisy OCR can depress similarity.
