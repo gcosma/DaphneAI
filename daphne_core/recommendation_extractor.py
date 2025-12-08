@@ -325,7 +325,21 @@ class StrictRecommendationExtractor:
         # PHASE 2: If no numbered recommendations found, fall back to sentence extraction
         # These have stricter length limits
         # =======================================================================
-        
+
+        # Heuristic guard: if we only found a single numbered recommendation and
+        # it is excessively long, this is likely a segmentation artefact (e.g. a
+        # whole chapter being treated as one "Recommendation N" block). In that
+        # case, discard it and allow the sentence-based fallback to run.
+        if len(recommendations) == 1:
+            only_rec = recommendations[0]
+            if len(only_rec.get("text", "")) > self.MAX_NUMBERED_REC_LENGTH:
+                logger.info(
+                    "Single oversized numbered recommendation detected (len=%d) – "
+                    "treating as invalid and falling back to sentence extraction",
+                    len(only_rec.get("text", "")),
+                )
+                recommendations = []
+
         if len(recommendations) == 0:
             logger.info("No numbered recommendations found, falling back to sentence extraction")
             
