@@ -442,6 +442,9 @@ def extract_response_sentences(text: str) -> List[Dict]:
     logger.info(f"Found {len(gov_resp_starts)} government response headers")
     logger.info(f"Found {len(rec_positions)} recommendation markers")
 
+    structured_spans: List[Tuple[int, int]] = []
+    structured_texts: List[str] = []
+
     for i, gov_resp in enumerate(gov_resp_starts):
         start_pos = gov_resp["end"]
         rec_num = gov_resp["rec_num"]
@@ -461,34 +464,80 @@ def extract_response_sentences(text: str) -> List[Dict]:
         if not resp_content:
             continue
         resp_content = clean_pdf_artifacts(resp_content)
-        rec_ref = re.search(r"recommendation\s+(\d+)", resp_content.lower())
+
+        # For structured responses we trust the header
+        # "Government response to recommendation N" as the primary source of
+        # rec_number. Body cross-references (e.g. "see the response to
+        # recommendation 13") should not override this.
         responses.append(
             {
                 "text": resp_content,
                 "position": start_pos,
                 "response_type": "structured",
                 "confidence": 0.95,
-                "rec_number": rec_ref.group(1) if rec_ref else rec_num,
+                "rec_number": rec_num,
             }
         )
+        structured_spans.append((start_pos, end_pos))
+        structured_texts.append(resp_content)
 
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    for idx, sentence in enumerate(sentences):
-        sentence = clean_pdf_artifacts(sentence.strip())
-        if len(sentence) < 40 or len(sentence) > 500:
+    # Sentence-level responses with explicit span tracking to avoid
+    # re-detecting content that already belongs to structured response blocks.
+    sentence_spans = []
+    start_idx = 0
+    for match in re.finditer(r"(?<=[.!?])\s+", text):
+        end_idx = match.end()
+        sentence_spans.append((start_idx, end_idx))
+        start_idx = end_idx
+    if start_idx < len(text):
+        sentence_spans.append((start_idx, len(text)))
+
+    for idx, (start_idx, end_idx) in enumerate(sentence_spans):
+        sentence_raw = text[start_idx:end_idx]
+        sentence_clean = clean_pdf_artifacts(sentence_raw.strip())
+        if len(sentence_clean) < 40 or len(sentence_clean) > 500:
             continue
-        if is_recommendation_text(sentence):
+        if is_recommendation_text(sentence_clean):
             continue
-        if not is_genuine_response(sentence):
+        if not is_genuine_response(sentence_clean):
             continue
-        resp_key = sentence[:100].lower()
+        # Skip sentences that fall within any structured response span.
+        if any(start <= start_idx < end for start, end in structured_spans):
+            continue
+
+        # Skip sentences that substantially duplicate an existing structured
+        # response. This is a conservative textual overlap check so that
+        # scattered responses do not simply re-add content that already lives
+        # inside a structured section.
+        sent_norm = re.sub(r"\s+", " ", sentence_clean.lower()).strip()
+        is_struct_dup = False
+        for struct_text in structured_texts:
+            struct_norm = re.sub(r"\s+", " ", struct_text.lower()).strip()
+            if not struct_norm:
+                continue
+            # Direct containment (sentence is fully inside a structured block).
+            if sent_norm and sent_norm in struct_norm:
+                is_struct_dup = True
+                break
+            # For longer candidates, use a simple token-overlap heuristic.
+            sent_tokens = set(sent_norm.split())
+            if not sent_tokens:
+                continue
+            overlap = len(sent_tokens & set(struct_norm.split())) / len(sent_tokens)
+            if overlap >= 0.8:
+                is_struct_dup = True
+                break
+        if is_struct_dup:
+            continue
+
+        resp_key = sentence_clean[:100].lower()
         if resp_key in seen_responses:
             continue
         seen_responses.add(resp_key)
-        rec_ref = re.search(r"recommendation\s+(\d+)", sentence.lower())
+        rec_ref = re.search(r"recommendation\s+(\d+)", sentence_clean.lower())
         responses.append(
             {
-                "text": sentence,
+                "text": sentence_clean,
                 "position": idx,
                 "response_type": "sentence",
                 "confidence": 0.85,
