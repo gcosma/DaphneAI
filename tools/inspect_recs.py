@@ -57,27 +57,45 @@ def inspect_numbered_recommendations(pdf_path: Path, min_confidence: float, max_
 
     extractor = StrictRecommendationExtractor()
 
-    # Use the same pattern as StrictRecommendationExtractor.extract_recommendations
-    rec_pattern = r"(Recommendation\s+\d+\s+.+?)(?=Recommendation\s+\d+\s+[A-Z]|\Z)"
-    numbered_matches: List[str] = re.findall(rec_pattern, text, re.IGNORECASE | re.DOTALL)
-    logger.info("Found %d numbered recommendation blocks", len(numbered_matches))
+    # Use the same heading-based segmentation as StrictRecommendationExtractor,
+    # including running over the CLEANED full text.
+    cleaned_full_text = extractor.clean_text(text)
+    heading_pattern = re.compile(
+        r"(?:Recommendations?\s+)?Recommendation\s+(\d{1,2})(?:\s+(\d))?\b",
+        re.IGNORECASE,
+    )
+    heading_matches = list(heading_pattern.finditer(cleaned_full_text))
+    logger.info("Found %d numbered recommendation headings", len(heading_matches))
 
     # Run the normal extraction once so we know which positions are kept
     extracted = extractor.extract_recommendations(text, min_confidence=min_confidence)
     kept_positions = {rec.get("position") for rec in extracted if rec.get("in_section")}
 
-    for idx, raw_block in enumerate(numbered_matches):
+    for idx, match in enumerate(heading_matches):
+        start = match.start()
+        end = heading_matches[idx + 1].start() if idx + 1 < len(heading_matches) else len(cleaned_full_text)
+        raw_block = cleaned_full_text[start:end]
         cleaned = extractor.clean_text(raw_block)
         is_garbage, garbage_reason = extractor.is_garbage(cleaned, is_numbered_rec=True)
         is_meta = extractor.is_meta_recommendation(cleaned)
         is_rec, conf, method, verb = extractor.is_genuine_recommendation(cleaned, is_numbered_rec=True)
 
-        rec_num = None
+        # Prefer the number inferred from the cleaned text (method),
+        # fall back to the raw heading match if needed. Heading pattern already
+        # supports spaced digits like "1 1".
+        heading_num = match.group(1)
+        extra_digit = match.group(2)
+        if extra_digit and len(heading_num) == 1:
+            heading_rec_num = f"{heading_num}{extra_digit}"
+        else:
+            heading_rec_num = heading_num
+
+        rec_num = heading_rec_num
         if method.startswith("numbered_recommendation_"):
             try:
                 rec_num = method.split("_")[-1]
             except Exception:
-                rec_num = None
+                rec_num = heading_rec_num
 
         kept = idx in kept_positions
         status_flags = []
@@ -90,10 +108,12 @@ def inspect_numbered_recommendations(pdf_path: Path, min_confidence: float, max_
             status_flags.append("GENUINE")
 
         snippet = cleaned[:max_chars].replace("\n", " ")
+        raw_preview = raw_block[:max_chars].replace("\n", " ")
         print("=" * 80)
         print(f"Block #{idx} | rec_num={rec_num} | pos={idx} | {' | '.join(status_flags)}")
         print(f"  method={method}, verb={verb}, confidence={conf:.3f}")
-        print(f"  text snippet: {snippet}")
+        print(f"  CLEANED snippet: {snippet}")
+        print(f"  RAW     snippet: {raw_preview!r}")
 
     print("\nDone inspecting numbered recommendations.\n")
 
@@ -130,4 +150,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

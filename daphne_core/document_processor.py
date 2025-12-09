@@ -92,9 +92,11 @@ def clean_extracted_text(text: str) -> str:
     
     text = '\n'.join(filtered_lines)
     
-    # Remove "Recommendation N" followed immediately by "N" (duplicate numbering)
-    text = re.sub(r'(Recommendation\s+\d+[a-z]?)\s+\1', r'\1', text, flags=re.IGNORECASE)
-    text = re.sub(r'(Recommendation\s+)(\d+[a-z]?)\s+\2', r'\1\2', text, flags=re.IGNORECASE)
+    # NOTE: Previously we attempted to remove duplicate numbering patterns like
+    # "Recommendation 1 1" here. This proved too aggressive and corrupted valid
+    # numbering in some reference documents (e.g. "Recommendation 11" extracted
+    # as "Recommendation 1 1"). Number normalisation is now handled in the
+    # recommendation extractor itself; we intentionally avoid touching it here.
     
     # Remove standalone numbers that are likely reference numbers
     text = re.sub(r'\n\s*\d+[a-z]?\s*\n', '\n', text)
