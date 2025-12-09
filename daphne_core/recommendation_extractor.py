@@ -141,6 +141,16 @@ class StrictRecommendationExtractor:
             text,
             flags=re.IGNORECASE,
         )
+
+        # Normalise duplicated section headings like "Recommendations Recommendation 1"
+        # down to a single "Recommendation 1". This occurs in some documents where
+        # the section title is immediately followed by the first numbered rec.
+        text = re.sub(
+            r'\bRecommendations\s+Recommendation\s+(\d+)\b',
+            r'Recommendation \1',
+            text,
+            flags=re.IGNORECASE,
+        )
         text = re.sub(r'final report and recommendations\s*-?\s*GOV\.?UK?', '', text, flags=re.IGNORECASE)
         text = re.sub(r'-\s*GOV\.?\s*UK?\s*', '', text, flags=re.IGNORECASE)
         

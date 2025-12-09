@@ -70,6 +70,7 @@ def inspect_numbered_recommendations(pdf_path: Path, min_confidence: float, max_
     # Run the normal extraction once so we know which positions are kept
     extracted = extractor.extract_recommendations(text, min_confidence=min_confidence)
     kept_positions = {rec.get("position") for rec in extracted if rec.get("in_section")}
+    rec_by_position = {rec.get("position"): rec for rec in extracted if rec.get("in_section")}
 
     for idx, match in enumerate(heading_matches):
         start = match.start()
@@ -109,11 +110,17 @@ def inspect_numbered_recommendations(pdf_path: Path, min_confidence: float, max_
 
         snippet = cleaned[:max_chars].replace("\n", " ")
         raw_preview = raw_block[:max_chars].replace("\n", " ")
+        extracted_preview = None
+        if kept and idx in rec_by_position:
+            rec_text = rec_by_position[idx].get("text", "")
+            extracted_preview = (rec_text[:max_chars] or "").replace("\n", " ")
         print("=" * 80)
         print(f"Block #{idx} | rec_num={rec_num} | pos={idx} | {' | '.join(status_flags)}")
         print(f"  method={method}, verb={verb}, confidence={conf:.3f}")
-        print(f"  CLEANED snippet: {snippet}")
-        print(f"  RAW     snippet: {raw_preview!r}")
+        print(f"  CLEANED   snippet: {snippet}")
+        print(f"  RAW       snippet: {raw_preview!r}")
+        if extracted_preview is not None:
+            print(f"  EXTRACTED snippet: {extracted_preview}")
 
     print("\nDone inspecting numbered recommendations.\n")
 
