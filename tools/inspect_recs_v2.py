@@ -73,7 +73,8 @@ def main() -> None:
             snippet = snippet[: args.max_chars] + "..."
         print("=" * 80)
         print(
-            f"Rec #{idx} | rec_number={rec.rec_number} | span={span_info} | source={rec.source_document}"
+            f"Rec #{idx} | rec_id={rec.rec_id} | rec_number={rec.rec_number} "
+            f"| span={span_info} | source={rec.source_document}"
         )
         print("-" * 80)
         print(snippet)
@@ -84,4 +85,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

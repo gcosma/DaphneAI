@@ -111,7 +111,10 @@ def main() -> None:
 
         print("=" * 80)
         print(f"Alignment #{idx}")
-        print(f"  Rec: num={rec.rec_number} | source={rec.source_document}")
+        print(
+            f"  Rec: id={rec.rec_id} | num={rec.rec_number} "
+            f"| source={rec.source_document}"
+        )
         print(f"  Rec snippet: {rec_snippet}")
 
         if resp is None:
@@ -121,8 +124,8 @@ def main() -> None:
             if len(resp_snippet) > 140:
                 resp_snippet = resp_snippet[:140] + "..."
             print(
-                f"  → Resp: num={resp.rec_number} | type={resp.response_type} | "
-                f"source={resp.source_document}"
+                f"  → Resp: id={resp.rec_id} | num={resp.rec_number} "
+                f"| type={resp.response_type} | source={resp.source_document}"
             )
             print(f"    similarity={sim:.3f} | method={method}")
             print(f"    snippet: {resp_snippet}")
@@ -132,4 +135,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

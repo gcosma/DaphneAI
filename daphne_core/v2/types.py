@@ -26,8 +26,9 @@ class Recommendation:
 
     text: str
     span: Span
-    rec_number: Optional[int]
     source_document: str
+    rec_id: Optional[str] = None  # raw label, e.g. "1", "2018/007"
+    rec_number: Optional[int] = None  # numeric id when applicable
 
 
 @dataclass
@@ -38,9 +39,10 @@ class Response:
 
     text: str
     span: Span
-    rec_number: Optional[int]
     source_document: str
     response_type: str  # e.g. "structured", "scattered"
+    rec_id: Optional[str] = None
+    rec_number: Optional[int] = None
 
 
 @dataclass
@@ -53,4 +55,3 @@ class AlignmentResult:
     response: Optional[Response]
     similarity: Optional[float]
     match_method: str  # e.g. "number_first", "semantic", "keyword"
-

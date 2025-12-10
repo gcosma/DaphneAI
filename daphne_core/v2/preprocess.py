@@ -139,12 +139,12 @@ def _build_text_and_pages(pdf_path: Path) -> Tuple[str, List[Span]]:
                 continue
             filtered_chunks.append(line)
 
-        # Join elements on a page with a *blank* line between them so that
-        # downstream sentence/paragraph segmentation (via syntok) can more
-        # easily treat headings, footers, and body text as separate units.
-        # This mirrors the earlier bake-off behaviour that cleanly separated
-        # "Recommendation 8", footers, and paragraph text into distinct lines.
-        page_text = "\n\n".join(filtered_chunks).strip()
+        # Join elements on a page with a single newline between them. We rely
+        # on syntok + explicit heading markers (e.g. "Recommendation N",
+        # "Government response to recommendation N") rather than forcing hard
+        # paragraph breaks at every element boundary. Headers/footers have
+        # already been removed via repetition detection above.
+        page_text = "\n".join(filtered_chunks).strip()
         if not page_text:
             continue
         if current:

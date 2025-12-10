@@ -66,12 +66,14 @@ class AlignmentStrategyV2:
         recs = list(recommendations)
         resps = list(responses)
 
-        # Index responses by rec_number for number-first matching.
+        # Index responses by rec_id and rec_number for number/label-first matching.
+        responses_by_id: dict[str, List[Response]] = {}
         responses_by_number: dict[int, List[Response]] = {}
         for resp in resps:
-            if resp.rec_number is None:
-                continue
-            responses_by_number.setdefault(resp.rec_number, []).append(resp)
+            if resp.rec_id:
+                responses_by_id.setdefault(resp.rec_id, []).append(resp)
+            if resp.rec_number is not None:
+                responses_by_number.setdefault(resp.rec_number, []).append(resp)
 
         used_responses: set[int] = set()
         alignments: List[AlignmentResult] = []
@@ -81,8 +83,20 @@ class AlignmentStrategyV2:
             best_score: float = 0.0
             match_method = "none"
 
-            # Prefer responses with matching rec_number when available.
-            if rec.rec_number is not None and rec.rec_number in responses_by_number:
+            # Prefer responses with matching rec_id (label) when available.
+            if rec.rec_id and rec.rec_id in responses_by_id:
+                candidates = responses_by_id[rec.rec_id]
+                for resp in candidates:
+                    if self.enforce_one_to_one and id(resp) in used_responses:
+                        continue
+                    score = self._keyword_similarity(rec.text, resp.text)
+                    if score > best_score:
+                        best_score = score
+                        best_resp = resp
+                        match_method = "label_first"
+
+            # Next, fall back to numeric rec_number if both sides provide one.
+            if best_resp is None and rec.rec_number is not None and rec.rec_number in responses_by_number:
                 candidates = responses_by_number[rec.rec_number]
                 for resp in candidates:
                     if self.enforce_one_to_one and id(resp) in used_responses:
@@ -135,6 +149,5 @@ class AlignmentStrategyV2:
         if union == 0:
             return 0.0
         return intersection / union
-
 
 

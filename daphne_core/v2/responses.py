@@ -60,10 +60,10 @@ class ResponseExtractorV2:
         responses: List[Response] = []
 
         # ------------------------------------------------------------------ #
-        # Phase 1: structured responses ("Government response to recommendation N")
+        # Phase 1: structured responses ("Government response to recommendation X")
         # ------------------------------------------------------------------ #
         header_pattern = re.compile(
-            r"Government\s+response\s+to\s+recommendation\s+(\d+)",
+            r"Government\s+response\s+to\s+recommendation\s+([^\s:]+)",
             re.IGNORECASE,
         )
 
@@ -71,11 +71,13 @@ class ResponseExtractorV2:
         logger.info("v2: Found %d structured response headers", len(headers))
 
         for idx, match in enumerate(headers):
-            rec_num_str = match.group(1)
-            try:
-                rec_number = int(rec_num_str)
-            except (TypeError, ValueError):
-                rec_number = None
+            rec_id = match.group(1)
+            rec_number: Optional[int] = None
+            if rec_id and rec_id.isdigit():
+                try:
+                    rec_number = int(rec_id)
+                except (TypeError, ValueError):
+                    rec_number = None
 
             start_body = match.end()
             end_block = headers[idx + 1].start() if idx + 1 < len(headers) else len(text)
@@ -88,9 +90,10 @@ class ResponseExtractorV2:
                 Response(
                     text=body_text,
                     span=span,
-                    rec_number=rec_number,
                     source_document=source_document,
                     response_type="structured",
+                    rec_id=rec_id,
+                    rec_number=rec_number,
                 )
             )
 
@@ -103,13 +106,15 @@ class ResponseExtractorV2:
                 if len(sentence) < 40 or len(sentence) > 500:
                     continue
                 if self._is_scattered_response(sentence):
+                    rec_id, rec_number = self._infer_rec_identity(sentence)
                     responses.append(
                         Response(
                             text=sentence,
                             span=(sent_start, sent_end),
-                            rec_number=self._infer_rec_number(sentence),
                             source_document=source_document,
                             response_type="scattered",
+                            rec_id=rec_id,
+                            rec_number=rec_number,
                         )
                     )
 
@@ -136,13 +141,17 @@ class ResponseExtractorV2:
             return True
         return False
 
-    def _infer_rec_number(self, sentence: str) -> Optional[int]:
-        """Best-effort rec_number inference from a scattered response sentence."""
+    def _infer_rec_identity(self, sentence: str) -> tuple[Optional[str], Optional[int]]:
+        """Best-effort rec_id / rec_number inference from a scattered response sentence."""
         lower = sentence.lower()
-        m = re.search(r"recommendation\s+(\d+)", lower)
+        m = re.search(r"recommendation\s+([^\s:]+)", lower)
         if not m:
-            return None
-        try:
-            return int(m.group(1))
-        except ValueError:
-            return None
+            return None, None
+        rec_id = m.group(1)
+        rec_number: Optional[int] = None
+        if rec_id.isdigit():
+            try:
+                rec_number = int(rec_id)
+            except ValueError:
+                rec_number = None
+        return rec_id, rec_number

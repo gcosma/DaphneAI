@@ -72,13 +72,12 @@ class RecommendationExtractorV2:
             logger.warning("Empty text passed to RecommendationExtractorV2.extract")
             return []
 
-        # Initial v2 implementation: focus on numbered "Recommendation N"
-        # blocks, using heading-based segmentation similar to the v1 strict
-        # extractor but applied to the centralised v2 preprocessed text.
-        heading_pattern = re.compile(
-            r"(?:Recommendations?\s+)?Recommendation\s+(\d{1,2})(?:\s+(\d))?\b",
-            re.IGNORECASE,
-        )
+        # Initial v2 implementation: focus on "Recommendation ..." headings,
+        # using heading-based segmentation similar to the v1 strict extractor
+        # but applied to the centralised v2 preprocessed text. We treat the
+        # token following "Recommendation" as a label (rec_id), which may be
+        # a simple integer ("1") or a more complex code ("2018/007").
+        heading_pattern = re.compile(r"(?:Recommendations?\s+)?Recommendation\b", re.IGNORECASE)
 
         # Only treat matches that look like true headings, i.e. those that
         # start at the beginning of the text or immediately after a newline.
@@ -94,21 +93,37 @@ class RecommendationExtractorV2:
         recommendations: List[Recommendation] = []
 
         for idx, match in enumerate(matches):
-            num_part = match.group(1)
-            extra_digit = match.group(2)
+            # Derive rec_id from the token(s) immediately following the
+            # "Recommendation" keyword.
+            after = text[match.end() :]
+            # Skip whitespace after "Recommendation".
+            m_ws = re.match(r"\s+", after)
+            offset = m_ws.end() if m_ws else 0
+            after = after[offset:]
 
-            # Handle artefacts like "Recommendation 1 1" → "11", but only up
-            # to two digits to avoid treating "111/24/25" etc. as a valid
-            # recommendation number.
-            if extra_digit and len(num_part) == 1:
-                rec_num_str = f"{num_part}{extra_digit}"
+            rec_id: Optional[str] = None
+            rec_number: Optional[int] = None
+
+            # Case 1: code followed by colon, e.g. "2018/007:"
+            m_label_colon = re.match(r"([^\s:]+):", after)
+            if m_label_colon:
+                rec_id = m_label_colon.group(1)
             else:
-                rec_num_str = num_part
+                # Case 2: handle spaced digits like "1 1" -> "11".
+                m_spaced_digits = re.match(r"(\d{1,2})\s+(\d)\b", after)
+                if m_spaced_digits:
+                    rec_id = f"{m_spaced_digits.group(1)}{m_spaced_digits.group(2)}"
+                else:
+                    # Case 3: simple integer label ("1", "12").
+                    m_int = re.match(r"(\d{1,3})\b", after)
+                    if m_int:
+                        rec_id = m_int.group(1)
 
-            try:
-                rec_number = int(rec_num_str)
-            except (TypeError, ValueError):
-                rec_number = None
+            if rec_id and rec_id.isdigit():
+                try:
+                    rec_number = int(rec_id)
+                except ValueError:
+                    rec_number = None
 
             start = match.start()
             end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
@@ -137,8 +152,9 @@ class RecommendationExtractorV2:
                 Recommendation(
                     text=cleaned_block.strip(),
                     span=span,
-                    rec_number=rec_number,
                     source_document=source_document,
+                    rec_id=rec_id,
+                    rec_number=rec_number,
                 )
             )
 
@@ -166,8 +182,9 @@ class RecommendationExtractorV2:
                         Recommendation(
                             text=sent_text,
                             span=(sent_start, sent_end),
-                            rec_number=None,
                             source_document=source_document,
+                            rec_id=None,
+                            rec_number=None,
                         )
                     )
 
