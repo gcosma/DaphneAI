@@ -369,6 +369,16 @@ def render_recommendations_tab():
         horizontal=True,
         help="v2 uses the new layout-aware pipeline; v1 uses the strict text-only extractor.",
     )
+
+    v2_profile = "explicit_recs"
+    if engine == "v2 (experimental)":
+        profile_label = st.selectbox(
+            "v2 document type",
+            ["Explicit recommendation report", "PFD (coroner) report"],
+            help="Choose how v2 interprets the document structure.",
+        )
+        if profile_label == "PFD (coroner) report":
+            v2_profile = "pfd_report"
     
     # Track which document was analysed (but don't auto-clear results)
     if 'last_analysed_doc' not in st.session_state:
@@ -501,7 +511,7 @@ def render_recommendations_tab():
             with st.spinner("Analysing document with v2 layout-aware extractor..."):
                 try:
                     preprocessed = extract_text_v2(Path(pdf_path))
-                    extractor_v2 = RecommendationExtractorV2()
+                    extractor_v2 = RecommendationExtractorV2(profile=v2_profile)
                     recs_v2 = extractor_v2.extract(preprocessed, source_document=selected_doc)
 
                     if not recs_v2:

@@ -21,7 +21,11 @@ import logging
 from pathlib import Path
 
 from daphne_core.v2.preprocess import extract_text
-from daphne_core.v2.recommendations import RecommendationExtractorV2
+from daphne_core.v2.recommendations import (
+    RecommendationExtractorV2,
+    EXPLICIT_RECS_PROFILE,
+    PFD_REPORT_PROFILE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,12 @@ def parse_args() -> argparse.Namespace:
         default=200,
         help="Maximum number of characters to show per recommendation snippet (default: 200).",
     )
+    parser.add_argument(
+        "--profile",
+        choices=[EXPLICIT_RECS_PROFILE, PFD_REPORT_PROFILE],
+        default=EXPLICIT_RECS_PROFILE,
+        help="v2 document profile: explicit recommendations vs PFD (coroner) report.",
+    )
     return parser.parse_args()
 
 
@@ -56,7 +66,7 @@ def main() -> None:
     logger.info("Running v2 preprocessing on %s", pdf_path)
     preprocessed = extract_text(pdf_path)
 
-    extractor = RecommendationExtractorV2()
+    extractor = RecommendationExtractorV2(profile=args.profile)
     logger.info("Extracting recommendations (v2) from preprocessed text")
     recs = extractor.extract(preprocessed, source_document=pdf_path.name)
 

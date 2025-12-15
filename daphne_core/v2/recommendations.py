@@ -13,6 +13,9 @@ from .types import PreprocessedText, Recommendation
 
 logger = logging.getLogger(__name__)
 
+EXPLICIT_RECS_PROFILE = "explicit_recs"
+PFD_REPORT_PROFILE = "pfd_report"
+
 
 ACTION_VERBS = {
     "establish", "implement", "develop", "create", "improve", "enhance",
@@ -45,10 +48,10 @@ class RecommendationExtractorV2:
         Parameters
         ----------
         profile:
-            Optional profile name (e.g. "gov_uk_report") controlling
-            document‑specific heuristics.
+            Optional profile name (e.g. "explicit_recs", "pfd_report")
+            controlling document‑specific heuristics.
         """
-        self.profile = profile
+        self.profile = profile or EXPLICIT_RECS_PROFILE
 
     def extract(self, preprocessed: PreprocessedText, source_document: str) -> List[Recommendation]:
         """
@@ -72,96 +75,102 @@ class RecommendationExtractorV2:
             logger.warning("Empty text passed to RecommendationExtractorV2.extract")
             return []
 
-        # Initial v2 implementation: focus on "Recommendation ..." headings,
-        # using heading-based segmentation similar to the v1 strict extractor
-        # but applied to the centralised v2 preprocessed text. We treat the
-        # token following "Recommendation" as a label (rec_id), which may be
-        # a simple integer ("1") or a more complex code ("2018/007").
-        heading_pattern = re.compile(r"(?:Recommendations?\s+)?Recommendation\b", re.IGNORECASE)
-
-        # Only treat matches that look like true headings, i.e. those that
-        # start at the beginning of the text or immediately after a newline.
-        all_matches = list(heading_pattern.finditer(text))
-        matches: List[re.Match[str]] = []
-        for m in all_matches:
-            start = m.start()
-            if start == 0 or text[start - 1] == "\n":
-                matches.append(m)
-
-        logger.info("v2: Found %d numbered recommendation headings", len(matches))
-
         recommendations: List[Recommendation] = []
 
-        for idx, match in enumerate(matches):
-            # Derive rec_id from the token(s) immediately following the
-            # "Recommendation" keyword.
-            after = text[match.end() :]
-            # Skip whitespace after "Recommendation".
-            m_ws = re.match(r"\s+", after)
-            offset = m_ws.end() if m_ws else 0
-            after = after[offset:]
+        if self.profile == PFD_REPORT_PROFILE:
+            # PFD (Regulation 28) style reports: use "MATTERS OF CONCERN"
+            # numbered blocks as the primary recommendation-like units.
+            recommendations = self._extract_pfd_concerns(text, source_document)
+        else:
+            # Default v2 implementation: focus on "Recommendation ..." headings,
+            # using heading-based segmentation similar to the v1 strict
+            # extractor but applied to the centralised v2 preprocessed text.
+            # We treat the token following "Recommendation" as a label (rec_id),
+            # which may be a simple integer ("1") or a more complex code ("2018/007").
+            heading_pattern = re.compile(r"(?:Recommendations?\s+)?Recommendation\b", re.IGNORECASE)
 
-            rec_id: Optional[str] = None
-            rec_number: Optional[int] = None
+            # Only treat matches that look like true headings, i.e. those that
+            # start at the beginning of the text or immediately after a newline.
+            all_matches = list(heading_pattern.finditer(text))
+            matches: List[re.Match[str]] = []
+            for m in all_matches:
+                start = m.start()
+                if start == 0 or text[start - 1] == "\n":
+                    matches.append(m)
 
-            # Case 1: code followed by colon, e.g. "2018/007:"
-            m_label_colon = re.match(r"([^\s:]+):", after)
-            if m_label_colon:
-                rec_id = m_label_colon.group(1)
-            else:
-                # Case 2: handle spaced digits like "1 1" -> "11".
-                m_spaced_digits = re.match(r"(\d{1,2})\s+(\d)\b", after)
-                if m_spaced_digits:
-                    rec_id = f"{m_spaced_digits.group(1)}{m_spaced_digits.group(2)}"
+            logger.info("v2: Found %d numbered recommendation headings", len(matches))
+
+            for idx, match in enumerate(matches):
+                # Derive rec_id from the token(s) immediately following the
+                # "Recommendation" keyword.
+                after = text[match.end() :]
+                # Skip whitespace after "Recommendation".
+                m_ws = re.match(r"\s+", after)
+                offset = m_ws.end() if m_ws else 0
+                after = after[offset:]
+
+                rec_id: Optional[str] = None
+                rec_number: Optional[int] = None
+
+                # Case 1: code followed by colon, e.g. "2018/007:"
+                m_label_colon = re.match(r"([^\s:]+):", after)
+                if m_label_colon:
+                    rec_id = m_label_colon.group(1)
                 else:
-                    # Case 3: simple integer label ("1", "12").
-                    m_int = re.match(r"(\d{1,3})\b", after)
-                    if m_int:
-                        rec_id = m_int.group(1)
+                    # Case 2: handle spaced digits like "1 1" -> "11".
+                    m_spaced_digits = re.match(r"(\d{1,2})\s+(\d)\b", after)
+                    if m_spaced_digits:
+                        rec_id = f"{m_spaced_digits.group(1)}{m_spaced_digits.group(2)}"
+                    else:
+                        # Case 3: simple integer label ("1", "12").
+                        m_int = re.match(r"(\d{1,3})\b", after)
+                        if m_int:
+                            rec_id = m_int.group(1)
 
-            if rec_id and rec_id.isdigit():
-                try:
-                    rec_number = int(rec_id)
-                except ValueError:
-                    rec_number = None
+                if rec_id and rec_id.isdigit():
+                    try:
+                        rec_number = int(rec_id)
+                    except ValueError:
+                        rec_number = None
 
-            start = match.start()
-            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
-            span = (start, end)
-            raw_block = text[start:end]
+                start = match.start()
+                end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+                span = (start, end)
+                raw_block = text[start:end]
 
-            # Light normalisation to avoid duplicated section titles and simple
-            # numbered artefacts, without reintroducing the heavy v1 cleaning
-            # stack. Further domain-specific tweaks can live behind the
-            # `profile` parameter once we know what generalisation cannot do.
-            cleaned_block = raw_block
-            cleaned_block = re.sub(
-                r"\bRecommendations\s+Recommendation\s+(\d+)\b",
-                r"Recommendation \1",
-                cleaned_block,
-                flags=re.IGNORECASE,
-            )
-            cleaned_block = re.sub(
-                r"\bRecommendation\s+1\s+1\b",
-                "Recommendation 11",
-                cleaned_block,
-                flags=re.IGNORECASE,
-            )
-
-            recommendations.append(
-                Recommendation(
-                    text=cleaned_block.strip(),
-                    span=span,
-                    source_document=source_document,
-                    rec_id=rec_id,
-                    rec_number=rec_number,
-                    rec_type="numbered",
-                    detection_method="heading",
+                # Light normalisation to avoid duplicated section titles and
+                # simple numbered artefacts, without reintroducing the heavy v1
+                # cleaning stack. Further domain-specific tweaks can live behind
+                # the `profile` parameter once we know what generalisation
+                # cannot do.
+                cleaned_block = raw_block
+                cleaned_block = re.sub(
+                    r"\bRecommendations\s+Recommendation\s+(\d+)\b",
+                    r"Recommendation \1",
+                    cleaned_block,
+                    flags=re.IGNORECASE,
                 )
-            )
+                cleaned_block = re.sub(
+                    r"\bRecommendation\s+1\s+1\b",
+                    "Recommendation 11",
+                    cleaned_block,
+                    flags=re.IGNORECASE,
+                )
+
+                recommendations.append(
+                    Recommendation(
+                        text=cleaned_block.strip(),
+                        span=span,
+                        source_document=source_document,
+                        rec_id=rec_id,
+                        rec_number=rec_number,
+                        rec_type="numbered",
+                        detection_method="heading",
+                    )
+                )
 
         # ------------------------------------------------------------------ #
-        # Phase 2: action-verb / non-numbered recommendations
+        # Phase 2: action-verb / non-numbered recommendations (all profiles)
         # ------------------------------------------------------------------ #
         if preprocessed.sentence_spans:
             numbered_spans = [rec.span for rec in recommendations]
@@ -212,3 +221,75 @@ class RecommendationExtractorV2:
                 return True
 
         return False
+
+    def _extract_pfd_concerns(self, text: str, source_document: str) -> List[Recommendation]:
+        """
+        Extract recommendation-like units from a Prevention of Future Deaths
+        (Regulation 28) report.
+
+        We treat the numbered items under "MATTERS OF CONCERN" as primary
+        concerns, typically written as "(1)", "(2)", "(3)" etc.
+        """
+        concerns: List[Recommendation] = []
+
+        anchor = re.search(r"MATTERS\s+OF\s+CONCERN", text, re.IGNORECASE)
+        if not anchor:
+            logger.info("v2: PFD profile selected but no 'MATTERS OF CONCERN' anchor found")
+            return concerns
+
+        start_search = anchor.end()
+        end_match = re.search(r"ACTION\s+SHOULD\s+BE\s+TAKEN", text[start_search:], re.IGNORECASE)
+        end_pos = start_search + end_match.start() if end_match else len(text)
+
+        # Numbered concerns such as "(1)", "(2)", "(3)".
+        numbered_pattern = re.compile(r"\(\s*(\d+)\s*\)")
+        matches = list(numbered_pattern.finditer(text, start_search, end_pos))
+
+        if not matches:
+            # Fallback: treat the whole concerns region as a single concern.
+            span = (start_search, end_pos)
+            raw_block = text[start_search:end_pos]
+            concerns.append(
+                Recommendation(
+                    text=raw_block.strip(),
+                    span=span,
+                    source_document=source_document,
+                    rec_id="concern_1",
+                    rec_number=1,
+                    rec_type="pfd_concern",
+                    detection_method="pfd_matters_of_concern",
+                )
+            )
+            logger.info("v2: PFD profile – no numbered concerns found, created 1 concern from region")
+            return concerns
+
+        for idx, m in enumerate(matches):
+            concern_num_str = m.group(1)
+            try:
+                rec_number = int(concern_num_str)
+            except ValueError:
+                rec_number = None
+
+            start = m.start()
+            if idx + 1 < len(matches):
+                end = matches[idx + 1].start()
+            else:
+                end = end_pos
+
+            span = (start, end)
+            raw_block = text[start:end]
+
+            concerns.append(
+                Recommendation(
+                    text=raw_block.strip(),
+                    span=span,
+                    source_document=source_document,
+                    rec_id=f"concern_{concern_num_str}",
+                    rec_number=rec_number,
+                    rec_type="pfd_concern",
+                    detection_method="pfd_matters_of_concern",
+                )
+            )
+
+        logger.info("v2: Extracted %d PFD concerns", len(concerns))
+        return concerns

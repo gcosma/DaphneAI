@@ -22,7 +22,11 @@ import logging
 from pathlib import Path
 
 from daphne_core.v2.preprocess import extract_text as extract_text_v2
-from daphne_core.v2.recommendations import RecommendationExtractorV2
+from daphne_core.v2.recommendations import (
+    RecommendationExtractorV2,
+    EXPLICIT_RECS_PROFILE,
+    PFD_REPORT_PROFILE,
+)
 from daphne_core.v2.responses import ResponseExtractorV2
 from daphne_core.v2.alignment import AlignmentStrategyV2
 
@@ -56,6 +60,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enforce 1:1 matching between recommendations and responses.",
     )
+    parser.add_argument(
+        "--recs-profile",
+        choices=[EXPLICIT_RECS_PROFILE, PFD_REPORT_PROFILE],
+        default=EXPLICIT_RECS_PROFILE,
+        help="v2 document profile for the recommendations PDF.",
+    )
     return parser.parse_args()
 
 
@@ -76,7 +86,7 @@ def main() -> None:
     logger.info("Running v2 preprocessing on %s", resps_pdf)
     resps_pre = extract_text_v2(resps_pdf)
 
-    rec_extractor = RecommendationExtractorV2()
+    rec_extractor = RecommendationExtractorV2(profile=args.recs_profile)
     resp_extractor = ResponseExtractorV2()
 
     logger.info("Extracting v2 recommendations")
