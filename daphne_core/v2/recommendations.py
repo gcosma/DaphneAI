@@ -155,13 +155,15 @@ class RecommendationExtractorV2:
                     source_document=source_document,
                     rec_id=rec_id,
                     rec_number=rec_number,
+                    rec_type="numbered",
+                    detection_method="heading",
                 )
             )
 
         # ------------------------------------------------------------------ #
-        # Phase 2: scattered / non-numbered recommendations
+        # Phase 2: action-verb / non-numbered recommendations
         # ------------------------------------------------------------------ #
-        if not recommendations and preprocessed.sentence_spans:
+        if preprocessed.sentence_spans:
             numbered_spans = [rec.span for rec in recommendations]
 
             def in_numbered_span(start: int) -> bool:
@@ -185,6 +187,8 @@ class RecommendationExtractorV2:
                             source_document=source_document,
                             rec_id=None,
                             rec_number=None,
+                            rec_type="action_verb",
+                            detection_method="verb_based",
                         )
                     )
 
@@ -192,7 +196,7 @@ class RecommendationExtractorV2:
 
     def _is_scattered_recommendation(self, sentence: str) -> bool:
         """
-        Heuristic for identifying non-numbered / scattered recommendations.
+        Heuristic for identifying non-numbered / action-verb recommendations.
 
         This is intentionally simple and general:
         - "we recommend" anywhere in the sentence; or

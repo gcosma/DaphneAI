@@ -29,6 +29,8 @@ class Recommendation:
     source_document: str
     rec_id: Optional[str] = None  # raw label, e.g. "1", "2018/007"
     rec_number: Optional[int] = None  # numeric id when applicable
+    rec_type: Optional[str] = None  # e.g. "numbered", "action_verb"
+    detection_method: Optional[str] = None  # e.g. "heading", "verb_based"
 
 
 @dataclass
@@ -40,7 +42,7 @@ class Response:
     text: str
     span: Span
     source_document: str
-    response_type: str  # e.g. "structured", "scattered"
+    response_type: str  # e.g. "structured", "action_verb"
     rec_id: Optional[str] = None
     rec_number: Optional[int] = None
 

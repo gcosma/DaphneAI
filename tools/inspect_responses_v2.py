@@ -4,7 +4,7 @@ Inspect responses extracted by the v2 pipeline from a PDF.
 This helper runs:
 - v2 preprocessing (`daphne_core.v2.preprocess.extract_text`), then
 - v2 response extraction (`ResponseExtractorV2.extract`),
-and prints a concise summary of structured and scattered responses.
+and prints a concise summary of structured and action-verb responses.
 
 Usage (from repo root):
 
@@ -81,4 +81,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

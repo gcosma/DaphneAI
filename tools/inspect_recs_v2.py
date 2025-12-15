@@ -60,25 +60,39 @@ def main() -> None:
     logger.info("Extracting recommendations (v2) from preprocessed text")
     recs = extractor.extract(preprocessed, source_document=pdf_path.name)
 
+    numbered = [r for r in recs if getattr(r, "rec_type", None) == "numbered" or r.rec_number is not None]
+    action_verb = [r for r in recs if getattr(r, "rec_type", None) == "action_verb"]
+
     print("\n=== v2 Recommendations Preview ===")
     print(f"PDF: {pdf_path}")
-    print(f"Total recommendations: {len(recs)}\n")
+    print(
+        f"Total recommendations: {len(recs)} "
+        f"(numbered={len(numbered)}, action-verb={len(action_verb)})\n"
+    )
 
-    text = preprocessed.text
-    for idx, rec in enumerate(recs, 1):
-        start, end = rec.span
-        span_info = f"{start}-{end}"
-        snippet = rec.text.replace("\n", " ").strip()
-        if len(snippet) > args.max_chars:
-            snippet = snippet[: args.max_chars] + "..."
-        print("=" * 80)
-        print(
-            f"Rec #{idx} | rec_id={rec.rec_id} | rec_number={rec.rec_number} "
-            f"| span={span_info} | source={rec.source_document}"
-        )
-        print("-" * 80)
-        print(snippet)
-        print()
+    for label, subset in (
+        ("Numbered recommendations", numbered),
+        ("Action-verb recommendations", action_verb),
+    ):
+        if not subset:
+            continue
+        print(f"--- {label} ---")
+        for idx, rec in enumerate(subset, 1):
+            start, end = rec.span
+            span_info = f"{start}-{end}"
+            snippet = rec.text.replace("\n", " ").strip()
+            if len(snippet) > args.max_chars:
+                snippet = snippet[: args.max_chars] + "..."
+            print("=" * 80)
+            print(
+                f"Rec #{idx} | rec_id={rec.rec_id} | rec_number={rec.rec_number} "
+                f"| type={getattr(rec, 'rec_type', None)} "
+                f"| method={getattr(rec, 'detection_method', None)} "
+                f"| span={span_info} | source={rec.source_document}"
+            )
+            print("-" * 80)
+            print(snippet)
+            print()
 
     print("=== End of v2 recommendations preview ===\n")
 

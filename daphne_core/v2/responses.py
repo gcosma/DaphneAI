@@ -3,7 +3,7 @@ v2 response extraction.
 
 Takes `PreprocessedText` and produces structured `Response` objects, with
 support for both structured sections (e.g. government responses) and
-scattered response sentences.
+action-verb response sentences.
 """
 
 import logging
@@ -50,7 +50,7 @@ class ResponseExtractorV2:
         List[Response]
             Structured responses with explicit spans and, when available,
             `rec_number`. The `response_type` indicates whether a response
-            comes from a structured section or scattered sentence.
+            comes from a structured section or an action-verb sentence.
         """
         text = preprocessed.text or ""
         if not text.strip():
@@ -98,7 +98,7 @@ class ResponseExtractorV2:
             )
 
         # ------------------------------------------------------------------ #
-        # Phase 2: scattered responses (fallback only)
+        # Phase 2: action-verb responses (fallback only)
         # ------------------------------------------------------------------ #
         if not responses and preprocessed.sentence_spans:
             for sent_start, sent_end in preprocessed.sentence_spans:
@@ -112,7 +112,7 @@ class ResponseExtractorV2:
                             text=sentence,
                             span=(sent_start, sent_end),
                             source_document=source_document,
-                            response_type="scattered",
+                            response_type="action_verb",
                             rec_id=rec_id,
                             rec_number=rec_number,
                         )
@@ -122,7 +122,7 @@ class ResponseExtractorV2:
 
     def _is_scattered_response(self, sentence: str) -> bool:
         """
-        Heuristic for identifying scattered response sentences.
+        Heuristic for identifying action-verb response sentences.
 
         For now this is intentionally simple and biased towards government
         responses: we look for language like "The government supports / accepts
@@ -142,7 +142,7 @@ class ResponseExtractorV2:
         return False
 
     def _infer_rec_identity(self, sentence: str) -> tuple[Optional[str], Optional[int]]:
-        """Best-effort rec_id / rec_number inference from a scattered response sentence."""
+        """Best-effort rec_id / rec_number inference from an action-verb response sentence."""
         lower = sentence.lower()
         m = re.search(r"recommendation\s+([^\s:]+)", lower)
         if not m:

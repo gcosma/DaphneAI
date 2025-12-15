@@ -8,7 +8,7 @@ behaviour on the reference documents and new documents.
 High-level responsibilities:
 - `preprocess`: PDF/text → normalised text and structural spans.
 - `recommendations`: extract structured recommendations from preprocessed text.
-- `responses`: extract structured and scattered responses from preprocessed text.
+- `responses`: extract structured and action-verb responses from preprocessed text.
 - `alignment`: align recommendations with responses using configurable strategies.
 """
 
@@ -20,4 +20,3 @@ __all__ = [
     "Response",
     "AlignmentResult",
 ]
-

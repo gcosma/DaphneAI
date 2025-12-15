@@ -7,11 +7,16 @@ import logging
 from collections import Counter
 from datetime import datetime
 from typing import Any, Dict, List
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
 from daphne_core.alignment_engine import RecommendationResponseMatcher, extract_response_sentences
+from daphne_core.v2.preprocess import extract_text as extract_text_v2
+from daphne_core.v2.recommendations import RecommendationExtractorV2
+from daphne_core.v2.responses import ResponseExtractorV2
+from daphne_core.v2.alignment import AlignmentStrategyV2
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +84,13 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
     st.markdown("---")
     st.markdown("#### 🔍 Step 2: Extract & Match")
 
+    engine = st.radio(
+        "Alignment engine",
+        ["v1 (current)", "v2 (experimental)"],
+        horizontal=True,
+        help="v2 uses the new layout-aware pipeline; v1 uses the legacy text-only path.",
+    )
+
     if st.button("🚀 Extract Recommendations & Find Responses", type="primary"):
         rec_text = ""
         for doc_name in rec_docs:
@@ -92,52 +104,125 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
             if doc and "text" in doc:
                 resp_text += doc["text"] + "\n\n"
 
-        if not rec_text:
-            st.error("Could not read recommendation document")
-            return
-        if not resp_text:
-            st.error("Could not read response document")
-            return
-
-        progress = st.progress(0, text="Extracting recommendations...")
-
-        try:
-            from daphne_core.recommendation_extractor import extract_recommendations
-
-            recommendations = extract_recommendations(rec_text, min_confidence=0.75)
-            if not recommendations:
-                st.warning("⚠️ No recommendations found in the document.")
-                progress.empty()
+        if engine == "v1 (current)":
+            if not rec_text:
+                st.error("Could not read recommendation document")
+                return
+            if not resp_text:
+                st.error("Could not read response document")
                 return
 
-            progress.progress(33, text=f"Found {len(recommendations)} recommendations. Extracting responses...")
-            responses = extract_response_sentences(resp_text)
-            if not responses:
-                st.warning("⚠️ No response patterns found in the document.")
+            progress = st.progress(0, text="Extracting recommendations (v1)...")
+
+            try:
+                from daphne_core.recommendation_extractor import extract_recommendations
+
+                recommendations = extract_recommendations(rec_text, min_confidence=0.75)
+                if not recommendations:
+                    st.warning("⚠️ No recommendations found in the document.")
+                    progress.empty()
+                    return
+
+                progress.progress(33, text=f"Found {len(recommendations)} recommendations. Extracting responses...")
+                responses = extract_response_sentences(resp_text)
+                if not responses:
+                    st.warning("⚠️ No response patterns found in the document.")
+                    progress.empty()
+                    return
+
+                progress.progress(66, text=f"Found {len(responses)} responses. Matching...")
+                alignments = matcher.find_best_matches(recommendations, responses)
+
+                progress.progress(100, text="Complete!")
                 progress.empty()
+
+                st.session_state.alignment_results = alignments
+                st.session_state.extracted_recommendations = recommendations
+
+                st.success(f"✅ Matched {len(recommendations)} recommendations with {len(responses)} responses (v1)")
+            except Exception as e:  # pragma: no cover - UI path
+                progress.empty()
+                st.error(f"Error: {e}")
+                import traceback
+
+                with st.expander("Show error details"):
+                    st.code(traceback.format_exc())
+                return
+        else:
+            # v2 path: require original PDF paths to be available.
+            rec_doc_name = rec_docs[0]
+            resp_doc_name = resp_docs[0]
+            rec_doc = next((d for d in documents if d["filename"] == rec_doc_name), None)
+            resp_doc = next((d for d in documents if d["filename"] == resp_doc_name), None)
+
+            rec_pdf_path = rec_doc.get("pdf_path") if rec_doc else None
+            resp_pdf_path = resp_doc.get("pdf_path") if resp_doc else None
+
+            if not rec_pdf_path or not resp_pdf_path:
+                st.error(
+                    "v2 engine requires original PDF files. "
+                    "Please ensure you uploaded PDFs (not only text) in this session."
+                )
                 return
 
-            progress.progress(66, text=f"Found {len(responses)} responses. Matching...")
-            alignments = matcher.find_best_matches(recommendations, responses)
+            progress = st.progress(0, text="Extracting recommendations (v2)...")
 
-            progress.progress(100, text="Complete!")
-            progress.empty()
+            try:
+                recs_pre = extract_text_v2(Path(rec_pdf_path))
+                resps_pre = extract_text_v2(Path(resp_pdf_path))
 
-            st.session_state.alignment_results = alignments
-            st.session_state.extracted_recommendations = recommendations
+                rec_extractor = RecommendationExtractorV2()
+                resp_extractor = ResponseExtractorV2()
 
-            st.success(f"✅ Matched {len(recommendations)} recommendations with {len(responses)} responses")
-        except Exception as e:  # pragma: no cover - UI path
-            progress.empty()
-            st.error(f"Error: {e}")
-            import traceback
+                recommendations_v2 = rec_extractor.extract(recs_pre, source_document=rec_doc_name)
+                if not recommendations_v2:
+                    st.warning("⚠️ No recommendations found in the PDF (v2).")
+                    progress.empty()
+                    return
 
-            with st.expander("Show error details"):
-                st.code(traceback.format_exc())
-            return
+                progress.progress(
+                    33,
+                    text=f"Found {len(recommendations_v2)} recommendations (v2). Extracting responses...",
+                )
 
-    if "alignment_results" in st.session_state and st.session_state.alignment_results:
+                responses_v2 = resp_extractor.extract(resps_pre, source_document=resp_doc_name)
+                if not responses_v2:
+                    st.warning("⚠️ No responses found in the PDF (v2).")
+                    progress.empty()
+                    return
+
+                progress.progress(
+                    66,
+                    text=f"Found {len(responses_v2)} responses (v2). Matching...",
+                )
+
+                strategy = AlignmentStrategyV2(enforce_one_to_one=False)
+                alignments_v2 = strategy.align(recommendations_v2, responses_v2)
+
+                progress.progress(100, text="Complete!")
+                progress.empty()
+
+                st.session_state.v2_alignment_results = alignments_v2
+                st.session_state.v2_recommendations = recommendations_v2
+                st.session_state.v2_responses = responses_v2
+
+                st.success(
+                    f"✅ Matched {len(recommendations_v2)} recommendations with "
+                    f"{len(responses_v2)} responses (v2 experimental)"
+                )
+            except Exception as e:  # pragma: no cover - UI path
+                progress.empty()
+                st.error(f"Error in v2 pipeline: {e}")
+                import traceback
+
+                with st.expander("Show error details"):
+                    st.code(traceback.format_exc())
+                return
+
+    if engine == "v1 (current)" and "alignment_results" in st.session_state and st.session_state.alignment_results:
         display_alignment_results(st.session_state.alignment_results)
+    elif engine == "v2 (experimental)" and "v2_alignment_results" in st.session_state:
+        display_v2_alignment_results(st.session_state.v2_alignment_results)
 
 
 def display_alignment_results(alignments: List[Dict[str, Any]]):
@@ -248,8 +333,8 @@ def display_alignment_results(alignments: List[Dict[str, Any]]):
         csv = df.to_csv(index=False)
         st.download_button("📥 Download CSV", csv, f"alignment_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", "text/csv")
 
-    with col2:
-        report = f"""# Recommendation-Response Alignment Report
+        with col2:
+            report = f"""# Recommendation-Response Alignment Report
 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 ## Summary
@@ -285,6 +370,49 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
             "text/markdown",
         )
+
+
+def display_v2_alignment_results(alignments: List[Any]):
+    """Display v2 alignment results (AlignmentResult objects)."""
+    st.markdown("---")
+    st.markdown("### 📊 Alignment Results (v2 experimental)")
+
+    total = len(alignments)
+    with_response = sum(1 for a in alignments if a.response is not None)
+
+    col1, col2 = st.columns(2)
+    col1.metric("Total recommendations", total)
+    col2.metric("With responses", with_response)
+
+    st.markdown("---")
+    st.markdown("#### 📋 Detailed Results (v2)")
+
+    for idx, alignment in enumerate(alignments, 1):
+        rec = alignment.recommendation
+        resp = alignment.response
+        sim = alignment.similarity or 0.0
+        method = alignment.match_method
+
+        rec_preview = rec.text.strip()
+        if len(rec_preview) > 80:
+            rec_preview = rec_preview[:80] + "..."
+
+        with st.expander(f"📝 {idx}. {rec_preview}", expanded=(idx <= 3)):
+            st.markdown("**Recommendation (v2):**")
+            st.info(rec.text)
+            st.caption(f"ID: {rec.rec_id!r} | Num: {rec.rec_number} | Source: {rec.source_document}")
+
+            st.markdown("---")
+            st.markdown("**Response (v2):**")
+            if resp is None:
+                st.warning("No matching response found (v2).")
+            else:
+                st.success(resp.text)
+                st.caption(
+                    f"ID: {resp.rec_id!r} | Num: {resp.rec_number} | "
+                    f"Type: {resp.response_type} | Source: {resp.source_document}"
+                )
+                st.caption(f"Match similarity: {sim:.0%} | Method: {method}")
 
 
 __all__ = ["render_simple_alignment_interface"]

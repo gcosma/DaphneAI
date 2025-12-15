@@ -362,6 +362,13 @@ def render_recommendations_tab():
     doc_names = [doc['filename'] for doc in documents]
     
     selected_doc = st.selectbox("Select document to analyse:", doc_names)
+
+    engine = st.radio(
+        "Extraction engine",
+        ["v1 (current)", "v2 (experimental)"],
+        horizontal=True,
+        help="v2 uses the new layout-aware pipeline; v1 uses the strict text-only extractor.",
+    )
     
     # Track which document was analysed (but don't auto-clear results)
     if 'last_analysed_doc' not in st.session_state:
@@ -379,119 +386,224 @@ def render_recommendations_tab():
     if st.button("🔍 Extract Recommendations", type="primary"):
         doc = next((d for d in documents if d['filename'] == selected_doc), None)
         
-        if doc and 'text' in doc:
-            with st.spinner("Analysing document with strict filtering..."):
-                try:
-                    # Extract all recommendations (min_confidence=0.75 hardcoded for quality)
-                    recommendations = extract_recommendations(
-                        doc['text'],
-                        min_confidence=0.75
-                    )
-                    
-                    if recommendations:
-                        # SORT BY CONFIDENCE (highest first)
-                        recommendations = sorted(recommendations, key=lambda x: x.get('confidence', 0), reverse=True)
+        if engine == "v1 (current)":
+            if doc and 'text' in doc:
+                with st.spinner("Analysing document with strict filtering (v1)..."):
+                    try:
+                        recommendations = extract_recommendations(
+                            doc['text'],
+                            min_confidence=0.75
+                        )
                         
-                        st.success(f"✅ Found {len(recommendations)} genuine recommendations")
-                        
-                        # Statistics
-                        extractor = StrictRecommendationExtractor()
-                        stats = extractor.get_statistics(recommendations)
-                        
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            st.metric("Total Recommendations", stats['total'])
-                        with col2:
-                            st.metric("High Confidence (≥0.9)", stats.get('high_confidence', 0))
-                        with col3:
-                            st.metric("Average Confidence", f"{stats['avg_confidence']:.0%}")
-                        with col4:
-                            st.metric("Unique Verbs", len(stats.get('top_verbs', {})))
-                        
-                        # CONFIDENCE LEGEND
-                        st.markdown("---")
-                        st.markdown("#### 🎨 Confidence Guide")
-                        legend_col1, legend_col2, legend_col3 = st.columns(3)
-                        with legend_col1:
-                            st.markdown("🟢 **High (≥95%)**")
-                            st.caption("Numbered recommendations (Recommendation 1, 2, etc.) or strong 'entity should' patterns")
-                        with legend_col2:
-                            st.markdown("🟡 **Medium (85-94%)**")
-                            st.caption("Passive recommendations ('should be completed', 'should be presented')")
-                        with legend_col3:
-                            st.markdown("🟠 **Standard (75-84%)**")
-                            st.caption("Modal verb patterns ('should review', 'should consider') - still valid recommendations")
-                        
-                        st.markdown("---")
-                        st.subheader("📋 Extracted Recommendations")
-                        st.caption("Sorted by confidence (highest first)")
-                        
-                        for idx, rec in enumerate(recommendations, 1):
-                            rec_text = rec.get('text', '[No text available]').strip()
-                            verb = rec.get('verb', 'unknown').upper()
-                            confidence = rec.get('confidence', 0)
-                            method = rec.get('method', 'unknown')
+                        if recommendations:
+                            recommendations = sorted(
+                                recommendations,
+                                key=lambda x: x.get('confidence', 0),
+                                reverse=True,
+                            )
                             
+                            st.success(f"✅ Found {len(recommendations)} genuine recommendations (v1)")
+                            
+                            extractor = StrictRecommendationExtractor()
+                            stats = extractor.get_statistics(recommendations)
+                            
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                st.metric("Total Recommendations", stats['total'])
+                            with col2:
+                                st.metric("High Confidence (≥0.9)", stats.get('high_confidence', 0))
+                            with col3:
+                                st.metric("Average Confidence", f"{stats['avg_confidence']:.0%}")
+                            with col4:
+                                st.metric("Unique Verbs", len(stats.get('top_verbs', {})))
+                            
+                            st.markdown("---")
+                            st.markdown("#### 🎨 Confidence Guide")
+                            legend_col1, legend_col2, legend_col3 = st.columns(3)
+                            with legend_col1:
+                                st.markdown("🟢 **High (≥95%)**")
+                                st.caption("Numbered recommendations (Recommendation 1, 2, etc.) or strong 'entity should' patterns")
+                            with legend_col2:
+                                st.markdown("🟡 **Medium (85-94%)**")
+                                st.caption("Passive recommendations ('should be completed', 'should be presented')")
+                            with legend_col3:
+                                st.markdown("🟠 **Standard (75-84%)**")
+                                st.caption("Modal verb patterns ('should review', 'should consider') - still valid recommendations")
+                            
+                            st.markdown("---")
+                            st.subheader("📋 Extracted Recommendations")
+                            st.caption("Sorted by confidence (highest first)")
+                            
+                            for idx, rec in enumerate(recommendations, 1):
+                                rec_text = rec.get('text', '[No text available]').strip()
+                                verb = rec.get('verb', 'unknown').upper()
+                                confidence = rec.get('confidence', 0)
+                                method = rec.get('method', 'unknown')
+                                
+                                if len(rec_text) > 10:
+                                    if confidence >= 0.95:
+                                        conf_icon = "🟢"
+                                    elif confidence >= 0.85:
+                                        conf_icon = "🟡"
+                                    else:
+                                        conf_icon = "🟠"
+                                    
+                                    title = f"{conf_icon} **{idx}. {verb}** ({confidence:.0%})"
+                                    
+                                    with st.expander(title, expanded=(idx <= 5)):
+                                        st.markdown(rec_text)
+                                        st.caption(f"Detection method: {method}")
+                            
+                            st.markdown("---")
+                            
+                            valid_recs = [r for r in recommendations if len(r.get('text', '').strip()) > 10]
+                            
+                            if valid_recs:
+                                df_export = pd.DataFrame(valid_recs)
+                                csv = df_export.to_csv(index=False)
+                                
+                                st.download_button(
+                                    label=f"📥 Download as CSV ({len(valid_recs)} recommendations)",
+                                    data=csv,
+                                    file_name=f"{selected_doc}_recommendations.csv",
+                                    mime="text/csv",
+                                )
+                            
+                            st.session_state.extracted_recommendations = valid_recs
+                            st.session_state.last_analysed_doc = selected_doc
+                            
+                        else:
+                            st.warning("⚠️ No recommendations found. Try lowering the confidence threshold to 0.6.")
+                            
+                    except Exception as e:
+                        st.error(f"❌ Error extracting recommendations: {str(e)}")
+                        with st.expander("Show error details"):
+                            st.code(traceback.format_exc())
+            else:
+                st.error("Document text not available")
+        else:
+            from daphne_core.v2.preprocess import extract_text as extract_text_v2
+            from daphne_core.v2.recommendations import RecommendationExtractorV2
+            from pathlib import Path
+
+            if not doc:
+                st.error("Document not available")
+                return
+
+            pdf_path = doc.get('pdf_path')
+            if not pdf_path:
+                st.error(
+                    "v2 engine requires the original PDF path. "
+                    "Please ensure the document was uploaded as a PDF in this session."
+                )
+                return
+
+            with st.spinner("Analysing document with v2 layout-aware extractor..."):
+                try:
+                    preprocessed = extract_text_v2(Path(pdf_path))
+                    extractor_v2 = RecommendationExtractorV2()
+                    recs_v2 = extractor_v2.extract(preprocessed, source_document=selected_doc)
+
+                    if not recs_v2:
+                        st.warning("⚠️ No recommendations found in the PDF (v2).")
+                        return
+
+                    numbered_v2 = [
+                        r for r in recs_v2
+                        if getattr(r, "rec_type", None) == "numbered" or r.rec_number is not None
+                    ]
+                    action_verb_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "action_verb"]
+
+                    st.success(
+                        f"✅ Found {len(recs_v2)} recommendations (v2 experimental) – "
+                        f"numbered={len(numbered_v2)}, action-verb={len(action_verb_v2)}"
+                    )
+
+                    st.markdown("---")
+                    st.subheader("📋 Extracted Recommendations (v2)")
+                    st.caption("Numbered headings and action-verb recommendations from the PDF layout")
+
+                    if numbered_v2:
+                        st.markdown("##### Numbered recommendations")
+                        for idx, rec in enumerate(numbered_v2, 1):
+                            rec_text = rec.text.strip()
                             if len(rec_text) > 10:
-                                # Confidence indicator
-                                if confidence >= 0.95:
-                                    conf_icon = "🟢"
-                                elif confidence >= 0.85:
-                                    conf_icon = "🟡"
-                                else:
-                                    conf_icon = "🟠"
-                                
-                                title = f"{conf_icon} **{idx}. {verb}** ({confidence:.0%})"
-                                
-                                # Expand first 5 by default
+                                title = f"**{idx}. Recommendation {rec.rec_id or '(unlabelled)'}**"
                                 with st.expander(title, expanded=(idx <= 5)):
                                     st.markdown(rec_text)
-                                    st.caption(f"Detection method: {method}")
-                        
+                                    st.caption(
+                                        f"Type: {getattr(rec, 'rec_type', None) or 'numbered'} | "
+                                        f"ID: {rec.rec_id!r} | Num: {rec.rec_number} | "
+                                        f"Source: {rec.source_document}"
+                                    )
+
+                    if action_verb_v2:
                         st.markdown("---")
-                        
-                        # Filter out empty recommendations before export
-                        valid_recs = [r for r in recommendations if len(r.get('text', '').strip()) > 10]
-                        
-                        if valid_recs:
-                            df_export = pd.DataFrame(valid_recs)
-                            csv = df_export.to_csv(index=False)
-                            
-                            st.download_button(
-                                label=f"📥 Download as CSV ({len(valid_recs)} recommendations)",
-                                data=csv,
-                                file_name=f"{selected_doc}_recommendations.csv",
-                                mime="text/csv"
-                            )
-                        
-                        # FIXED: Save to session state AND update last_analysed_doc
-                        st.session_state.extracted_recommendations = valid_recs
-                        st.session_state.last_analysed_doc = selected_doc
-                        
-                    else:
-                        st.warning("⚠️ No recommendations found. Try lowering the confidence threshold to 0.6.")
-                        
+                        st.markdown("##### Action-verb recommendations")
+                        for idx, rec in enumerate(action_verb_v2, 1):
+                            rec_text = rec.text.strip()
+                            if len(rec_text) > 10:
+                                title = f"**{idx}. Action-verb recommendation**"
+                                with st.expander(title, expanded=(idx <= 3)):
+                                    st.markdown(rec_text)
+                                    st.caption(
+                                        f"Type: {getattr(rec, 'rec_type', None) or 'action_verb'} | "
+                                        f"Method: {getattr(rec, 'detection_method', None) or 'verb_based'} | "
+                                        f"Source: {rec.source_document}"
+                                    )
+
+                    st.session_state.v2_extracted_recommendations = recs_v2
+                    st.session_state.last_analysed_doc = selected_doc
+
                 except Exception as e:
-                    st.error(f"❌ Error extracting recommendations: {str(e)}")
+                    st.error(f"❌ Error extracting recommendations with v2: {str(e)}")
                     with st.expander("Show error details"):
                         st.code(traceback.format_exc())
-        else:
-            st.error("Document text not available")
     
     # FIXED: Display existing results if they exist (even when returning to tab)
-    if 'extracted_recommendations' in st.session_state and st.session_state.extracted_recommendations:
+    if engine == "v1 (current)" and 'extracted_recommendations' in st.session_state and st.session_state.extracted_recommendations:
         recommendations = st.session_state.extracted_recommendations
         
         st.markdown("---")
-        st.success(f"✅ {len(recommendations)} recommendations available (from {st.session_state.last_analysed_doc})")
+        st.success(f"✅ {len(recommendations)} recommendations available (from {st.session_state.last_analysed_doc}) [v1]")
         
-        with st.expander("📋 View Extracted Recommendations", expanded=False):
+        with st.expander("📋 View Extracted Recommendations (v1)", expanded=False):
             for idx, rec in enumerate(recommendations[:10], 1):
                 text = rec.get('text', '[No text]')
                 conf = rec.get('confidence', 0)
                 st.markdown(f"**{idx}.** ({conf:.0%}) {text[:150]}...")
             if len(recommendations) > 10:
                 st.caption(f"... and {len(recommendations) - 10} more")
+    elif engine == "v2 (experimental)" and 'v2_extracted_recommendations' in st.session_state:
+        recs_v2 = st.session_state.v2_extracted_recommendations
+
+        numbered_v2 = [
+            r for r in recs_v2
+            if getattr(r, "rec_type", None) == "numbered" or r.rec_number is not None
+        ]
+        action_verb_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "action_verb"]
+
+        st.markdown("---")
+        st.success(
+            f"✅ {len(recs_v2)} recommendations available "
+            f"(numbered={len(numbered_v2)}, action-verb={len(action_verb_v2)}) "
+            f"from {st.session_state.last_analysed_doc} [v2]"
+        )
+
+        with st.expander("📋 View Extracted Recommendations (v2)", expanded=False):
+            if numbered_v2:
+                st.markdown("**Numbered recommendations (sample)**")
+                for idx, rec in enumerate(numbered_v2[:5], 1):
+                    text = rec.text.strip()
+                    st.markdown(f"**{idx}.** {text[:150]}{'...' if len(text) > 150 else ''}")
+            if action_verb_v2:
+                st.markdown("---")
+                st.markdown("**Action-verb recommendations (sample)**")
+                for idx, rec in enumerate(action_verb_v2[:5], 1):
+                    text = rec.text.strip()
+                    st.markdown(f"**{idx}.** {text[:150]}{'...' if len(text) > 150 else ''}")
+            if len(recs_v2) > 10:
+                st.caption(f"... and {len(recs_v2) - 10} more")
 
 
 def main():

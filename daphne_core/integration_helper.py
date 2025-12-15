@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Callable
 import logging
 import re
+from pathlib import Path
 
 def prepare_documents_for_search(uploaded_files: List, text_extractor: Callable) -> List[Dict[str, Any]]:
     """Process uploaded files and prepare for search"""
@@ -14,6 +15,8 @@ def prepare_documents_for_search(uploaded_files: List, text_extractor: Callable)
         return []
     
     processed_docs = []
+    upload_dir = Path("output/uploads")
+    upload_dir.mkdir(parents=True, exist_ok=True)
     
     for uploaded_file in uploaded_files:
         try:
@@ -23,16 +26,28 @@ def prepare_documents_for_search(uploaded_files: List, text_extractor: Callable)
             # Classify document type
             doc_type = classify_document_type(text, uploaded_file.name)
             
+            file_type = uploaded_file.name.split('.')[-1].lower() if '.' in uploaded_file.name else 'unknown'
+
+            # Optionally persist PDFs to disk so v2 pipelines can re-read
+            # them directly (e.g. for unstructured-based preprocessing).
+            pdf_path = None
+            if file_type == 'pdf':
+                pdf_path = upload_dir / uploaded_file.name
+                # Overwrite if it already exists for this session.
+                pdf_path.write_bytes(uploaded_file.getvalue())
+
             # Create document record
             doc = {
                 'filename': uploaded_file.name,
                 'text': text,
                 'word_count': len(text.split()) if text else 0,
-                'file_type': uploaded_file.name.split('.')[-1].lower() if '.' in uploaded_file.name else 'unknown',
+                'file_type': file_type,
                 'file_size_mb': len(uploaded_file.getvalue()) / (1024 * 1024),
                 'document_type': doc_type,
-                'processed_at': datetime.now().isoformat()
+                'processed_at': datetime.now().isoformat(),
             }
+            if pdf_path is not None:
+                doc['pdf_path'] = str(pdf_path)
             
             processed_docs.append(doc)
             
