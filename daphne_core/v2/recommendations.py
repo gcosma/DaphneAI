@@ -78,9 +78,13 @@ class RecommendationExtractorV2:
         recommendations: List[Recommendation] = []
 
         if self.profile == PFD_REPORT_PROFILE:
-            # PFD (Regulation 28) style reports: use "MATTERS OF CONCERN"
-            # numbered blocks as the primary recommendation-like units.
-            recommendations = self._extract_pfd_concerns(text, source_document)
+            # PFD (Regulation 28) style reports:
+            # - Primary units: numbered "MATTERS OF CONCERN" items when present.
+            # - For long-form / narrative reports where those items are not a
+            #   clean list, also extract explicit directive sentences ("I recommend…",
+            #   "I request…", "It is vital that…", etc.).
+            recommendations.extend(self._extract_pfd_concerns(text, source_document))
+            recommendations.extend(self._extract_pfd_directives(preprocessed, source_document))
         else:
             # Default v2 implementation: focus on "Recommendation ..." headings,
             # using heading-based segmentation similar to the v1 strict
@@ -173,16 +177,16 @@ class RecommendationExtractorV2:
         # Phase 2: action-verb / non-numbered recommendations (all profiles)
         # ------------------------------------------------------------------ #
         if preprocessed.sentence_spans:
-            numbered_spans = [rec.span for rec in recommendations]
+            primary_spans = [rec.span for rec in recommendations]
 
-            def in_numbered_span(start: int) -> bool:
-                for s, e in numbered_spans:
+            def in_primary_span(start: int) -> bool:
+                for s, e in primary_spans:
                     if s <= start < e:
                         return True
                 return False
 
             for sent_start, sent_end in preprocessed.sentence_spans:
-                if in_numbered_span(sent_start):
+                if in_primary_span(sent_start):
                     continue
                 sent_text = text[sent_start:sent_end].strip()
                 if len(sent_text) < 40 or len(sent_text) > 500:
@@ -246,21 +250,10 @@ class RecommendationExtractorV2:
         matches = list(numbered_pattern.finditer(text, start_search, end_pos))
 
         if not matches:
-            # Fallback: treat the whole concerns region as a single concern.
-            span = (start_search, end_pos)
-            raw_block = text[start_search:end_pos]
-            concerns.append(
-                Recommendation(
-                    text=raw_block.strip(),
-                    span=span,
-                    source_document=source_document,
-                    rec_id="concern_1",
-                    rec_number=1,
-                    rec_type="pfd_concern",
-                    detection_method="pfd_matters_of_concern",
-                )
+            logger.info(
+                "v2: PFD profile – no numbered concerns found under 'MATTERS OF CONCERN'; "
+                "skipping concerns list extraction",
             )
-            logger.info("v2: PFD profile – no numbered concerns found, created 1 concern from region")
             return concerns
 
         for idx, m in enumerate(matches):
@@ -293,3 +286,103 @@ class RecommendationExtractorV2:
 
         logger.info("v2: Extracted %d PFD concerns", len(concerns))
         return concerns
+
+    def _extract_pfd_directives(self, preprocessed: PreprocessedText, source_document: str) -> List[Recommendation]:
+        """
+        Extract explicit directive sentences from a PFD-style document.
+
+        This is designed for long-form/narrative reports where the actionable
+        recommendations appear as embedded directives rather than as a clean
+        numbered "MATTERS OF CONCERN" list.
+        """
+        text = preprocessed.text or ""
+        if not text.strip() or not preprocessed.sentence_spans:
+            return []
+
+        directives: List[Recommendation] = []
+
+        first_person_patterns = [
+            r"\bi\s+(?:strongly\s+)?recommend\b",
+            r"\bi\s+request\b",
+            r"\bi\s+suggest\b",
+            r"\bi\s+encourage\b",
+        ]
+        importance_patterns = [
+            r"\bit\s+is\s+(?:vital|critical|important)\s+that\b",
+        ]
+        first_person_re = re.compile("|".join(first_person_patterns), re.IGNORECASE)
+        importance_re = re.compile("|".join(importance_patterns), re.IGNORECASE)
+
+        # In long-form PFD reports, some directives are written as "The <addressee> should <action> ...".
+        # We keep this narrow to avoid pulling in third-party statements like "Mr X agreed that ..."
+        # and generic boilerplate like "action should be taken".
+        addressee_re = re.compile(
+            r"\b("
+            r"secretary\s+of\s+state|home\s+department|home\s+office|"
+            r"chief\s+constable|police|trust|nhs|department|minister|"
+            r"prison|probation|hmpps|mappa|pathfinder|prevent"
+            r")\b",
+            re.IGNORECASE,
+        )
+
+        boilerplate_re = re.compile(
+            r"\b(in\s+my\s+opinion\s+)?action\s+should\s+be\s+taken\s+to\s+prevent\s+future\s+deaths\b|"
+            r"\bduty\s+of\s+those\s+receiving\s+this\s+report\b.*\baction\s+that\s+should\s+be\s+taken\b|"
+            r"\byou\s+are\s+under\s+a\s+duty\s+to\s+respond\b",
+            re.IGNORECASE,
+        )
+
+        reported_speech_re = re.compile(
+            r"^(mr|ms|mrs|dr|professor|sir)\s+\w+.*\b(agreed|said|stated|accepted|explained|"
+            r"confirmed|indicated|noted|recognised|recognized)\b.*\bshould\b",
+            re.IGNORECASE,
+        )
+
+        narrative_conclusion_re = re.compile(
+            r"\bmy\s+overall\s+conclusions\b|\bfactual\s+findings\b",
+            re.IGNORECASE,
+        )
+
+        for sent_start, sent_end in preprocessed.sentence_spans:
+            sent_text = text[sent_start:sent_end].strip()
+            if len(sent_text) < 40 or len(sent_text) > 700:
+                continue
+
+            lower = sent_text.lower()
+            if boilerplate_re.search(sent_text):
+                continue
+            if reported_speech_re.search(sent_text):
+                continue
+
+            # Drop long narrative/citation sentences that are primarily quoting or summarising findings.
+            if narrative_conclusion_re.search(sent_text) and ":" in sent_text[:200]:
+                continue
+
+            is_first_person = bool(first_person_re.search(sent_text))
+            is_importance = bool(importance_re.search(sent_text))
+            is_should_addressee = False
+            if not (is_first_person or is_importance):
+                if " should " in f" {lower} " and addressee_re.search(sent_text):
+                    if any(f" {verb} " in f" {lower} " for verb in ACTION_VERBS):
+                        is_should_addressee = True
+
+            is_directive = is_first_person or is_importance or is_should_addressee
+
+            if not is_directive:
+                continue
+
+            directives.append(
+                Recommendation(
+                    text=sent_text,
+                    span=(sent_start, sent_end),
+                    source_document=source_document,
+                    rec_id=f"directive_{len(directives) + 1}",
+                    rec_number=None,
+                    rec_type="pfd_directive",
+                    detection_method="pfd_directive_sentence",
+                )
+            )
+
+        if directives:
+            logger.info("v2: Extracted %d PFD directive sentences", len(directives))
+        return directives

@@ -70,18 +70,23 @@ def main() -> None:
     logger.info("Extracting recommendations (v2) from preprocessed text")
     recs = extractor.extract(preprocessed, source_document=pdf_path.name)
 
-    numbered = [r for r in recs if getattr(r, "rec_type", None) == "numbered" or r.rec_number is not None]
+    numbered = [r for r in recs if getattr(r, "rec_type", None) == "numbered"]
+    pfd_concerns = [r for r in recs if getattr(r, "rec_type", None) == "pfd_concern"]
+    pfd_directives = [r for r in recs if getattr(r, "rec_type", None) == "pfd_directive"]
     action_verb = [r for r in recs if getattr(r, "rec_type", None) == "action_verb"]
 
     print("\n=== v2 Recommendations Preview ===")
     print(f"PDF: {pdf_path}")
     print(
         f"Total recommendations: {len(recs)} "
-        f"(numbered={len(numbered)}, action-verb={len(action_verb)})\n"
+        f"(numbered={len(numbered)}, pfd_concerns={len(pfd_concerns)}, "
+        f"pfd_directives={len(pfd_directives)}, action-verb={len(action_verb)})\n"
     )
 
     for label, subset in (
         ("Numbered recommendations", numbered),
+        ("PFD concerns (MATTERS OF CONCERN)", pfd_concerns),
+        ("PFD directive sentences", pfd_directives),
         ("Action-verb recommendations", action_verb),
     ):
         if not subset:

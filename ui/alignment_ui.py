@@ -17,6 +17,12 @@ from daphne_core.v2.preprocess import extract_text as extract_text_v2
 from daphne_core.v2.recommendations import RecommendationExtractorV2
 from daphne_core.v2.responses import ResponseExtractorV2
 from daphne_core.v2.alignment import AlignmentStrategyV2
+from daphne_core.v2.pfd_alignment import (
+    PfdScopedAlignment,
+    align_pfd_directives_to_response_blocks,
+    infer_responder_aliases,
+    segment_pfd_response_blocks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +96,15 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
         horizontal=True,
         help="v2 uses the new layout-aware pipeline; v1 uses the legacy text-only path.",
     )
+
+    v2_doc_type = "Explicit recommendation report"
+    if engine == "v2 (experimental)":
+        v2_doc_type = st.selectbox(
+            "v2 document type",
+            ["Explicit recommendation report", "PFD (coroner) report"],
+            key="v2_alignment_doc_type",
+            help="Choose how v2 interprets document structure and how alignment is performed.",
+        )
 
     if st.button("🚀 Extract Recommendations & Find Responses", type="primary"):
         rec_text = ""
@@ -171,45 +186,107 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
                 recs_pre = extract_text_v2(Path(rec_pdf_path))
                 resps_pre = extract_text_v2(Path(resp_pdf_path))
 
-                rec_extractor = RecommendationExtractorV2()
-                resp_extractor = ResponseExtractorV2()
+                if v2_doc_type == "PFD (coroner) report":
+                    rec_extractor = RecommendationExtractorV2(profile="pfd_report")
+                    recommendations_v2 = rec_extractor.extract(recs_pre, source_document=rec_doc_name)
+                    if not recommendations_v2:
+                        st.warning("⚠️ No recommendations found in the PDF (v2 PFD mode).")
+                        progress.empty()
+                        return
 
-                recommendations_v2 = rec_extractor.extract(recs_pre, source_document=rec_doc_name)
-                if not recommendations_v2:
-                    st.warning("⚠️ No recommendations found in the PDF (v2).")
+                    directives = [r for r in recommendations_v2 if getattr(r, "rec_type", None) == "pfd_directive"]
+                    concerns = [r for r in recommendations_v2 if getattr(r, "rec_type", None) == "pfd_concern"]
+
+                    progress.progress(
+                        33,
+                        text=(
+                            f"Found {len(recommendations_v2)} PFD recommendations "
+                            f"(directives={len(directives)}, concerns={len(concerns)}). "
+                            "Segmenting response blocks..."
+                        ),
+                    )
+
+                    responder_aliases = infer_responder_aliases(resps_pre.text)
+                    blocks = segment_pfd_response_blocks(resps_pre, source_document=resp_doc_name)
+
+                    progress.progress(
+                        66,
+                        text=(
+                            f"Segmented {len(blocks)} response blocks; "
+                            f"running scoped alignment (aliases={len(responder_aliases)})..."
+                        ),
+                    )
+
+                    pfd_alignments = align_pfd_directives_to_response_blocks(
+                        directives,
+                        blocks,
+                        responder_aliases=responder_aliases,
+                    )
+
+                    progress.progress(100, text="Complete!")
                     progress.empty()
-                    return
 
-                progress.progress(
-                    33,
-                    text=f"Found {len(recommendations_v2)} recommendations (v2). Extracting responses...",
-                )
+                    st.session_state.v2_alignment_mode = "pfd"
+                    st.session_state.pfd_alignment_results = pfd_alignments
+                    st.session_state.pfd_recommendations = recommendations_v2
+                    st.session_state.pfd_directives = directives
+                    st.session_state.pfd_concerns = concerns
+                    st.session_state.pfd_response_blocks = blocks
+                    st.session_state.pfd_responder_aliases = sorted(responder_aliases)
 
-                responses_v2 = resp_extractor.extract(resps_pre, source_document=resp_doc_name)
-                if not responses_v2:
-                    st.warning("⚠️ No responses found in the PDF (v2).")
+                    st.success(
+                        f"✅ PFD mode: extracted {len(directives)} directives and "
+                        f"segmented {len(blocks)} response blocks (v2 experimental)"
+                    )
+                else:
+                    rec_extractor = RecommendationExtractorV2(profile="explicit_recs")
+                    resp_extractor = ResponseExtractorV2()
+
+                    recommendations_v2 = rec_extractor.extract(recs_pre, source_document=rec_doc_name)
+                    if not recommendations_v2:
+                        st.warning("⚠️ No recommendations found in the PDF (v2).")
+                        progress.empty()
+                        return
+
+                    progress.progress(
+                        33,
+                        text=f"Found {len(recommendations_v2)} recommendations (v2). Extracting responses...",
+                    )
+
+                    responses_v2 = resp_extractor.extract(resps_pre, source_document=resp_doc_name)
+                    if not responses_v2:
+                        st.warning(
+                            "⚠️ No structured responses found for this response document in v2. "
+                            "Showing extracted recommendations only."
+                        )
+                        progress.progress(100, text="Complete!")
+                        progress.empty()
+                        st.session_state.v2_alignment_mode = "explicit"
+                        st.session_state.v2_alignment_results = []
+                        st.session_state.v2_recommendations = recommendations_v2
+                        st.session_state.v2_responses = []
+                        return
+
+                    progress.progress(
+                        66,
+                        text=f"Found {len(responses_v2)} responses (v2). Matching...",
+                    )
+
+                    strategy = AlignmentStrategyV2(enforce_one_to_one=False)
+                    alignments_v2 = strategy.align(recommendations_v2, responses_v2)
+
+                    progress.progress(100, text="Complete!")
                     progress.empty()
-                    return
 
-                progress.progress(
-                    66,
-                    text=f"Found {len(responses_v2)} responses (v2). Matching...",
-                )
+                    st.session_state.v2_alignment_mode = "explicit"
+                    st.session_state.v2_alignment_results = alignments_v2
+                    st.session_state.v2_recommendations = recommendations_v2
+                    st.session_state.v2_responses = responses_v2
 
-                strategy = AlignmentStrategyV2(enforce_one_to_one=False)
-                alignments_v2 = strategy.align(recommendations_v2, responses_v2)
-
-                progress.progress(100, text="Complete!")
-                progress.empty()
-
-                st.session_state.v2_alignment_results = alignments_v2
-                st.session_state.v2_recommendations = recommendations_v2
-                st.session_state.v2_responses = responses_v2
-
-                st.success(
-                    f"✅ Matched {len(recommendations_v2)} recommendations with "
-                    f"{len(responses_v2)} responses (v2 experimental)"
-                )
+                    st.success(
+                        f"✅ Matched {len(recommendations_v2)} recommendations with "
+                        f"{len(responses_v2)} responses (v2 experimental)"
+                    )
             except Exception as e:  # pragma: no cover - UI path
                 progress.empty()
                 st.error(f"Error in v2 pipeline: {e}")
@@ -221,8 +298,11 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
 
     if engine == "v1 (current)" and "alignment_results" in st.session_state and st.session_state.alignment_results:
         display_alignment_results(st.session_state.alignment_results)
-    elif engine == "v2 (experimental)" and "v2_alignment_results" in st.session_state:
-        display_v2_alignment_results(st.session_state.v2_alignment_results)
+    elif engine == "v2 (experimental)":
+        if st.session_state.get("v2_alignment_mode") == "pfd" and "pfd_alignment_results" in st.session_state:
+            display_pfd_alignment_results(st.session_state.pfd_alignment_results)
+        elif "v2_alignment_results" in st.session_state:
+            display_v2_alignment_results(st.session_state.v2_alignment_results)
 
 
 def display_alignment_results(alignments: List[Dict[str, Any]]):
@@ -413,6 +493,65 @@ def display_v2_alignment_results(alignments: List[Any]):
                     f"Type: {resp.response_type} | Source: {resp.source_document}"
                 )
                 st.caption(f"Match similarity: {sim:.0%} | Method: {method}")
+
+
+def display_pfd_alignment_results(alignments: List[PfdScopedAlignment]):
+    """Display PFD scoped alignment results."""
+    st.markdown("---")
+    st.markdown("### 📊 Alignment Results (v2 PFD mode)")
+
+    directives = st.session_state.get("pfd_directives", [])
+    blocks = st.session_state.get("pfd_response_blocks", [])
+    aliases = st.session_state.get("pfd_responder_aliases", [])
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Directives", len(directives))
+    col2.metric("Response blocks", len(blocks))
+    col3.metric("Alignments", len(alignments))
+
+    if aliases:
+        with st.expander("Responder identity (inferred)", expanded=False):
+            st.write(aliases)
+
+    status_counts = Counter(a.status for a in alignments)
+    with st.expander("Status breakdown", expanded=False):
+        st.json(dict(status_counts))
+
+    st.markdown("#### 📋 Directive → Block matches")
+    for idx, a in enumerate(alignments, 1):
+        directive = a.directive
+        title = directive.text.strip().replace("\n", " ")
+        if len(title) > 80:
+            title = title[:80] + "..."
+        with st.expander(f"🧾 {idx}. [{a.status}] {title}", expanded=(idx <= 3)):
+            st.markdown("**Directive:**")
+            st.info(directive.text)
+            if a.addressees:
+                st.caption(f"Addressees: {', '.join(a.addressees)}")
+            st.markdown("---")
+            st.markdown("**Matched response block:**")
+            if a.response_block is None:
+                st.warning("No matched response block.")
+            else:
+                st.success(f"Block: {a.response_block.header}")
+                if a.response_snippet:
+                    st.write(a.response_snippet)
+
+    # Orphan blocks: response_to_findings candidates.
+    if blocks:
+        used_starts = {a.response_block.span[0] for a in alignments if a.response_block is not None}
+        orphans = [b for b in blocks if b.span[0] not in used_starts]
+        st.markdown("---")
+        st.markdown("#### 🧩 Unmatched Response Blocks (response to findings)")
+        if not orphans:
+            st.caption("No unmatched blocks.")
+        else:
+            for idx, b in enumerate(orphans[:10], 1):
+                snippet = b.text.replace("\n", " ").strip()
+                if len(snippet) > 220:
+                    snippet = snippet[:220] + "..."
+                with st.expander(f"📄 Block {idx}: {b.header}", expanded=False):
+                    st.write(snippet)
 
 
 __all__ = ["render_simple_alignment_interface"]

@@ -518,20 +518,25 @@ def render_recommendations_tab():
                         st.warning("⚠️ No recommendations found in the PDF (v2).")
                         return
 
-                    numbered_v2 = [
-                        r for r in recs_v2
-                        if getattr(r, "rec_type", None) == "numbered" or r.rec_number is not None
-                    ]
+                    numbered_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "numbered"]
+                    pfd_concerns_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "pfd_concern"]
+                    pfd_directives_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "pfd_directive"]
                     action_verb_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "action_verb"]
 
                     st.success(
                         f"✅ Found {len(recs_v2)} recommendations (v2 experimental) – "
-                        f"numbered={len(numbered_v2)}, action-verb={len(action_verb_v2)}"
+                        f"numbered={len(numbered_v2)}, pfd_concerns={len(pfd_concerns_v2)}, "
+                        f"pfd_directives={len(pfd_directives_v2)}, action-verb={len(action_verb_v2)}"
                     )
 
                     st.markdown("---")
                     st.subheader("📋 Extracted Recommendations (v2)")
-                    st.caption("Numbered headings and action-verb recommendations from the PDF layout")
+                    if v2_profile == "pfd_report":
+                        st.caption(
+                            "PFD concerns (MATTERS OF CONCERN), directive sentences, and action-verb recommendations"
+                        )
+                    else:
+                        st.caption("Numbered headings and action-verb recommendations from the PDF layout")
 
                     if numbered_v2:
                         st.markdown("##### Numbered recommendations")
@@ -544,6 +549,36 @@ def render_recommendations_tab():
                                     st.caption(
                                         f"Type: {getattr(rec, 'rec_type', None) or 'numbered'} | "
                                         f"ID: {rec.rec_id!r} | Num: {rec.rec_number} | "
+                                        f"Source: {rec.source_document}"
+                                    )
+
+                    if v2_profile == "pfd_report" and pfd_concerns_v2:
+                        st.markdown("---")
+                        st.markdown("##### PFD concerns (MATTERS OF CONCERN)")
+                        for idx, rec in enumerate(pfd_concerns_v2, 1):
+                            rec_text = rec.text.strip()
+                            if len(rec_text) > 10:
+                                title = f"**{idx}. Concern {rec.rec_number or rec.rec_id or ''}**"
+                                with st.expander(title, expanded=(idx <= 5)):
+                                    st.markdown(rec_text)
+                                    st.caption(
+                                        f"Type: {getattr(rec, 'rec_type', None)} | "
+                                        f"Method: {getattr(rec, 'detection_method', None)} | "
+                                        f"Source: {rec.source_document}"
+                                    )
+
+                    if v2_profile == "pfd_report" and pfd_directives_v2:
+                        st.markdown("---")
+                        st.markdown("##### PFD directive sentences")
+                        for idx, rec in enumerate(pfd_directives_v2, 1):
+                            rec_text = rec.text.strip()
+                            if len(rec_text) > 10:
+                                title = f"**{idx}. Directive**"
+                                with st.expander(title, expanded=(idx <= 5)):
+                                    st.markdown(rec_text)
+                                    st.caption(
+                                        f"Type: {getattr(rec, 'rec_type', None)} | "
+                                        f"Method: {getattr(rec, 'detection_method', None)} | "
                                         f"Source: {rec.source_document}"
                                     )
 
@@ -587,16 +622,16 @@ def render_recommendations_tab():
     elif engine == "v2 (experimental)" and 'v2_extracted_recommendations' in st.session_state:
         recs_v2 = st.session_state.v2_extracted_recommendations
 
-        numbered_v2 = [
-            r for r in recs_v2
-            if getattr(r, "rec_type", None) == "numbered" or r.rec_number is not None
-        ]
+        numbered_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "numbered"]
+        pfd_concerns_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "pfd_concern"]
+        pfd_directives_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "pfd_directive"]
         action_verb_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "action_verb"]
 
         st.markdown("---")
         st.success(
             f"✅ {len(recs_v2)} recommendations available "
-            f"(numbered={len(numbered_v2)}, action-verb={len(action_verb_v2)}) "
+            f"(numbered={len(numbered_v2)}, pfd_concerns={len(pfd_concerns_v2)}, "
+            f"pfd_directives={len(pfd_directives_v2)}, action-verb={len(action_verb_v2)}) "
             f"from {st.session_state.last_analysed_doc} [v2]"
         )
 
@@ -604,6 +639,18 @@ def render_recommendations_tab():
             if numbered_v2:
                 st.markdown("**Numbered recommendations (sample)**")
                 for idx, rec in enumerate(numbered_v2[:5], 1):
+                    text = rec.text.strip()
+                    st.markdown(f"**{idx}.** {text[:150]}{'...' if len(text) > 150 else ''}")
+            if pfd_concerns_v2:
+                st.markdown("---")
+                st.markdown("**PFD concerns (sample)**")
+                for idx, rec in enumerate(pfd_concerns_v2[:5], 1):
+                    text = rec.text.strip()
+                    st.markdown(f"**{idx}.** {text[:150]}{'...' if len(text) > 150 else ''}")
+            if pfd_directives_v2:
+                st.markdown("---")
+                st.markdown("**PFD directive sentences (sample)**")
+                for idx, rec in enumerate(pfd_directives_v2[:5], 1):
                     text = rec.text.strip()
                     st.markdown(f"**{idx}.** {text[:150]}{'...' if len(text) > 150 else ''}")
             if action_verb_v2:

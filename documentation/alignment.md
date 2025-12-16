@@ -25,6 +25,7 @@ Overview of how recommendations are paired with responses and where to extend th
 - Tune thresholds: adjust in `determine_alignment_status` with small, documented constants.
 - Expand patterns: broaden `find_pattern_matches` to capture new id/label formats; keep them precise to avoid false positives.
 - Context windowing: consider widening/narrowing response snippets before scoring to balance precision/recall.
+ - PFD (Regulation 28) alignment: keep PFD-specific semantics profile-scoped (directive-style recommendations, scoped matching by addressee, response block segmentation). See `documentation/pfd_alignment.md`.
 
 ### Guardrails
 - Keep output schema stable (status, score, matched_text/context, linked recommendation).
