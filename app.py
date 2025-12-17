@@ -371,6 +371,7 @@ def render_recommendations_tab():
     )
 
     v2_profile = "explicit_recs"
+    pfd_atomize_concerns = False
     if engine == "v2 (experimental)":
         profile_label = st.selectbox(
             "v2 document type",
@@ -379,6 +380,11 @@ def render_recommendations_tab():
         )
         if profile_label == "PFD (coroner) report":
             v2_profile = "pfd_report"
+            pfd_atomize_concerns = st.checkbox(
+                "Atomise MATTERS OF CONCERN into sentence-level items",
+                value=False,
+                help="When enabled, each numbered concern is split into individual sentences for easier review/tuning.",
+            )
     
     # Track which document was analysed (but don't auto-clear results)
     if 'last_analysed_doc' not in st.session_state:
@@ -511,7 +517,10 @@ def render_recommendations_tab():
             with st.spinner("Analysing document with v2 layout-aware extractor..."):
                 try:
                     preprocessed = extract_text_v2(Path(pdf_path))
-                    extractor_v2 = RecommendationExtractorV2(profile=v2_profile)
+                    extractor_v2 = RecommendationExtractorV2(
+                        profile=v2_profile,
+                        pfd_atomize_concerns=bool(pfd_atomize_concerns),
+                    )
                     recs_v2 = extractor_v2.extract(preprocessed, source_document=selected_doc)
 
                     if not recs_v2:
@@ -537,6 +546,30 @@ def render_recommendations_tab():
                         )
                     else:
                         st.caption("Numbered headings and action-verb recommendations from the PDF layout")
+
+                    st.markdown("#### 🎨 Confidence Guide (v2 action-verb)")
+                    st.caption(
+                        "Confidence is rule-based (ported from v1), not a learned probability; it indicates how explicit the language pattern is."
+                    )
+                    legend_col1, legend_col2, legend_col3 = st.columns(3)
+                    with legend_col1:
+                        st.markdown("🟢 **High (≥95%)**")
+                        st.caption("Strong 'entity should' patterns (e.g., 'The Trust should…')")
+                    with legend_col2:
+                        st.markdown("🟡 **Medium (85-94%)**")
+                        st.caption("Clear recommendation phrasing (e.g., 'We recommend…', '…should be completed')")
+                    with legend_col3:
+                        st.markdown("🟠 **Standard (75-84%)**")
+                        st.caption("Weaker modal/imperative patterns — still valid recommendations")
+
+                    with st.expander("ℹ️ How to interpret `min_confidence` in v2", expanded=False):
+                        st.markdown(
+                            """
+`min_confidence` is a **hard threshold over fixed rule scores** (e.g., 0.95, 0.90, 0.85, 0.80, 0.75).
+
+**Implication:** raising `min_confidence` does not “require higher certainty” in a statistical sense — it simply turns off entire rule families (increasing precision but potentially dropping valid recommendations).
+"""
+                        )
 
                     if numbered_v2:
                         st.markdown("##### Numbered recommendations")
@@ -585,15 +618,35 @@ def render_recommendations_tab():
                     if action_verb_v2:
                         st.markdown("---")
                         st.markdown("##### Action-verb recommendations")
-                        for idx, rec in enumerate(action_verb_v2, 1):
+                        action_verb_sorted = sorted(
+                            action_verb_v2,
+                            key=lambda r: float(getattr(r, "confidence", 0.0) or 0.0),
+                            reverse=True,
+                        )
+                        for idx, rec in enumerate(action_verb_sorted, 1):
                             rec_text = rec.text.strip()
                             if len(rec_text) > 10:
-                                title = f"**{idx}. Action-verb recommendation**"
+                                conf = getattr(rec, "confidence", None)
+                                if conf is None:
+                                    conf_icon = "⚪"
+                                    conf_label = "N/A"
+                                elif conf >= 0.95:
+                                    conf_icon = "🟢"
+                                    conf_label = f"{conf:.0%}"
+                                elif conf >= 0.85:
+                                    conf_icon = "🟡"
+                                    conf_label = f"{conf:.0%}"
+                                else:
+                                    conf_icon = "🟠"
+                                    conf_label = f"{conf:.0%}"
+
+                                method = getattr(rec, "detection_method", None) or "unknown"
+                                title = f"{conf_icon} **{idx}. {method}** ({conf_label})"
                                 with st.expander(title, expanded=(idx <= 3)):
                                     st.markdown(rec_text)
                                     st.caption(
                                         f"Type: {getattr(rec, 'rec_type', None) or 'action_verb'} | "
-                                        f"Method: {getattr(rec, 'detection_method', None) or 'verb_based'} | "
+                                        f"Method: {method} | "
                                         f"Source: {rec.source_document}"
                                     )
 
@@ -681,40 +734,42 @@ def main():
         if not modules_available:
             render_fallback_interface()
             return
-        
+
         # Enhanced tabs with error handling - ADDED SEMANTIC SEARCH
         try:
-            tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-                "📁 Upload", 
-                "🔍 Extract", 
-                "🔍 Keyword Search",
-                "🤖 AI Search",  # NEW TAB
-                "🎯 Recommendations",
-                "🔗 Align Recommendations-Responses",
-                "📊 Analytics"
-            ])
-            
+            tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+                [
+                    "📁 Upload",
+                    "🔍 Extract",
+                    "🔍 Keyword Search",
+                    "🤖 AI Search",  # NEW TAB
+                    "🎯 Recommendations",
+                    "🔗 Align Recommendations-Responses",
+                    "📊 Analytics",
+                ]
+            )
+
             with tab1:
                 render_upload_tab_safe(prepare_documents_for_search, extract_text_from_file)
-            
+
             with tab2:
                 render_extract_tab_safe()
-            
+
             with tab3:
                 render_search_tab_safe(setup_search_tab)
-            
+
             with tab4:  # NEW - SEMANTIC SEARCH TAB
                 render_semantic_search_tab()
-            
+
             with tab5:
                 render_recommendations_tab()
-                
+
             with tab6:
                 render_alignment_tab_safe()
-                
+
             with tab7:
                 render_analytics_tab_safe(render_analytics_tab)
-            
+
         except Exception as e:
             st.error(f"Tab rendering error: {str(e)}")
             render_error_recovery()

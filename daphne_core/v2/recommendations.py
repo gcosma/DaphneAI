@@ -6,6 +6,7 @@ Takes `PreprocessedText` and produces structured `Recommendation` objects.
 
 import logging
 import re
+from functools import lru_cache
 from typing import List, Optional
 
 from .types import PreprocessedText, Recommendation
@@ -43,15 +44,36 @@ class RecommendationExtractorV2:
     e.g. a GOV.UK‑style numbered heading profile vs more generic patterns.
     """
 
-    def __init__(self, profile: Optional[str] = None):
+    def __init__(
+        self,
+        profile: Optional[str] = None,
+        action_verb_min_confidence: float = 0.75,
+        enable_pfd_directives: bool = False,
+        pfd_atomize_concerns: bool = False,
+    ):
         """
         Parameters
         ----------
         profile:
             Optional profile name (e.g. "explicit_recs", "pfd_report")
             controlling document‑specific heuristics.
+        action_verb_min_confidence:
+            Minimum confidence threshold for v1-style action-verb inference.
+            This is deliberately aligned with the v1 extractor default so that
+            v2's "action_verb" channel behaves like the legacy implementation.
+        enable_pfd_directives:
+            Whether to extract `rec_type="pfd_directive"` units for PFD reports.
+            This is kept opt-in so the default behaviour remains close to the
+            legacy action-verb approach (supervisor continuity).
+        pfd_atomize_concerns:
+            When `profile="pfd_report"`, controls whether numbered concerns are
+            returned as block spans (legacy) or split into sentence-level units
+            for review/tuning.
         """
         self.profile = profile or EXPLICIT_RECS_PROFILE
+        self.action_verb_min_confidence = action_verb_min_confidence
+        self.enable_pfd_directives = enable_pfd_directives
+        self.pfd_atomize_concerns = pfd_atomize_concerns
 
     def extract(self, preprocessed: PreprocessedText, source_document: str) -> List[Recommendation]:
         """
@@ -84,7 +106,8 @@ class RecommendationExtractorV2:
             #   clean list, also extract explicit directive sentences ("I recommend…",
             #   "I request…", "It is vital that…", etc.).
             recommendations.extend(self._extract_pfd_concerns(text, source_document))
-            recommendations.extend(self._extract_pfd_directives(preprocessed, source_document))
+            if self.enable_pfd_directives:
+                recommendations.extend(self._extract_pfd_directives(preprocessed, source_document))
         else:
             # Default v2 implementation: focus on "Recommendation ..." headings,
             # using heading-based segmentation similar to the v1 strict
@@ -170,13 +193,20 @@ class RecommendationExtractorV2:
                         rec_number=rec_number,
                         rec_type="numbered",
                         detection_method="heading",
+                        confidence=None,
                     )
                 )
 
         # ------------------------------------------------------------------ #
         # Phase 2: action-verb / non-numbered recommendations (all profiles)
         # ------------------------------------------------------------------ #
-        if preprocessed.sentence_spans:
+        # To keep behaviour aligned with v1, we intentionally use the same
+        # simple regex sentence boundaries for the action-verb channel rather
+        # than syntok spans. v2 still uses syntok for other profile-specific
+        # logic (e.g. PFD directives), but "action_verb" extraction should
+        # match the legacy v1 heuristic semantics as closely as possible.
+        sentence_spans = self._v1_sentence_spans(text)
+        if sentence_spans:
             primary_spans = [rec.span for rec in recommendations]
 
             def in_primary_span(start: int) -> bool:
@@ -185,46 +215,85 @@ class RecommendationExtractorV2:
                         return True
                 return False
 
-            for sent_start, sent_end in preprocessed.sentence_spans:
+            for sent_start, sent_end in sentence_spans:
                 if in_primary_span(sent_start):
                     continue
                 sent_text = text[sent_start:sent_end].strip()
-                if len(sent_text) < 40 or len(sent_text) > 500:
+                is_rec, confidence, method, cleaned_text = self._v1_style_action_verb(sent_text)
+                if not is_rec or confidence < self.action_verb_min_confidence:
                     continue
 
-                if self._is_scattered_recommendation(sent_text):
-                    recommendations.append(
-                        Recommendation(
-                            text=sent_text,
-                            span=(sent_start, sent_end),
-                            source_document=source_document,
-                            rec_id=None,
-                            rec_number=None,
-                            rec_type="action_verb",
-                            detection_method="verb_based",
-                        )
+                recommendations.append(
+                    Recommendation(
+                        text=cleaned_text,
+                        span=(sent_start, sent_end),
+                        source_document=source_document,
+                        rec_id=None,
+                        rec_number=None,
+                        rec_type="action_verb",
+                        detection_method=method,
+                        confidence=confidence,
                     )
+                )
 
         return recommendations
 
-    def _is_scattered_recommendation(self, sentence: str) -> bool:
+    @staticmethod
+    def _v1_sentence_spans(text: str) -> list[tuple[int, int]]:
         """
-        Heuristic for identifying non-numbered / action-verb recommendations.
+        Approximate v1 sentence splitting using the same boundary regex.
 
-        This is intentionally simple and general:
-        - "we recommend" anywhere in the sentence; or
-        - presence of a strong modal ("should", "must", "shall") together with
-          at least one action verb from ACTION_VERBS.
+        v1 uses:
+          re.split(r'(?<=[.!?])\\s+(?=[A-Z])', text)
+
+        Here we produce spans so we can preserve offsets and apply span-based
+        exclusion against primary recommendation blocks.
         """
-        lower = sentence.lower()
-        if "we recommend" in lower:
-            return True
+        spans: list[tuple[int, int]] = []
+        if not text:
+            return spans
 
-        if re.search(r"\b(should|must|shall)\b", lower):
-            if any(f" {verb} " in f" {lower} " for verb in ACTION_VERBS):
-                return True
+        start = 0
+        for match in re.finditer(r"(?<=[.!?])\s+(?=[A-Z])", text):
+            end = match.end()
+            spans.append((start, end))
+            start = end
+        if start < len(text):
+            spans.append((start, len(text)))
+        return spans
 
-        return False
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def _v1_extractor():  # type: ignore[no-untyped-def]
+        """
+        Cached v1 extractor instance used to keep v2 action-verb logic
+        behaviorally identical to the legacy implementation.
+        """
+        from daphne_core.recommendation_extractor import StrictRecommendationExtractor
+
+        return StrictRecommendationExtractor()
+
+    def _v1_style_action_verb(self, sentence: str) -> tuple[bool, float, str, str]:
+        """
+        Run the legacy v1 inference logic over a single sentence.
+
+        This intentionally mirrors the v1 fallback (non-numbered) path:
+        - aggressive cleaning
+        - garbage/meta filtering
+        - pattern-based recommendation detection returning (is_rec, confidence, method)
+        """
+        extractor = self._v1_extractor()
+        cleaned = extractor.clean_text(sentence)
+
+        is_garbage, _reason = extractor.is_garbage(cleaned, is_numbered_rec=False)
+        if is_garbage:
+            return False, 0.0, "garbage", cleaned
+
+        if extractor.is_meta_recommendation(cleaned):
+            return False, 0.0, "meta", cleaned
+
+        is_rec, confidence, method, _verb = extractor.is_genuine_recommendation(cleaned, is_numbered_rec=False)
+        return is_rec, float(confidence), method, cleaned
 
     def _extract_pfd_concerns(self, text: str, source_document: str) -> List[Recommendation]:
         """
@@ -239,6 +308,8 @@ class RecommendationExtractorV2:
         anchor = re.search(r"MATTERS\s+OF\s+CONCERN", text, re.IGNORECASE)
         if not anchor:
             logger.info("v2: PFD profile selected but no 'MATTERS OF CONCERN' anchor found")
+            if self.pfd_atomize_concerns:
+                return self._extract_pfd_concerns_fallback(text, source_document)
             return concerns
 
         start_search = anchor.end()
@@ -246,7 +317,8 @@ class RecommendationExtractorV2:
         end_pos = start_search + end_match.start() if end_match else len(text)
 
         # Numbered concerns such as "(1)", "(2)", "(3)".
-        numbered_pattern = re.compile(r"\(\s*(\d+)\s*\)")
+        # Anchor to start-of-line to avoid matching incidental parentheticals like "(and/or)".
+        numbered_pattern = re.compile(r"(?m)^\s*\(\s*(\d+)\s*\)")
         matches = list(numbered_pattern.finditer(text, start_search, end_pos))
 
         if not matches:
@@ -254,6 +326,14 @@ class RecommendationExtractorV2:
                 "v2: PFD profile – no numbered concerns found under 'MATTERS OF CONCERN'; "
                 "skipping concerns list extraction",
             )
+            if self.pfd_atomize_concerns:
+                # First try the MATTERS-of-concern window; if it yields no hits
+                # (common when the window mostly contains narrative context),
+                # fall back to scanning the broader document like v1.
+                window_hits = self._extract_pfd_concerns_fallback(text[start_search:end_pos], source_document)
+                if window_hits:
+                    return window_hits
+                return self._extract_pfd_concerns_fallback(text, source_document)
             return concerns
 
         for idx, m in enumerate(matches):
@@ -272,20 +352,227 @@ class RecommendationExtractorV2:
             span = (start, end)
             raw_block = text[start:end]
 
-            concerns.append(
-                Recommendation(
-                    text=raw_block.strip(),
-                    span=span,
-                    source_document=source_document,
-                    rec_id=f"concern_{concern_num_str}",
-                    rec_number=rec_number,
-                    rec_type="pfd_concern",
-                    detection_method="pfd_matters_of_concern",
+            if not self.pfd_atomize_concerns:
+                concerns.append(
+                    Recommendation(
+                        text=raw_block.strip(),
+                        span=span,
+                        source_document=source_document,
+                        rec_id=f"concern_{concern_num_str}",
+                        rec_number=rec_number,
+                        rec_type="pfd_concern",
+                        detection_method="pfd_matters_of_concern",
+                        confidence=None,
+                    )
                 )
-            )
+                continue
+
+            sentence_spans = self._v1_sentence_spans(raw_block)
+            for sent_idx, (sent_start, sent_end) in enumerate(sentence_spans, 1):
+                global_start = start + sent_start
+                global_end = start + sent_end
+                sent_text = text[global_start:global_end].strip()
+                if not sent_text:
+                    continue
+
+                if self._pfd_is_boilerplate_sentence(sent_text):
+                    continue
+
+                # Baseline guarantee: if the legacy v1 action-verb logic would
+                # extract this sentence as a recommendation, include it in the
+                # atomised PFD output.
+                is_rec, confidence, method, cleaned_text = self._v1_style_action_verb(sent_text)
+                if is_rec and confidence >= self.action_verb_min_confidence:
+                    concerns.append(
+                        Recommendation(
+                            text=cleaned_text,
+                            span=(global_start, global_end),
+                            source_document=source_document,
+                            rec_id=f"concern_{concern_num_str}_s{sent_idx}",
+                            rec_number=rec_number,
+                            rec_type="pfd_concern",
+                            detection_method=f"pfd_matters_of_concern_atomized_v1:{method}",
+                            confidence=confidence,
+                        )
+                    )
+                    continue
+
+                trigger = self._pfd_atomized_trigger(sent_text, allow_weak=True)
+                if not trigger:
+                    continue
+
+                concerns.append(
+                    Recommendation(
+                        text=sent_text,
+                        span=(global_start, global_end),
+                        source_document=source_document,
+                        rec_id=f"concern_{concern_num_str}_s{sent_idx}",
+                        rec_number=rec_number,
+                        rec_type="pfd_concern",
+                        detection_method=f"pfd_matters_of_concern_atomized:{trigger}",
+                        confidence=None,
+                    )
+                )
 
         logger.info("v2: Extracted %d PFD concerns", len(concerns))
+        if self.pfd_atomize_concerns and not concerns:
+            # If we entered the structured PFD path but ended up emitting nothing
+            # (e.g., numbering matched unexpectedly), fall back to the broader scan.
+            return self._extract_pfd_concerns_fallback(text, source_document)
         return concerns
+
+    @staticmethod
+    def _pfd_atomized_trigger(sentence: str, *, allow_weak: bool) -> Optional[str]:
+        """
+        Returns a short trigger label if the sentence looks like a response-required
+        concern (Target B); otherwise returns None.
+
+        This is intentionally high-precision and is used to filter out pure
+        context/timeline sentences when `pfd_atomize_concerns=True`.
+        """
+        cleaned = sentence.strip()
+        cleaned = re.sub(r"^(?:[-–•\s]+)", "", cleaned)
+        cleaned = re.sub(r"^(?:Part\s+\d+\s*)?(?:\(\d+\)|\d+\.)\s*", "", cleaned, flags=re.IGNORECASE)
+
+        starters = [
+            ("There was no", re.compile(r"(?i)^there\s+was\s+no\b")),
+            ("There was a lack of", re.compile(r"(?i)^there\s+was\s+a\s+lack\s+of\b")),
+            ("There was a failure to", re.compile(r"(?i)^there\s+was\s+a\s+failure\s+to\b")),
+            ("No action was taken", re.compile(r"(?i)^no\s+action\s+was\s+taken\b")),
+            ("I am concerned", re.compile(r"(?i)^i\s+am\s+concerned\b")),
+            ("I remain concerned", re.compile(r"(?i)^i\s+remain\s+concerned\b")),
+            ("I am alarmed", re.compile(r"(?i)^i\s+am\s+alarmed\b")),
+            ("There remains no", re.compile(r"(?i)^there\s+remains\b.*\bno\b")),
+            ("There are no", re.compile(r"(?i)^there\s+are\s+no\b")),
+        ]
+        if allow_weak:
+            starters.extend(
+                [
+                    ("was not", re.compile(r"(?i)^.*\bwas\s+not\b")),
+                    ("were not", re.compile(r"(?i)^.*\bwere\s+not\b")),
+                ]
+            )
+        for label, pattern in starters:
+            if pattern.search(cleaned):
+                return label
+
+        m = re.search(r"(?i)\bdid\s+not\s+(\w+)\b", cleaned)
+        if m:
+            return f"did not {m.group(1).lower()}"
+
+        m = re.search(r"(?i)\bfailed\s+to\s+(\w+)\b", cleaned)
+        if m:
+            return f"failed to {m.group(1).lower()}"
+
+        m = re.search(r"(?i)\bunable\s+to\s+(\w+)\b", cleaned)
+        if m:
+            return f"unable to {m.group(1).lower()}"
+
+        if re.search(r"(?i)\bgives?\s+rise\s+to\s+(?:a\s+)?risk\b", cleaned):
+            return "gives rise to risk"
+
+        return None
+
+    @staticmethod
+    def _pfd_is_boilerplate_sentence(sentence: str) -> bool:
+        text = " ".join(sentence.strip().split())
+        if not text:
+            return True
+        return bool(
+            re.search(
+                r"(?i)\b("
+                r"in\s+my\s+opinion\s+there\s+is\s+a\s+risk\s+that\s+future\s+deaths?"
+                r"|in\s+my\s+opinion\s+action\s+should\s+be\s+taken\s+to\s+prevent\s+future\s+deaths"
+                r"|you\s+are\s+under\s+a\s+duty\s+to\s+respond"
+                r"|within\s+56\s+days"
+                r"|your\s+response\s+must\s+contain"
+                r"|otherwise\s+you\s+must\s+explain\s+why\s+no\s+action\s+is\s+proposed"
+                r"|copies\s+and\s+publication"
+                r")\b",
+                text,
+            )
+        )
+
+    def _extract_pfd_concerns_fallback(self, text: str, source_document: str) -> List[Recommendation]:
+        """
+        Fallback for PFD atomised concerns when no clean numbered MATTERS OF CONCERN
+        list is found.
+
+        Strategy:
+        - Prefer the "CORONER'S CONCERNS" → "ACTION SHOULD BE TAKEN" window when present.
+        - Otherwise scan the entire document.
+        - Emit only sentences matching the high-precision trigger set.
+        """
+        if not text or not text.strip():
+            return []
+
+        def extract_from_region(region: str, region_start: int, *, allow_weak: bool) -> List[Recommendation]:
+            out_local: List[Recommendation] = []
+            for sent_idx, (s_start, s_end) in enumerate(self._v1_sentence_spans(region), 1):
+                sent_text = region[s_start:s_end].strip()
+                if not sent_text:
+                    continue
+                if self._pfd_is_boilerplate_sentence(sent_text):
+                    continue
+
+                is_rec, confidence, method, cleaned_text = self._v1_style_action_verb(sent_text)
+                if is_rec and confidence >= self.action_verb_min_confidence:
+                    out_local.append(
+                        Recommendation(
+                            text=cleaned_text,
+                            span=(region_start + s_start, region_start + s_end),
+                            source_document=source_document,
+                            rec_id=f"concern_fallback_s{sent_idx}",
+                            rec_number=None,
+                            rec_type="pfd_concern",
+                            detection_method=f"pfd_concerns_fallback_atomized_v1:{method}",
+                            confidence=confidence,
+                        )
+                    )
+                    continue
+
+                trigger = self._pfd_atomized_trigger(sent_text, allow_weak=allow_weak)
+                if not trigger:
+                    continue
+
+                out_local.append(
+                    Recommendation(
+                        text=sent_text,
+                        span=(region_start + s_start, region_start + s_end),
+                        source_document=source_document,
+                        rec_id=f"concern_fallback_s{sent_idx}",
+                        rec_number=None,
+                        rec_type="pfd_concern",
+                        detection_method=f"pfd_concerns_fallback_atomized:{trigger}",
+                        confidence=None,
+                    )
+                )
+            return out_local
+
+        # Pass 1: prefer the coroner concerns window if present (reduces noise).
+        start = 0
+        m_start = re.search(r"CORONER[’']?S\s+CONCERNS", text, re.IGNORECASE)
+        if m_start:
+            start = m_start.end()
+            m_ws = re.match(r"\s+", text[start:])
+            if m_ws:
+                start += m_ws.end()
+
+        end = len(text)
+        m_end = re.search(r"ACTION\s+SHOULD\s+BE\s+TAKEN", text[start:], re.IGNORECASE)
+        if m_end:
+            end = start + m_end.start()
+
+        window_region = text[start:end]
+        out = extract_from_region(window_region, start, allow_weak=False)
+
+        # Pass 2: if the windowed scan yields nothing but v1 would have returned
+        # results elsewhere, fall back to scanning the full document (v1-style).
+        if not out and start != 0:
+            out = extract_from_region(text, 0, allow_weak=False)
+
+        logger.info("v2: PFD fallback atomised concerns extracted %d items", len(out))
+        return out
 
     def _extract_pfd_directives(self, preprocessed: PreprocessedText, source_document: str) -> List[Recommendation]:
         """
@@ -380,6 +667,7 @@ class RecommendationExtractorV2:
                     rec_number=None,
                     rec_type="pfd_directive",
                     detection_method="pfd_directive_sentence",
+                    confidence=None,
                 )
             )
 

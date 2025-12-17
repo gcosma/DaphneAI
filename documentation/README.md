@@ -6,6 +6,7 @@ This folder will hold concise, task-focused docs for the DaphneAI codebase. The 
 - `architecture.md` — high-level system layout: core vs UI packages, data flow through ingestion, search, extraction, alignment, and display; key entrypoints.
 - `alignment.md` — alignment logic overview: recommendation extraction assumptions, response detection, alignment heuristics, where to extend/improve, and invariants to keep intact.
 - `pfd_alignment.md` — PFD (Regulation 28) specific extraction/alignment: directive-style recommendations, response block segmentation, scoped matching semantics.
+- `pfd_rule_inventory.md` — consolidated heuristic inventory for PFD extraction (concerns windowing, boilerplate exclusion, common concern patterns).
 - `search.md` — search modes (smart/exact/fuzzy/semantic/hybrid), main helpers, and guidelines for adding new search strategies.
 - `ui-guide.md` — Streamlit UI structure: tab/module mapping, how UI composes with core services, and tips for adding new UI features without leaking business logic.
 - `deployment.md` — running locally vs. packaging, environment variables, models, and performance considerations (keep minimal, link to scripts if added later).
@@ -14,3 +15,7 @@ This folder will hold concise, task-focused docs for the DaphneAI codebase. The 
 - Keep each file <400–500 lines; prefer links between files over repetition.
 - Lead with diagrams or short flows where helpful; keep prose crisp and actionable.
 - Call out extension points and guardrails (what not to break) in each area.
+
+### Project “contracts”
+- For subtle extraction/alignment behaviour, treat `OBSERVATIONS.md` and `OBSERVATIONSv2.md` at repo root as part of the working contract.
+- For leadership-facing changes and priority shifts, log decisions in `documentation/DECISIONS.md`.

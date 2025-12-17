@@ -64,13 +64,13 @@ def test_v2_reference_pair_regression() -> None:
     action_verb_resps = [r for r in resps if r.response_type == "action_verb"]
 
     expected = {
-        "recs_total": 14,
+        "recs_total": 13,
         "recs_numbered": 13,
-        "recs_action_verb": 1,
+        "recs_action_verb": 0,
         "resps_total": 13,
         "resps_structured": 13,
         "resps_action_verb": 0,
-        "alignments_total": 14,
+        "alignments_total": 13,
     }
 
     _assert_count_with_warning("v2 recommendations (total)", len(recs), expected["recs_total"])

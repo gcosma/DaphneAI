@@ -18,13 +18,25 @@ PFD ecosystems frequently include:
 This means alignment is often **many directives → few response documents**, with many
 directives correctly having **no in-scope match** in a given response.
 
+Many PFD reports are also **“null explicit recommendation”** cases: they contain no clean
+directive sentences (“I recommend…”, “X should…”), but still enumerate *Matters of Concern*
+that recipients must respond to. We treat these concerns as a separate extraction target
+instead of relabeling them as “recommendations”.
+
 ### Terminology (v2)
 
 v2 uses `Recommendation.rec_type` to make the extraction channel explicit:
 - `numbered`: explicit “Recommendation N …” headings (profile: `explicit_recs`)
-- `action_verb`: action-verb sentences outside primary spans (shared channel)
-- `pfd_concern`: numbered items under a short “MATTERS OF CONCERN” list (profile: `pfd_report`)
-- `pfd_directive`: embedded directive sentences in long-form narrative PFD reports (profile: `pfd_report`)
+- `action_verb`: action-verb sentences outside primary spans (shared channel; semantics aligned to v1)
+- `pfd_concern`: response-required concerns (often numbered items under “MATTERS OF CONCERN” / “CORONER’S CONCERNS”)
+- `pfd_directive`: embedded directive sentences in long-form narrative PFD reports (profile: `pfd_report`, currently opt-in)
+
+Semantic targets (useful for evaluation and UI framing):
+- **Target A (explicit recommendations):** directive sentences when present (often absent).
+- **Target B (response-required concerns):** the concerns/failures the recipient is expected to address in their response.
+
+Heuristic inventory for Target B extraction (windowing, boilerplate exclusions, common concern patterns)
+is consolidated in `documentation/pfd_rule_inventory.md`.
 
 For PFD response documents we expect to introduce response “blocks”:
 - A **response block** is a thematic section (e.g., “Prevent”, “MAPPA”, “Operation Plato”) rather
@@ -35,8 +47,9 @@ For PFD response documents we expect to introduce response “blocks”:
 PFD recommendations are extracted in two structural ways:
 
 1) **Short-form concerns list** (`pfd_concern`)
-- Anchor: “MATTERS OF CONCERN”
-- Unit: each numbered item like `(1)`, `(2)`, `(3)` until “ACTION SHOULD BE TAKEN”
+- Anchor: “MATTERS OF CONCERN” / “CORONER’S CONCERNS”
+- Unit: each numbered item like `(1)`, `(2)`, `(3)` (and narrative concern sentences within the concerns window)
+- End: typically “ACTION SHOULD BE TAKEN” / “YOUR RESPONSE”
 - When this structure exists, it is usually the cleanest “unit that expects a response”.
 
 2) **Long-form narrative directives** (`pfd_directive`)
@@ -53,6 +66,12 @@ PFD recommendations are extracted in two structural ways:
 - Keep: forward-looking, actionable obligations (monitor/evaluate/ensure/provide reassurance/assess/put in place).
 - Drop: statutory boilerplate (“action should be taken…”, “duty of those receiving this report…”), reported
   speech (“Mr X agreed that … should …”), and narrative conclusion/citation blocks.
+
+**Practical note (current priorities)**
+- The “action-verb” channel is treated as the canonical continuity method and is aligned to v1 semantics.
+- Longer-term, we expect to collapse multiple PFD “recommendation-like” channels into a single, explainable
+  action-verb-oriented surface in the UI, while still preserving the semantic distinction between explicit
+  recommendations (Target A) and response-required concerns (Target B) for downstream alignment and evaluation.
 
 ### Response extraction – PFD response documents (proposed “block” approach)
 
@@ -76,6 +95,12 @@ PFD alignment is not “best response per recommendation”. It is:
 - **in-scope match** when the directive is addressed to the responder (or a joint responder),
 - **out-of-scope** when it is addressed to a different agency, and
 - **response-to-findings** when a response block is legitimate but not tied to a single directive sentence.
+
+For Target B (response-required concerns), alignment is conceptually “which response block addresses this concern?”,
+often without a single-sentence directive anchor. In practice this will likely rely on:
+- concerns-window extraction + deduplication
+- topic overlap between concern text and response blocks
+- optional responder-scope gating when addressees can be inferred
 
 #### Step 1: Addressee extraction (gatekeeper)
 
@@ -134,6 +159,7 @@ For a new PFD pair:
    - `python -m tools.preproc_v2_preview --pdf <response>.pdf`
 2) Recommendation inspection (PFD profile):
    - `python -m tools.inspect_recs_v2 --pdf <report>.pdf --profile pfd_report`
+   - Optional meeting view: `streamlit run pfd_compare_app.py` (Action Verbs vs Full concerns vs Extended Action Verbs, all run over the same v2-preprocessed text baseline).
 3) Response inspection:
    - Use `python -m tools.inspect_pfd_alignment --report <report>.pdf --response <response>.pdf`
      to preview inferred responder identity, response blocks, scoped matches, and unmatched

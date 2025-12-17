@@ -52,6 +52,14 @@ def parse_args() -> argparse.Namespace:
         default=EXPLICIT_RECS_PROFILE,
         help="v2 document profile: explicit recommendations vs PFD (coroner) report.",
     )
+    parser.add_argument(
+        "--atomize-pfd-concerns",
+        action="store_true",
+        help=(
+            "When using --profile pfd_report, split numbered MATTERS OF CONCERN blocks into "
+            "sentence-level items for review."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -66,7 +74,10 @@ def main() -> None:
     logger.info("Running v2 preprocessing on %s", pdf_path)
     preprocessed = extract_text(pdf_path)
 
-    extractor = RecommendationExtractorV2(profile=args.profile)
+    extractor = RecommendationExtractorV2(
+        profile=args.profile,
+        pfd_atomize_concerns=bool(args.atomize_pfd_concerns),
+    )
     logger.info("Extracting recommendations (v2) from preprocessed text")
     recs = extractor.extract(preprocessed, source_document=pdf_path.name)
 
@@ -103,6 +114,7 @@ def main() -> None:
                 f"Rec #{idx} | rec_id={rec.rec_id} | rec_number={rec.rec_number} "
                 f"| type={getattr(rec, 'rec_type', None)} "
                 f"| method={getattr(rec, 'detection_method', None)} "
+                f"| conf={getattr(rec, 'confidence', None)} "
                 f"| span={span_info} | source={rec.source_document}"
             )
             print("-" * 80)

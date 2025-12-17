@@ -28,7 +28,10 @@ def test_pfd_directives_filter_boilerplate_and_reported_speech() -> None:
         ]
     )
 
-    recs = RecommendationExtractorV2(profile=PFD_REPORT_PROFILE).extract(pre, source_document="synthetic.pdf")
+    recs = RecommendationExtractorV2(profile=PFD_REPORT_PROFILE, enable_pfd_directives=True).extract(
+        pre,
+        source_document="synthetic.pdf",
+    )
     directives = [r for r in recs if r.rec_type == "pfd_directive"]
 
     assert len(directives) == 2
@@ -37,4 +40,3 @@ def test_pfd_directives_filter_boilerplate_and_reported_speech() -> None:
     assert "should direct" in texts
     assert "action should be taken" not in texts
     assert "mr stewart agreed" not in texts
-

@@ -24,6 +24,61 @@ from .types import PreprocessedText
 Span = Tuple[int, int]
 logger = logging.getLogger(__name__)
 
+_LINE_END_NUMERIC_STOPWORDS = {
+    "section",
+    "chapter",
+    "part",
+    "appendix",
+    "schedule",
+    "regulation",
+    "recommendation",
+    "page",
+}
+
+
+def _clean_page_break_artifacts(text: str) -> str:
+    """
+    Remove common PDF extraction artefacts without risking broad regressions.
+
+    This targets two high-signal patterns seen in PFD PDFs:
+    - Lines that are *only* sequences of single digits (e.g. "6 7 8 9")
+    - Stray page markers appended to the end of a line (e.g. "lack 2\\nof ...")
+
+    Notes
+    -----
+    This function is intentionally conservative and does not attempt general
+    OCR cleanup. It should be safe to run across all v2-preprocessed PDFs.
+    """
+    if not text:
+        return ""
+
+    cleaned = text
+
+    # 1) Remove lines that look like a run of single digits.
+    #    Example: "6 7 8 9"
+    cleaned = re.sub(r"(?m)^\s*(?:\d\s+){2,}\d\s*$\n?", "", cleaned)
+
+    # 1b) Remove a leading run of single digits at the start of a line when
+    #     the line continues with a word (common when a page marker is
+    #     injected before a continued sentence).
+    #     Example: "6 7 8 9 of contact ..." -> "of contact ..."
+    cleaned = re.sub(r"(?m)^\s*(?:\d\b\s+){2,}\d\b\s+(?=[A-Za-z])", "", cleaned)
+
+    # 2) Remove a trailing 1–2 digit marker when it appears at the end of a line
+    #    and the next line continues with a lowercase word (i.e., mid-sentence).
+    #    Guard against legitimate references like "Section 2 of ...".
+    pattern = re.compile(r"(?m)\b([A-Za-z]+)\s+(\d{1,2})\s*$\n(?=[a-z])")
+
+    def repl(match: re.Match[str]) -> str:
+        word = match.group(1)
+        if word.lower() in _LINE_END_NUMERIC_STOPWORDS:
+            return match.group(0)
+        return f"{word}\n"
+
+    cleaned = pattern.sub(repl, cleaned)
+
+    return cleaned
+
 
 def _require_unstructured() -> "callable":
     try:
@@ -145,6 +200,7 @@ def _build_text_and_pages(pdf_path: Path) -> Tuple[str, List[Span]]:
         # paragraph breaks at every element boundary. Headers/footers have
         # already been removed via repetition detection above.
         page_text = "\n".join(filtered_chunks).strip()
+        page_text = _clean_page_break_artifacts(page_text)
         if not page_text:
             continue
         if current:

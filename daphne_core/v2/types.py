@@ -31,6 +31,7 @@ class Recommendation:
     rec_number: Optional[int] = None  # numeric id when applicable
     rec_type: Optional[str] = None  # e.g. "numbered", "action_verb"
     detection_method: Optional[str] = None  # e.g. "heading", "verb_based"
+    confidence: Optional[float] = None  # v1-style rule confidence when applicable
 
 
 @dataclass
