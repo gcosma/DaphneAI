@@ -363,6 +363,226 @@ def render_recommendations_tab():
     
     selected_doc = st.selectbox("Select document to analyse:", doc_names)
 
+    view_mode = st.radio(
+        "View mode",
+        ["Single (current)", "Compare (3 columns)"],
+        horizontal=True,
+        help="Compare shows Action Verbs vs v2 structured+extras vs Extended Action Verbs side-by-side.",
+    )
+
+    if view_mode == "Compare (3 columns)":
+        def extract_action_verbs_only(text: str, min_confidence: float) -> list[dict]:
+            """
+            Run the legacy v1 sentence-based action-verb inference regardless of whether
+            numbered "Recommendation N" headings exist.
+            """
+            extractor = StrictRecommendationExtractor()
+            if not text or not text.strip():
+                return []
+
+            sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", text)
+            recs: list[dict] = []
+            for idx, sentence in enumerate(sentences):
+                cleaned = extractor.clean_text(sentence)
+                is_garbage, _reason = extractor.is_garbage(cleaned, is_numbered_rec=False)
+                if is_garbage:
+                    continue
+                if extractor.is_meta_recommendation(cleaned):
+                    continue
+                is_rec, confidence, method, verb = extractor.is_genuine_recommendation(cleaned, is_numbered_rec=False)
+                if not is_rec or confidence < min_confidence:
+                    continue
+                recs.append(
+                    {
+                        "text": cleaned,
+                        "verb": verb,
+                        "method": method,
+                        "confidence": round(float(confidence), 3),
+                        "position": idx,
+                        "in_section": False,
+                    }
+                )
+
+            return extractor._deduplicate(recs)  # type: ignore[attr-defined]
+
+        doc = next((d for d in documents if d["filename"] == selected_doc), None)
+        if not doc:
+            st.error("Document not available")
+            return
+
+        profile_label = st.selectbox(
+            "v2 document type",
+            ["Explicit recommendation report", "PFD (coroner) report"],
+            help="Choose how v2 interprets the document structure.",
+            key="recs_compare_v2_profile",
+        )
+        v2_profile = "pfd_report" if profile_label == "PFD (coroner) report" else "explicit_recs"
+
+        min_conf = st.slider(
+            "min_confidence (Action Verbs / Extended Action Verbs)",
+            min_value=0.50,
+            max_value=0.95,
+            value=0.75,
+            step=0.05,
+            help="Rule-based threshold (not calibrated probability). Increasing it disables whole rule families.",
+        )
+
+        pdf_path = doc.get("pdf_path")
+        if not pdf_path:
+            st.error(
+                "Compare mode requires the original PDF path for v2. "
+                "Please upload this document as a PDF in this session."
+            )
+            return
+
+        def _trigger_label_from_method(method: str | None) -> str:
+            if not method:
+                return "trigger"
+            suffix = method.split(":")[-1]
+            v1_map = {
+                "entity_should": "should",
+                "we_recommend": "we recommend",
+                "should_be_passive": "should be",
+                "modal_verb": "should/must/shall",
+                "imperative": "imperative",
+            }
+            return v1_map.get(suffix, suffix)
+
+        run = st.button("🔍 Run side-by-side compare", type="primary")
+        state_key = f"recs_compare::{selected_doc}::{v2_profile}::{min_conf:.2f}"
+
+        if run:
+            try:
+                from daphne_core.v2.preprocess import extract_text as extract_text_v2
+                from daphne_core.v2.recommendations import RecommendationExtractorV2
+                from pathlib import Path
+
+                with st.spinner("Running v2 preprocessing…"):
+                    preprocessed = extract_text_v2(Path(pdf_path))
+
+                with st.spinner("Extracting Action Verbs (v1 sentence inference)…"):
+                    v1_action_verbs = extract_action_verbs_only(preprocessed.text, min_confidence=min_conf)
+
+                with st.spinner("Extracting v2 (structured + extras)…"):
+                    v2_full = RecommendationExtractorV2(
+                        profile=v2_profile,
+                        action_verb_min_confidence=min_conf,
+                        pfd_atomize_concerns=False,
+                    ).extract(preprocessed, source_document=selected_doc)
+
+                v2_extended = None
+                if v2_profile == "pfd_report":
+                    with st.spinner("Extracting v2 Extended Action Verbs (atomised)…"):
+                        v2_extended = RecommendationExtractorV2(
+                            profile=v2_profile,
+                            action_verb_min_confidence=min_conf,
+                            pfd_atomize_concerns=True,
+                        ).extract(preprocessed, source_document=selected_doc)
+
+                st.session_state[state_key] = {
+                    "v1_action_verbs": v1_action_verbs,
+                    "v2_full": v2_full,
+                    "v2_extended": v2_extended,
+                }
+            except Exception as e:
+                st.error(f"❌ Compare run failed: {e}")
+                with st.expander("Show error details"):
+                    st.code(traceback.format_exc())
+                return
+
+        results = st.session_state.get(state_key)
+        if not results:
+            st.info("Click “Run side-by-side compare” to generate results.")
+            return
+
+        v1_action_verbs = results["v1_action_verbs"]
+        v2_full = results["v2_full"]
+        v2_extended = results.get("v2_extended")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.subheader("Action Verbs")
+            st.caption("v1 action-verb sentence inference over v2-preprocessed text (always-on for compare)")
+            st.metric("Count", len(v1_action_verbs))
+            if v1_action_verbs:
+                v1_sorted = sorted(v1_action_verbs, key=lambda r: r.get("confidence", 0), reverse=True)
+                for idx, rec in enumerate(v1_sorted, 1):
+                    rec_text = (rec.get("text") or "").strip()
+                    conf = float(rec.get("confidence") or 0.0)
+                    method = rec.get("method", "unknown")
+                    title = f"{idx}. {_trigger_label_from_method(method)} ({conf:.0%})"
+                    with st.expander(title, expanded=(idx <= 5)):
+                        st.write(rec_text)
+            else:
+                st.info("No Action Verbs found.")
+
+        with col2:
+            st.subheader("Structure-based")
+            st.caption("Only structure-derived units (no action-verb inference).")
+
+            numbered = [r for r in v2_full if getattr(r, "rec_type", None) == "numbered"]
+            pfd_blocks = [
+                r
+                for r in v2_full
+                if getattr(r, "rec_type", None) == "pfd_concern"
+                and (getattr(r, "detection_method", None) == "pfd_matters_of_concern")
+            ]
+
+            items = pfd_blocks if v2_profile == "pfd_report" else numbered
+            st.metric("Count", len(items))
+
+            if v2_profile == "pfd_report":
+                if not items:
+                    st.info("No structure-based concerns found.")
+                else:
+                    for idx, rec in enumerate(sorted(items, key=lambda r: (r.rec_number or 9999, r.span[0])), 1):
+                        title = f"{idx}. Concern {rec.rec_number or rec.rec_id or ''}".strip()
+                        with st.expander(title, expanded=(idx <= 3)):
+                            st.write(rec.text.strip())
+            else:
+                if not items:
+                    st.info("No structured recommendations found.")
+                else:
+                    for idx, rec in enumerate(items, 1):
+                        title = f"{idx}. Recommendation {rec.rec_id or rec.rec_number or ''}".strip()
+                        with st.expander(title, expanded=(idx <= 3)):
+                            st.write(rec.text.strip())
+
+        with col3:
+            st.subheader("Extended Action Verbs")
+            if v2_profile == "pfd_report":
+                st.caption("Atomised PFD concerns + v1 baseline (ensures Action Verbs ⊆ Extended)")
+                recs = v2_extended or []
+                pfd_concerns = [r for r in recs if getattr(r, "rec_type", None) == "pfd_concern"]
+                st.metric("Count", len(pfd_concerns))
+                if not pfd_concerns:
+                    st.info("No Extended Action Verbs found.")
+                else:
+                    pfd_concerns_sorted = sorted(pfd_concerns, key=lambda r: (r.rec_number or 9999, r.span[0]))
+                    for idx, rec in enumerate(pfd_concerns_sorted, 1):
+                        trigger = _trigger_label_from_method(getattr(rec, "detection_method", None))
+                        label = rec.rec_number or rec.rec_id or ""
+                        title = f"{idx}. {trigger} (Concern {label})".strip()
+                        with st.expander(title, expanded=(idx <= 5)):
+                            st.write(rec.text.strip())
+            else:
+                st.caption("Action verbs only (currently matches v1 baseline for non-PFD)")
+                st.metric("Count", len(v1_action_verbs))
+                if not v1_action_verbs:
+                    st.info("No Extended Action Verbs found.")
+                else:
+                    v1_sorted = sorted(v1_action_verbs, key=lambda r: r.get("confidence", 0), reverse=True)
+                    for idx, rec in enumerate(v1_sorted, 1):
+                        rec_text = (rec.get("text") or "").strip()
+                        conf = float(rec.get("confidence") or 0.0)
+                        method = rec.get("method", "unknown")
+                        title = f"{idx}. {_trigger_label_from_method(method)} ({conf:.0%})"
+                        with st.expander(title, expanded=(idx <= 5)):
+                            st.write(rec_text)
+
+        return
+
     engine = st.radio(
         "Extraction engine",
         ["v1 (current)", "v2 (experimental)"],

@@ -414,6 +414,11 @@ class RecommendationExtractorV2:
                     )
                 )
 
+        if self.pfd_atomize_concerns:
+            # Ensure v1 is a subset of the "extended" output by always adding
+            # the v1 baseline extractions (ported rules) as additional items.
+            concerns = self._add_v1_baseline_pfd_concerns(text, source_document, concerns)
+
         logger.info("v2: Extracted %d PFD concerns", len(concerns))
         if self.pfd_atomize_concerns and not concerns:
             # If we entered the structured PFD path but ended up emitting nothing
@@ -571,7 +576,70 @@ class RecommendationExtractorV2:
         if not out and start != 0:
             out = extract_from_region(text, 0, allow_weak=False)
 
+        if self.pfd_atomize_concerns:
+            out = self._add_v1_baseline_pfd_concerns(text, source_document, out)
+
         logger.info("v2: PFD fallback atomised concerns extracted %d items", len(out))
+        return out
+
+    def _add_v1_baseline_pfd_concerns(
+        self,
+        text: str,
+        source_document: str,
+        existing: List[Recommendation],
+    ) -> List[Recommendation]:
+        """
+        Guarantee: when `pfd_atomize_concerns=True`, v1 extractions are always a
+        subset of the returned v2 items.
+
+        We do this by running the legacy v1 action-verb logic across the full
+        document (over v1 sentence spans) and adding any hits that are not already
+        represented in the atomised output.
+        """
+        if not text or not text.strip():
+            return existing
+
+        def norm(s: str) -> str:
+            txt = " ".join((s or "").strip().lower().split())
+            # Strip common enumeration prefixes so that "(2) The Trust..." and
+            # "The Trust..." are treated as the same unit for deduplication.
+            txt = re.sub(r"^(?:part\s+\d+\s+)?(?:\(\d+\)|\d+\.)\s*", "", txt)
+            return txt
+
+        seen: set[str] = set()
+        for r in existing:
+            seen.add(norm(getattr(r, "text", "") or ""))
+
+        out = list(existing)
+        for idx, (s_start, s_end) in enumerate(self._v1_sentence_spans(text), 1):
+            sent_text = text[s_start:s_end].strip()
+            if not sent_text:
+                continue
+            if self._pfd_is_boilerplate_sentence(sent_text):
+                continue
+
+            is_rec, confidence, method, cleaned_text = self._v1_style_action_verb(sent_text)
+            if not is_rec or confidence < self.action_verb_min_confidence:
+                continue
+
+            key = norm(cleaned_text)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+
+            out.append(
+                Recommendation(
+                    text=cleaned_text,
+                    span=(s_start, s_end),
+                    source_document=source_document,
+                    rec_id=f"concern_v1_s{idx}",
+                    rec_number=None,
+                    rec_type="pfd_concern",
+                    detection_method=f"pfd_v1_baseline:{method}",
+                    confidence=confidence,
+                )
+            )
+
         return out
 
     def _extract_pfd_directives(self, preprocessed: PreprocessedText, source_document: str) -> List[Recommendation]:
