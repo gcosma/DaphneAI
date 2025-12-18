@@ -12,6 +12,8 @@ from typing import List, Optional
 
 from .types import PreprocessedText, Response
 
+from daphne_core.alignment_engine import clean_pdf_artifacts, is_genuine_response, is_recommendation_text
+
 
 logger = logging.getLogger(__name__)
 
@@ -121,25 +123,65 @@ class ResponseExtractorV2:
             )
 
         # ------------------------------------------------------------------ #
-        # Phase 2: action-verb responses (fallback only)
+        # Phase 2: scattered/unstructured responses (fallback only)
         # ------------------------------------------------------------------ #
-        if not responses and preprocessed.sentence_spans:
-            for sent_start, sent_end in preprocessed.sentence_spans:
-                sentence = text[sent_start:sent_end].strip()
-                if len(sentence) < 40 or len(sentence) > 500:
+        if not responses:
+            # 2a) Paragraph-style blocks (common in letter-style or narrative responses).
+            for start, end in self._paragraph_spans(text):
+                block = text[start:end].strip()
+                if not block:
                     continue
-                if self._is_scattered_response(sentence):
-                    rec_id, rec_number = self._infer_rec_identity(sentence)
-                    responses.append(
-                        Response(
-                            text=sentence,
-                            span=(sent_start, sent_end),
-                            source_document=source_document,
-                            response_type="action_verb",
-                            rec_id=rec_id,
-                            rec_number=rec_number,
-                        )
+                cleaned = clean_pdf_artifacts(block)
+                if len(cleaned) < 80 or len(cleaned) > 4000:
+                    continue
+                if is_recommendation_text(cleaned):
+                    continue
+                # Avoid matching embedded recommendation excerpts.
+                if rec_marker_re.match(block):
+                    continue
+                # Prefer blocks that reference a recommendation or have strong response language.
+                if "recommendation" not in cleaned.lower() and not is_genuine_response(cleaned):
+                    continue
+
+                rec_id, rec_number = self._infer_rec_identity(cleaned)
+                responses.append(
+                    Response(
+                        text=cleaned,
+                        span=(start, end),
+                        source_document=source_document,
+                        response_type="paragraph",
+                        rec_id=rec_id,
+                        rec_number=rec_number,
                     )
+                )
+
+        if not responses:
+            # 2b) Sentence-level candidates for semantic/keyword matching when we
+            # can't find any structured markers.
+            for sent_start, sent_end in self._v1_sentence_spans(text):
+                sentence_raw = text[sent_start:sent_end].strip()
+                if not sentence_raw:
+                    continue
+                cleaned = clean_pdf_artifacts(sentence_raw)
+                if len(cleaned) < 40 or len(cleaned) > 800:
+                    continue
+                if is_recommendation_text(cleaned):
+                    continue
+                if rec_marker_re.match(sentence_raw):
+                    continue
+
+                rec_id, rec_number = self._infer_rec_identity(cleaned)
+                resp_type = "action_verb" if self._is_scattered_response(cleaned) else "sentence"
+                responses.append(
+                    Response(
+                        text=cleaned,
+                        span=(sent_start, sent_end),
+                        source_document=source_document,
+                        response_type=resp_type,
+                        rec_id=rec_id,
+                        rec_number=rec_number,
+                    )
+                )
 
         return responses
 
@@ -151,18 +193,42 @@ class ResponseExtractorV2:
         responses: we look for language like "The government supports / accepts
         / agrees / notes / rejects" or similar phrases.
         """
-        lower = sentence.lower()
-        if "the government supports" in lower:
-            return True
-        if "the government accepts" in lower:
-            return True
-        if "the government agrees" in lower:
-            return True
-        if "the government notes" in lower:
-            return True
-        if "the government rejects" in lower:
-            return True
-        return False
+        return is_genuine_response(sentence)
+
+    @staticmethod
+    def _paragraph_spans(text: str) -> list[tuple[int, int]]:
+        spans: list[tuple[int, int]] = []
+        if not text:
+            return spans
+        start = 0
+        for m in re.finditer(r"\n{2,}", text):
+            end = m.start()
+            if end > start:
+                spans.append((start, end))
+            start = m.end()
+        if start < len(text):
+            spans.append((start, len(text)))
+        return spans
+
+    @staticmethod
+    def _v1_sentence_spans(text: str) -> list[tuple[int, int]]:
+        """
+        Approximate v1 sentence splitting using a simple boundary regex.
+
+        Mirrors the v1 alignment engine approach so the fallback behaviour
+        is closer to the legacy pipeline.
+        """
+        spans: list[tuple[int, int]] = []
+        if not text:
+            return spans
+        start = 0
+        for match in re.finditer(r"(?<=[.!?])\s+(?=[A-Z])", text):
+            end = match.end()
+            spans.append((start, end))
+            start = end
+        if start < len(text):
+            spans.append((start, len(text)))
+        return spans
 
     def _infer_rec_identity(self, sentence: str) -> tuple[Optional[str], Optional[int]]:
         """Best-effort rec_id / rec_number inference from an action-verb response sentence."""

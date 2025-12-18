@@ -4,7 +4,7 @@ How the Streamlit UI is structured and how it connects to core logic.
 
 ### Layout
 - Entry point: `app.py` sets up tabs and routes to tab modules under `ui/`.
-- Recommendations tab: implemented in `app.py`; supports a v1/v2 toggle for extraction.
+- Recommendations tab: implemented in `app.py`; uses the canonical pipeline via `daphne_core/canonical.py`.
 - Alignment tab: `ui/alignment_ui.py` renders recommendation/response alignment with a v1/v2 toggle:
   - v1 uses `daphne_core.recommendation_extractor` + `daphne_core.alignment_engine`.
   - v2 uses `daphne_core.v2.*` (layout-aware; requires original PDF paths).
@@ -13,7 +13,7 @@ How the Streamlit UI is structured and how it connects to core logic.
   - **Full concerns** (v2 PFD concerns as blocks), and
   - **Extended Action Verbs** (v2 PFD concerns atomised into sentences).
 - Display-only formatting toggles:
-  - Recommendations and Alignment tabs include a “Display: single paragraph” toggle.
+  - Recommendations and Alignment tabs render in a single-paragraph display mode.
   - This is presentation-only; extraction/matching still uses the underlying sentence/layout structures.
 - Display helpers: `ui/display_search.py`, `ui/display_shared.py`, and `ui/alignment_display.py` format search and alignment outputs.
 - Search orchestration: `ui/search_logic.py` selects search modes and shapes result dicts; heavy lifting delegated to core helpers.

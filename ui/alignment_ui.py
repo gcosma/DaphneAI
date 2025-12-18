@@ -99,12 +99,9 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
         key="v2_alignment_doc_type",
         help="Choose how the canonical pipeline interprets document structure and how alignment is performed.",
     )
-
-    st.checkbox(
-        "Display: single paragraph (display-only)",
-        value=True,
-        help="Only changes how text is rendered in the UI. Extraction and matching still use the underlying sentence/layout structures.",
-        key="display_single_paragraph_alignment",
+    single_paragraph = True
+    st.caption(
+        "Display: single paragraph (display-only). Extraction and matching still use the underlying sentence/layout structures."
     )
 
     if st.button("🚀 Extract Recommendations & Find Responses", type="primary"):
@@ -274,7 +271,11 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
                         text=f"Found {len(responses_v2)} responses. Matching...",
                     )
 
-                    strategy = AlignmentStrategyV2(enforce_one_to_one=False)
+                    strategy = AlignmentStrategyV2(
+                        enforce_one_to_one=False,
+                        use_embeddings=bool(matcher.use_transformer),
+                        semantic_matcher=matcher,
+                    )
                     alignments_v2 = strategy.align(recommendations_v2, responses_v2)
 
                     progress.progress(100, text="Complete!")
@@ -458,7 +459,7 @@ def display_v2_alignment_results(alignments: List[Any]):
 
     from daphne_core.text_utils import format_display_markdown
 
-    single_paragraph = bool(st.session_state.get("display_single_paragraph_alignment", True))
+    single_paragraph = True
 
     def fmt(text: str) -> str:
         return format_display_markdown(text, single_paragraph=single_paragraph)
@@ -587,7 +588,7 @@ def display_pfd_alignment_results(alignments: List[PfdScopedAlignment]):
 
     from daphne_core.text_utils import format_display_markdown
 
-    single_paragraph = bool(st.session_state.get("display_single_paragraph_alignment", True))
+    single_paragraph = True
 
     def fmt(text: str) -> str:
         return format_display_markdown(text, single_paragraph=single_paragraph)

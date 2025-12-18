@@ -364,242 +364,20 @@ def render_recommendations_tab():
     doc_names = [doc['filename'] for doc in documents]
     
     selected_doc = st.selectbox("Select document to analyse:", doc_names)
-
-    view_mode = st.radio(
-        "View mode",
-        ["Canonical", "Compare (audit)"],
-        horizontal=True,
-        help="Canonical is the mainline pipeline; Compare is a screenshare/audit view.",
-    )
-
-    single_paragraph = st.checkbox(
-        "Display: single paragraph (display-only)",
-        value=True,
-        help="Only changes how text is rendered in the UI. Extraction still uses sentence-aware preprocessing under the hood.",
-        key="display_single_paragraph_recs",
+    # Display-only formatting (always enabled): this does not affect extraction.
+    single_paragraph = True
+    st.caption(
+        "Display: single paragraph (display-only). Extraction still uses sentence-aware preprocessing under the hood."
     )
 
     def fmt(text: str) -> str:
         return format_display_markdown(text, single_paragraph=single_paragraph)
 
-    if view_mode == "Compare (audit)":
-        def extract_action_verbs_only(text: str, min_confidence: float) -> list[dict]:
-            """
-            Run the legacy v1 sentence-based action-verb inference regardless of whether
-            numbered "Recommendation N" headings exist.
-            """
-            extractor = StrictRecommendationExtractor()
-            if not text or not text.strip():
-                return []
-
-            sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", text)
-            recs: list[dict] = []
-            for idx, sentence in enumerate(sentences):
-                cleaned = extractor.clean_text(sentence)
-                is_garbage, _reason = extractor.is_garbage(cleaned, is_numbered_rec=False)
-                if is_garbage:
-                    continue
-                if extractor.is_meta_recommendation(cleaned):
-                    continue
-                is_rec, confidence, method, verb = extractor.is_genuine_recommendation(cleaned, is_numbered_rec=False)
-                if not is_rec or confidence < min_confidence:
-                    continue
-                recs.append(
-                    {
-                        "text": cleaned,
-                        "verb": verb,
-                        "method": method,
-                        "confidence": round(float(confidence), 3),
-                        "position": idx,
-                        "in_section": False,
-                    }
-                )
-
-            return extractor._deduplicate(recs)  # type: ignore[attr-defined]
-
-        doc = next((d for d in documents if d["filename"] == selected_doc), None)
-        if not doc:
-            st.error("Document not available")
-            return
-
-        profile_label = st.selectbox(
-            "v2 document type",
-            ["Recommendation report", "PFD (coroner) report"],
-            help="Choose how v2 interprets the document structure.",
-            key="recs_compare_v2_profile",
-        )
-        v2_profile = "pfd_report" if profile_label == "PFD (coroner) report" else "explicit_recs"
-
-        min_conf = st.slider(
-            "min_confidence (Action Verbs / Extended Action Verbs)",
-            min_value=0.50,
-            max_value=0.95,
-            value=0.75,
-            step=0.05,
-            help="Rule-based threshold (not calibrated probability). Increasing it disables whole rule families.",
-        )
-
-        pdf_path = doc.get("pdf_path")
-        if not pdf_path:
-            st.error(
-                "Compare mode requires the original PDF path for v2. "
-                "Please upload this document as a PDF in this session."
-            )
-            return
-
-        def _trigger_label_from_method(method: str | None) -> str:
-            if not method:
-                return "trigger"
-            suffix = method.split(":")[-1]
-            v1_map = {
-                "entity_should": "should",
-                "we_recommend": "we recommend",
-                "should_be_passive": "should be",
-                "modal_verb": "should/must/shall",
-                "imperative": "imperative",
-            }
-            return v1_map.get(suffix, suffix)
-
-        run = st.button("🔍 Run side-by-side compare", type="primary")
-        state_key = f"recs_compare::{selected_doc}::{v2_profile}::{min_conf:.2f}"
-
-        if run:
-            try:
-                from daphne_core.v2.preprocess import extract_text as extract_text_v2
-                from daphne_core.v2.recommendations import RecommendationExtractorV2
-                from pathlib import Path
-
-                with st.spinner("Running v2 preprocessing…"):
-                    preprocessed = extract_text_v2(Path(pdf_path))
-
-                with st.spinner("Extracting Action Verbs (v1 sentence inference)…"):
-                    v1_action_verbs = extract_action_verbs_only(preprocessed.text, min_confidence=min_conf)
-
-                with st.spinner("Extracting v2 (structured + extras)…"):
-                    v2_full = RecommendationExtractorV2(
-                        profile=v2_profile,
-                        action_verb_min_confidence=min_conf,
-                        pfd_atomize_concerns=False,
-                    ).extract(preprocessed, source_document=selected_doc)
-
-                v2_extended = None
-                if v2_profile == "pfd_report":
-                    with st.spinner("Extracting v2 Extended Action Verbs (atomised)…"):
-                        v2_extended = RecommendationExtractorV2(
-                            profile=v2_profile,
-                            action_verb_min_confidence=min_conf,
-                            pfd_atomize_concerns=True,
-                        ).extract(preprocessed, source_document=selected_doc)
-
-                st.session_state[state_key] = {
-                    "v1_action_verbs": v1_action_verbs,
-                    "v2_full": v2_full,
-                    "v2_extended": v2_extended,
-                }
-            except Exception as e:
-                st.error(f"❌ Compare run failed: {e}")
-                with st.expander("Show error details"):
-                    st.code(traceback.format_exc())
-                return
-
-        results = st.session_state.get(state_key)
-        if not results:
-            st.info("Click “Run side-by-side compare” to generate results.")
-            return
-
-        v1_action_verbs = results["v1_action_verbs"]
-        v2_full = results["v2_full"]
-        v2_extended = results.get("v2_extended")
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.subheader("Action Verbs")
-            st.caption("v1 action-verb sentence inference over v2-preprocessed text (always-on for compare)")
-            st.metric("Count", len(v1_action_verbs))
-            if v1_action_verbs:
-                v1_sorted = sorted(v1_action_verbs, key=lambda r: r.get("confidence", 0), reverse=True)
-                for idx, rec in enumerate(v1_sorted, 1):
-                    rec_text = (rec.get("text") or "").strip()
-                    conf = float(rec.get("confidence") or 0.0)
-                    method = rec.get("method", "unknown")
-                    title = f"{idx}. {_trigger_label_from_method(method)} ({conf:.0%})"
-                    with st.expander(title, expanded=(idx <= 5)):
-                        st.markdown(fmt(rec_text))
-            else:
-                st.info("No Action Verbs found.")
-
-        with col2:
-            st.subheader("Structure-based")
-            st.caption("Only structure-derived units (no action-verb inference).")
-
-            numbered = [r for r in v2_full if getattr(r, "rec_type", None) == "numbered"]
-            pfd_blocks = [
-                r
-                for r in v2_full
-                if getattr(r, "rec_type", None) == "pfd_concern"
-                and (getattr(r, "detection_method", None) == "pfd_matters_of_concern")
-            ]
-
-            items = pfd_blocks if v2_profile == "pfd_report" else numbered
-            st.metric("Count", len(items))
-
-            if v2_profile == "pfd_report":
-                if not items:
-                    st.info("No structure-based concerns found.")
-                else:
-                    for idx, rec in enumerate(sorted(items, key=lambda r: (r.rec_number or 9999, r.span[0])), 1):
-                        title = f"{idx}. Concern {rec.rec_number or rec.rec_id or ''}".strip()
-                        with st.expander(title, expanded=(idx <= 3)):
-                            st.markdown(fmt(rec.text.strip()))
-            else:
-                if not items:
-                    st.info("No structured recommendations found.")
-                else:
-                    for idx, rec in enumerate(items, 1):
-                        title = f"{idx}. Recommendation {rec.rec_id or rec.rec_number or ''}".strip()
-                        with st.expander(title, expanded=(idx <= 3)):
-                            st.markdown(fmt(rec.text.strip()))
-
-        with col3:
-            st.subheader("Extended Action Verbs")
-            if v2_profile == "pfd_report":
-                st.caption("Atomised PFD concerns + v1 baseline (ensures Action Verbs ⊆ Extended)")
-                recs = v2_extended or []
-                pfd_concerns = [r for r in recs if getattr(r, "rec_type", None) == "pfd_concern"]
-                st.metric("Count", len(pfd_concerns))
-                if not pfd_concerns:
-                    st.info("No Extended Action Verbs found.")
-                else:
-                    pfd_concerns_sorted = sorted(pfd_concerns, key=lambda r: (r.rec_number or 9999, r.span[0]))
-                    for idx, rec in enumerate(pfd_concerns_sorted, 1):
-                        trigger = _trigger_label_from_method(getattr(rec, "detection_method", None))
-                        label = rec.rec_number or rec.rec_id or ""
-                        title = f"{idx}. {trigger} (Concern {label})".strip()
-                        with st.expander(title, expanded=(idx <= 5)):
-                            st.markdown(fmt(rec.text.strip()))
-            else:
-                st.caption("Action verbs only (currently matches v1 baseline for non-PFD)")
-                st.metric("Count", len(v1_action_verbs))
-                if not v1_action_verbs:
-                    st.info("No Extended Action Verbs found.")
-                else:
-                    v1_sorted = sorted(v1_action_verbs, key=lambda r: r.get("confidence", 0), reverse=True)
-                    for idx, rec in enumerate(v1_sorted, 1):
-                        rec_text = (rec.get("text") or "").strip()
-                        conf = float(rec.get("confidence") or 0.0)
-                        method = rec.get("method", "unknown")
-                        title = f"{idx}. {_trigger_label_from_method(method)} ({conf:.0%})"
-                        with st.expander(title, expanded=(idx <= 5)):
-                            st.markdown(fmt(rec_text))
-
-        return
-
-    st.caption("Canonical pipeline: v2 preprocessing + structure-first extraction + Action Verbs as a second pass on uncovered text.")
-    engine = "v2 (experimental)"
+    st.caption(
+        "Canonical pipeline: v2 preprocessing + structure-first extraction + Action Verbs as a second pass on uncovered text."
+    )
 
     v2_profile = "explicit_recs"
-    pfd_atomize_concerns = False
     min_confidence = st.slider(
         "min_confidence (Action Verbs)",
         min_value=0.50,
@@ -616,348 +394,402 @@ def render_recommendations_tab():
     )
     if profile_label == "PFD (coroner) report":
         v2_profile = "pfd_report"
-        pfd_atomize_concerns = st.checkbox(
-            "Audit mode: atomise MATTERS OF CONCERN into sentence-level items",
-            value=False,
-            help="When enabled, each numbered concern is split into individual sentences and only triggered lines are emitted.",
-        )
-    
-    # Track which document was analysed (but don't auto-clear results)
-    if 'last_analysed_doc' not in st.session_state:
-        st.session_state.last_analysed_doc = None
-    
-    # Show which document the current results are from (if any)
-    if "v2_extracted_recommendations" in st.session_state and st.session_state.v2_extracted_recommendations:
-        if st.session_state.last_analysed_doc and st.session_state.last_analysed_doc != selected_doc:
-            st.info(f"📋 Current results are from: **{st.session_state.last_analysed_doc}**")
-            if st.button("🗑️ Clear results to analyse a new document"):
-                del st.session_state.v2_extracted_recommendations
-                st.session_state.last_analysed_doc = None
-                st.rerun()
-    
-    if st.button("🔍 Extract recommendations (canonical)", type="primary"):
-        doc = next((d for d in documents if d['filename'] == selected_doc), None)
-        
-        if engine == "v1 (current)":
-            if doc and 'text' in doc:
-                with st.spinner("Analysing document with strict filtering (v1)..."):
-                    try:
-                        recommendations = extract_recommendations(
-                            doc['text'],
-                            min_confidence=0.75
-                        )
-                        
-                        if recommendations:
-                            recommendations = sorted(
-                                recommendations,
-                                key=lambda x: x.get('confidence', 0),
-                                reverse=True,
-                            )
-                            
-                            st.success(f"✅ Found {len(recommendations)} genuine recommendations (v1)")
-                            
-                            extractor = StrictRecommendationExtractor()
-                            stats = extractor.get_statistics(recommendations)
-                            
-                            col1, col2, col3, col4 = st.columns(4)
-                            with col1:
-                                st.metric("Total Recommendations", stats['total'])
-                            with col2:
-                                st.metric("High Confidence (≥0.9)", stats.get('high_confidence', 0))
-                            with col3:
-                                st.metric("Average Confidence", f"{stats['avg_confidence']:.0%}")
-                            with col4:
-                                st.metric("Unique Verbs", len(stats.get('top_verbs', {})))
-                            
-                            st.markdown("---")
-                            st.markdown("#### 🎨 Confidence Guide")
-                            legend_col1, legend_col2, legend_col3 = st.columns(3)
-                            with legend_col1:
-                                st.markdown("🟢 **High (≥95%)**")
-                                st.caption("Numbered recommendations (Recommendation 1, 2, etc.) or strong 'entity should' patterns")
-                            with legend_col2:
-                                st.markdown("🟡 **Medium (85-94%)**")
-                                st.caption("Passive recommendations ('should be completed', 'should be presented')")
-                            with legend_col3:
-                                st.markdown("🟠 **Standard (75-84%)**")
-                                st.caption("Modal verb patterns ('should review', 'should consider') - still valid recommendations")
-                            
-                            st.markdown("---")
-                            st.subheader("📋 Extracted Recommendations")
-                            st.caption("Sorted by confidence (highest first)")
-                            
-                            for idx, rec in enumerate(recommendations, 1):
-                                rec_text = rec.get('text', '[No text available]').strip()
-                                verb = rec.get('verb', 'unknown').upper()
-                                confidence = rec.get('confidence', 0)
-                                method = rec.get('method', 'unknown')
-                                
-                                if len(rec_text) > 10:
-                                    if confidence >= 0.95:
-                                        conf_icon = "🟢"
-                                    elif confidence >= 0.85:
-                                        conf_icon = "🟡"
-                                    else:
-                                        conf_icon = "🟠"
-                                    
-                                    title = f"{conf_icon} **{idx}. {verb}** ({confidence:.0%})"
-                                    
-                                    with st.expander(title, expanded=(idx <= 5)):
-                                        st.markdown(fmt(rec_text))
-                                        st.caption(f"Detection method: {method}")
-                            
-                            st.markdown("---")
-                            
-                            valid_recs = [r for r in recommendations if len(r.get('text', '').strip()) > 10]
-                            
-                            if valid_recs:
-                                df_export = pd.DataFrame(valid_recs)
-                                csv = df_export.to_csv(index=False)
-                                
-                                st.download_button(
-                                    label=f"📥 Download as CSV ({len(valid_recs)} recommendations)",
-                                    data=csv,
-                                    file_name=f"{selected_doc}_recommendations.csv",
-                                    mime="text/csv",
-                                )
-                            
-                            st.session_state.extracted_recommendations = valid_recs
-                            st.session_state.last_analysed_doc = selected_doc
-                            
-                        else:
-                            st.warning("⚠️ No recommendations found. Try lowering the confidence threshold to 0.6.")
-                            
-                    except Exception as e:
-                        st.error(f"❌ Error extracting recommendations: {str(e)}")
-                        with st.expander("Show error details"):
-                            st.code(traceback.format_exc())
+
+    def _detect_action_verbs_all(preprocessed, *, min_conf: float) -> list[dict]:
+        """
+        Run the legacy v1 sentence-based action-verb inference across the entire v2-preprocessed text.
+
+        Returns de-duplicated hits with spans into `preprocessed.text`.
+        """
+        extractor = StrictRecommendationExtractor()
+        text = getattr(preprocessed, "text", "") or ""
+        if not text.strip():
+            return []
+
+        # v1/v2 action-verb extraction uses a simple boundary regex; we use the same
+        # span construction here so the duplicate accounting aligns with the legacy path.
+        sentence_spans: list[tuple[int, int]] = []
+        start = 0
+        for match in re.finditer(r"(?<=[.!?])\s+(?=[A-Z])", text):
+            end = match.end()
+            sentence_spans.append((start, end))
+            start = end
+        if start < len(text):
+            sentence_spans.append((start, len(text)))
+
+        hits: list[dict] = []
+        for idx, (s0, s1) in enumerate(sentence_spans):
+            sent = text[s0:s1]
+            cleaned = extractor.clean_text(sent)
+            is_garbage, _reason = extractor.is_garbage(cleaned, is_numbered_rec=False)
+            if is_garbage:
+                continue
+            if extractor.is_meta_recommendation(cleaned):
+                continue
+            is_rec, confidence, method, verb = extractor.is_genuine_recommendation(
+                cleaned, is_numbered_rec=False
+            )
+            if not is_rec or float(confidence) < float(min_conf):
+                continue
+            hits.append(
+                {
+                    "text": cleaned,
+                    "verb": verb,
+                    "method": method,
+                    "confidence": round(float(confidence), 3),
+                    "sentence_index": idx,
+                    "span": (int(s0), int(s1)),
+                }
+            )
+
+        return extractor._deduplicate(hits)  # type: ignore[attr-defined]
+
+    def _structure_units_for_overlap(recs: list, *, profile: str) -> list[dict]:
+        """
+        Return structure-derived units with spans so we can count action-verb hits that
+        fall inside structure (and are therefore suppressed to avoid duplicates).
+        """
+        units: list[dict] = []
+        for r in recs:
+            rec_type = getattr(r, "rec_type", None)
+            span = getattr(r, "span", None)
+            if not span or not isinstance(span, tuple) or len(span) != 2:
+                continue
+
+            if profile == "pfd_report":
+                if rec_type != "pfd_concern":
+                    continue
+                if getattr(r, "detection_method", None) != "pfd_matters_of_concern":
+                    continue
+                label = f"Concern {getattr(r, 'rec_number', None) or getattr(r, 'rec_id', '')}".strip()
+                units.append({"label": label, "span": span, "rec": r})
             else:
-                st.error("Document text not available")
-        else:
-            from daphne_core.canonical import extract_recommendations_from_pdf
-            from pathlib import Path
-
-            if not doc:
-                st.error("Document not available")
-                return
-
-            pdf_path = doc.get('pdf_path')
-            if not pdf_path:
-                st.error(
-                    "v2 engine requires the original PDF path. "
-                    "Please ensure the document was uploaded as a PDF in this session."
+                if rec_type != "numbered":
+                    continue
+                label = (
+                    f"Recommendation {getattr(r, 'rec_id', None) or getattr(r, 'rec_number', None) or ''}".strip()
                 )
-                return
+                units.append({"label": label, "span": span, "rec": r})
 
-            with st.spinner("Analysing document with canonical extractor..."):
-                try:
-                    result = extract_recommendations_from_pdf(
-                        Path(pdf_path),
-                        source_document=selected_doc,
-                        profile=v2_profile,
-                        action_verb_min_confidence=min_confidence,
-                        pfd_atomize_concerns=bool(pfd_atomize_concerns),
-                        enable_pfd_directives=False,
-                        dedupe_action_verbs=True,
-                    )
-                    recs_v2 = result.recommendations
+        units.sort(key=lambda u: int(u["span"][0]))
+        return units
 
-                    if not recs_v2:
-                        st.warning("⚠️ No recommendations found in the PDF.")
-                        return
+    def _partition_action_verbs_by_structure(
+        action_verbs_all: list[dict], structure_units: list[dict]
+    ) -> tuple[list[dict], list[dict]]:
+        inside: list[dict] = []
+        outside: list[dict] = []
 
-                    numbered_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "numbered"]
-                    pfd_concerns_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "pfd_concern"]
-                    pfd_directives_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "pfd_directive"]
-                    action_verb_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "action_verb"]
+        for hit in action_verbs_all:
+            hit_span = hit.get("span")
+            if not hit_span:
+                outside.append(hit)
+                continue
 
-                    st.success(
-                        f"✅ Found {len(recs_v2)} extracted items (canonical) – "
-                        f"numbered={len(numbered_v2)}, pfd_concerns={len(pfd_concerns_v2)}, "
-                        f"pfd_directives={len(pfd_directives_v2)}, action-verb={len(action_verb_v2)}"
-                    )
+            matched_label = None
+            for unit in structure_units:
+                s0, s1 = unit["span"]
+                h0, _h1 = hit_span
+                # Match v2 action-verb exclusion semantics: if the sentence *starts*
+                # inside a structure block, treat it as covered by structure.
+                if s0 <= h0 < s1:
+                    matched_label = unit["label"]
+                    break
 
-                    st.markdown("---")
-                    st.subheader("📋 Extracted Items (canonical)")
-                    if v2_profile == "pfd_report":
-                        st.caption(
-                            "PFD concerns (MATTERS OF CONCERN), directive sentences, and action-verb recommendations"
-                        )
-                    else:
-                        st.caption("Numbered headings and action-verb recommendations from the PDF layout")
+            if matched_label:
+                inside.append({**hit, "structure_unit": matched_label})
+            else:
+                outside.append(hit)
 
-                    st.markdown("#### 🎨 Confidence Guide (Action Verbs)")
-                    st.caption(
-                        "Confidence is rule-based (ported from v1), not a learned probability; it indicates how explicit the language pattern is."
-                    )
-                    legend_col1, legend_col2, legend_col3 = st.columns(3)
-                    with legend_col1:
-                        st.markdown("🟢 **High (≥95%)**")
-                        st.caption("Strong 'entity should' patterns (e.g., 'The Trust should…')")
-                    with legend_col2:
-                        st.markdown("🟡 **Medium (85-94%)**")
-                        st.caption("Clear recommendation phrasing (e.g., 'We recommend…', '…should be completed')")
-                    with legend_col3:
-                        st.markdown("🟠 **Standard (75-84%)**")
-                        st.caption("Weaker modal/imperative patterns — still valid recommendations")
+        return inside, outside
 
-                    with st.expander("ℹ️ How to interpret `min_confidence`", expanded=False):
-                        st.markdown(
-                            """
+    def _render_canonical_results(result, *, profile: str, min_conf: float) -> None:
+        from daphne_core.v2.types import Recommendation
+
+        recs_v2: list[Recommendation] = list(getattr(result, "recommendations", []) or [])
+        preprocessed = getattr(result, "preprocessed", None)
+        if not recs_v2 or not preprocessed:
+            st.warning("⚠️ No extracted items available.")
+            return
+
+        numbered_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "numbered"]
+        pfd_concerns_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "pfd_concern"]
+        action_verb_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "action_verb"]
+
+        action_verbs_all = _detect_action_verbs_all(preprocessed, min_conf=min_conf)
+        structure_units = _structure_units_for_overlap(recs_v2, profile=profile)
+        suppressed_hits, _outside_hits = _partition_action_verbs_by_structure(action_verbs_all, structure_units)
+
+        st.markdown("---")
+        st.subheader("📋 Extracted Items (canonical)")
+        if profile == "pfd_report":
+            st.caption(
+                "Structure (MATTERS OF CONCERN) first, then Action Verbs not already covered by structure."
+            )
+        else:
+            st.caption("Numbered recommendations first, then Action Verbs not already covered by structure.")
+
+        st.info(
+            f"Action Verbs detected: {len(action_verbs_all)}; "
+            f"{len(suppressed_hits)} already inside structure-based recommendations."
+        )
+
+        st.markdown("#### 🎨 Confidence Guide (Action Verbs)")
+        st.caption(
+            "Confidence is rule-based (ported from v1), not a learned probability; it indicates how explicit the language pattern is."
+        )
+        legend_col1, legend_col2, legend_col3 = st.columns(3)
+        with legend_col1:
+            st.markdown("🟢 **High (≥95%)**")
+            st.caption("Strong 'entity should' patterns (e.g., 'The Trust should…')")
+        with legend_col2:
+            st.markdown("🟡 **Medium (85-94%)**")
+            st.caption("Clear recommendation phrasing (e.g., 'We recommend…', '…should be completed')")
+        with legend_col3:
+            st.markdown("🟠 **Standard (75-84%)**")
+            st.caption("Weaker modal/imperative patterns — still valid recommendations")
+
+        with st.expander("ℹ️ How to interpret `min_confidence`", expanded=False):
+            st.markdown(
+                """
 `min_confidence` is a **hard threshold over fixed rule scores** (e.g., 0.95, 0.90, 0.85, 0.80, 0.75).
 
 **Implication:** raising `min_confidence` does not “require higher certainty” in a statistical sense — it simply turns off entire rule families (increasing precision but potentially dropping valid recommendations).
 """
-                        )
+            )
 
-                    if numbered_v2:
-                        st.markdown("##### Numbered recommendations")
-                        for idx, rec in enumerate(numbered_v2, 1):
-                            rec_text = rec.text.strip()
-                            if len(rec_text) > 10:
-                                title = f"**{idx}. Recommendation {rec.rec_id or '(unlabelled)'}**"
-                                with st.expander(title, expanded=(idx <= 5)):
-                                    st.markdown(fmt(rec_text))
-                                    st.caption(
-                                        f"Type: {getattr(rec, 'rec_type', None) or 'numbered'} | "
-                                        f"ID: {rec.rec_id!r} | Num: {rec.rec_number} | "
-                                        f"Source: {rec.source_document}"
-                                    )
+        if profile == "pfd_report":
+            if pfd_concerns_v2:
+                st.markdown("##### PFD concerns (MATTERS OF CONCERN)")
+                for idx, rec in enumerate(pfd_concerns_v2, 1):
+                    rec_text = rec.text.strip()
+                    if len(rec_text) > 10:
+                        title = f"🟢 **{idx}. Concern {rec.rec_number or rec.rec_id or ''}** (100%)"
+                        with st.expander(title, expanded=(idx <= 5)):
+                            st.markdown(fmt(rec_text))
+                            st.caption(
+                                f"Type: {getattr(rec, 'rec_type', None)} | "
+                                f"Method: {getattr(rec, 'detection_method', None)} | "
+                                f"Source: {rec.source_document}"
+                            )
+            else:
+                st.info("No structure-based concerns found.")
+        else:
+            if numbered_v2:
+                st.markdown("##### Numbered recommendations")
+                for idx, rec in enumerate(numbered_v2, 1):
+                    rec_text = rec.text.strip()
+                    if len(rec_text) > 10:
+                        title = f"🟢 **{idx}. Recommendation {rec.rec_id or '(unlabelled)'}** (100%)"
+                        with st.expander(title, expanded=(idx <= 5)):
+                            st.markdown(fmt(rec_text))
+                            st.caption(
+                                f"Type: {getattr(rec, 'rec_type', None) or 'numbered'} | "
+                                f"ID: {rec.rec_id!r} | Num: {rec.rec_number} | "
+                                f"Source: {rec.source_document}"
+                            )
+            else:
+                st.info("No structured recommendations found.")
 
-                    if v2_profile == "pfd_report" and pfd_concerns_v2:
-                        st.markdown("---")
-                        st.markdown("##### PFD concerns (MATTERS OF CONCERN)")
-                        for idx, rec in enumerate(pfd_concerns_v2, 1):
-                            rec_text = rec.text.strip()
-                            if len(rec_text) > 10:
-                                title = f"**{idx}. Concern {rec.rec_number or rec.rec_id or ''}**"
-                                with st.expander(title, expanded=(idx <= 5)):
-                                    st.markdown(fmt(rec_text))
-                                    st.caption(
-                                        f"Type: {getattr(rec, 'rec_type', None)} | "
-                                        f"Method: {getattr(rec, 'detection_method', None)} | "
-                                        f"Source: {rec.source_document}"
-                                    )
+        if action_verb_v2:
+            st.markdown("---")
+            st.markdown("##### Action Verbs (not already in structure)")
+            verb_extractor = StrictRecommendationExtractor()
+            action_verb_sorted = sorted(
+                action_verb_v2,
+                key=lambda r: float(getattr(r, "confidence", 0.0) or 0.0),
+                reverse=True,
+            )
+            for idx, rec in enumerate(action_verb_sorted, 1):
+                rec_text = rec.text.strip()
+                if len(rec_text) <= 10:
+                    continue
 
-                    if v2_profile == "pfd_report" and pfd_directives_v2:
-                        st.markdown("---")
-                        st.markdown("##### PFD directive sentences")
-                        for idx, rec in enumerate(pfd_directives_v2, 1):
-                            rec_text = rec.text.strip()
-                            if len(rec_text) > 10:
-                                title = f"**{idx}. Directive**"
-                                with st.expander(title, expanded=(idx <= 5)):
-                                    st.markdown(fmt(rec_text))
-                                    st.caption(
-                                        f"Type: {getattr(rec, 'rec_type', None)} | "
-                                        f"Method: {getattr(rec, 'detection_method', None)} | "
-                                        f"Source: {rec.source_document}"
-                                    )
+                conf = getattr(rec, "confidence", None)
+                if conf is None:
+                    conf_icon = "⚪"
+                    conf_label = "N/A"
+                elif conf >= 0.95:
+                    conf_icon = "🟢"
+                    conf_label = f"{conf:.0%}"
+                elif conf >= 0.85:
+                    conf_icon = "🟡"
+                    conf_label = f"{conf:.0%}"
+                else:
+                    conf_icon = "🟠"
+                    conf_label = f"{conf:.0%}"
 
-                    if action_verb_v2:
-                        st.markdown("---")
-                        st.markdown("##### Action-verb recommendations")
-                        verb_extractor = StrictRecommendationExtractor()
-                        action_verb_sorted = sorted(
-                            action_verb_v2,
-                            key=lambda r: float(getattr(r, "confidence", 0.0) or 0.0),
-                            reverse=True,
-                        )
-                        for idx, rec in enumerate(action_verb_sorted, 1):
-                            rec_text = rec.text.strip()
-                            if len(rec_text) > 10:
-                                conf = getattr(rec, "confidence", None)
-                                if conf is None:
-                                    conf_icon = "⚪"
-                                    conf_label = "N/A"
-                                elif conf >= 0.95:
-                                    conf_icon = "🟢"
-                                    conf_label = f"{conf:.0%}"
-                                elif conf >= 0.85:
-                                    conf_icon = "🟡"
-                                    conf_label = f"{conf:.0%}"
-                                else:
-                                    conf_icon = "🟠"
-                                    conf_label = f"{conf:.0%}"
+                method = getattr(rec, "detection_method", None) or "unknown"
+                cleaned = verb_extractor.clean_text(rec_text)
+                _is_rec, _c, _m, verb = verb_extractor.is_genuine_recommendation(
+                    cleaned, is_numbered_rec=False
+                )
+                title = f"{conf_icon} **{idx}. {(verb or 'Action')}** ({conf_label})"
+                with st.expander(title, expanded=(idx <= 3)):
+                    st.markdown(fmt(rec_text))
+                    st.caption(
+                        f"Type: {getattr(rec, 'rec_type', None) or 'action_verb'} | "
+                        f"Method: {method} | "
+                        f"Source: {rec.source_document}"
+                    )
+        else:
+            st.markdown("---")
+            st.caption("No Action Verb sentences outside structure were added.")
 
-                                method = getattr(rec, "detection_method", None) or "unknown"
-                                cleaned = verb_extractor.clean_text(rec_text)
-                                _is_rec, _c, _m, verb = verb_extractor.is_genuine_recommendation(
-                                    cleaned, is_numbered_rec=False
-                                )
-                                title = f"{conf_icon} **{idx}. {(verb or 'Action')}** ({conf_label})"
-                                with st.expander(title, expanded=(idx <= 3)):
-                                    st.markdown(fmt(rec_text))
-                                    st.caption(
-                                        f"Type: {getattr(rec, 'rec_type', None) or 'action_verb'} | "
-                                        f"Method: {method} | "
-                                        f"Source: {rec.source_document}"
-                                    )
+        # Collapsed: action verbs suppressed because they are already covered by structure.
+        with st.expander(
+            f"Action Verb duplicates already covered by structure ({len(suppressed_hits)})",
+            expanded=False,
+        ):
+            if not suppressed_hits:
+                st.caption("No suppressed duplicates for this document/profile.")
+            else:
+                for idx, hit in enumerate(
+                    sorted(suppressed_hits, key=lambda h: float(h.get("confidence", 0.0)), reverse=True),
+                    1,
+                ):
+                    conf = float(hit.get("confidence", 0.0) or 0.0)
+                    if conf >= 0.95:
+                        conf_icon = "🟢"
+                    elif conf >= 0.85:
+                        conf_icon = "🟡"
+                    else:
+                        conf_icon = "🟠"
+                    verb = (hit.get("verb") or "Action").upper()
+                    title = f"{conf_icon} **{idx}. {verb}** (in {hit.get('structure_unit')})"
+                    with st.expander(title, expanded=(idx <= 3)):
+                        st.markdown(fmt(hit.get("text") or ""))
+                        st.caption(f"Detection method: {hit.get('method')}")
 
-                    st.session_state.v2_extracted_recommendations = recs_v2
-                    st.session_state.last_analysed_doc = selected_doc
-
-                except Exception as e:
-                    st.error(f"❌ Error extracting recommendations with v2: {str(e)}")
-                    with st.expander("Show error details"):
-                        st.code(traceback.format_exc())
-    
-    # FIXED: Display existing results if they exist (even when returning to tab)
-    if engine == "v1 (current)" and 'extracted_recommendations' in st.session_state and st.session_state.extracted_recommendations:
-        recommendations = st.session_state.extracted_recommendations
-        
+        # Exports
         st.markdown("---")
-        st.success(f"✅ {len(recommendations)} recommendations available (from {st.session_state.last_analysed_doc}) [v1]")
-        
-        with st.expander("📋 View Extracted Recommendations (v1)", expanded=False):
-            for idx, rec in enumerate(recommendations[:10], 1):
-                text = rec.get('text', '[No text]')
-                conf = rec.get('confidence', 0)
-                st.markdown(f"**{idx}.** ({conf:.0%}) {text[:150]}...")
-            if len(recommendations) > 10:
-                st.caption(f"... and {len(recommendations) - 10} more")
-    elif engine == "v2 (experimental)" and 'v2_extracted_recommendations' in st.session_state:
-        recs_v2 = st.session_state.v2_extracted_recommendations
-
-        numbered_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "numbered"]
-        pfd_concerns_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "pfd_concern"]
-        pfd_directives_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "pfd_directive"]
-        action_verb_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "action_verb"]
-
-        st.markdown("---")
-        st.success(
-            f"✅ {len(recs_v2)} recommendations available "
-            f"(numbered={len(numbered_v2)}, pfd_concerns={len(pfd_concerns_v2)}, "
-            f"pfd_directives={len(pfd_directives_v2)}, action-verb={len(action_verb_v2)}) "
-            f"from {st.session_state.last_analysed_doc} [v2]"
+        export_rows: list[dict] = []
+        for r in recs_v2:
+            s0, s1 = getattr(r, "span", (None, None))
+            conf = getattr(r, "confidence", None)
+            if conf is None and getattr(r, "rec_type", None) in {"numbered", "pfd_concern"}:
+                conf = 1.0
+            export_rows.append(
+                {
+                    "source_document": getattr(r, "source_document", None),
+                    "rec_type": getattr(r, "rec_type", None),
+                    "rec_id": getattr(r, "rec_id", None),
+                    "rec_number": getattr(r, "rec_number", None),
+                    "confidence": conf,
+                    "detection_method": getattr(r, "detection_method", None),
+                    "span_start": s0,
+                    "span_end": s1,
+                    "text": getattr(r, "text", None),
+                }
+            )
+        df_export = pd.DataFrame(export_rows)
+        st.download_button(
+            label=f"📥 Download extracted items CSV ({len(export_rows)})",
+            data=df_export.to_csv(index=False),
+            file_name=f"{selected_doc}_canonical_extracted_items.csv",
+            mime="text/csv",
         )
 
-        with st.expander("📋 View Extracted Recommendations (v2)", expanded=False):
-            if numbered_v2:
-                st.markdown("**Numbered recommendations (sample)**")
-                for idx, rec in enumerate(numbered_v2[:5], 1):
-                    text = rec.text.strip()
-                    st.markdown(f"**{idx}.** {text[:150]}{'...' if len(text) > 150 else ''}")
-            if pfd_concerns_v2:
-                st.markdown("---")
-                st.markdown("**PFD concerns (sample)**")
-                for idx, rec in enumerate(pfd_concerns_v2[:5], 1):
-                    text = rec.text.strip()
-                    st.markdown(f"**{idx}.** {text[:150]}{'...' if len(text) > 150 else ''}")
-            if pfd_directives_v2:
-                st.markdown("---")
-                st.markdown("**PFD directive sentences (sample)**")
-                for idx, rec in enumerate(pfd_directives_v2[:5], 1):
-                    text = rec.text.strip()
-                    st.markdown(f"**{idx}.** {text[:150]}{'...' if len(text) > 150 else ''}")
-            if action_verb_v2:
-                st.markdown("---")
-                st.markdown("**Action-verb recommendations (sample)**")
-                for idx, rec in enumerate(action_verb_v2[:5], 1):
-                    text = rec.text.strip()
-                    st.markdown(f"**{idx}.** {text[:150]}{'...' if len(text) > 150 else ''}")
-            if len(recs_v2) > 10:
-                st.caption(f"... and {len(recs_v2) - 10} more")
+        df_supp = pd.DataFrame(
+            [
+                {
+                    "structure_unit": h.get("structure_unit"),
+                    "confidence": h.get("confidence"),
+                    "method": h.get("method"),
+                    "verb": h.get("verb"),
+                    "span_start": (h.get("span") or (None, None))[0],
+                    "span_end": (h.get("span") or (None, None))[1],
+                    "text": h.get("text"),
+                }
+                for h in suppressed_hits
+            ]
+        )
+        st.download_button(
+            label=f"📥 Download suppressed Action Verb duplicates CSV ({len(suppressed_hits)})",
+            data=df_supp.to_csv(index=False),
+            file_name=f"{selected_doc}_suppressed_action_verbs.csv",
+            mime="text/csv",
+        )
+
+    # Track which document was analysed (but don't auto-clear results)
+    if "last_analysed_doc" not in st.session_state:
+        st.session_state.last_analysed_doc = None
+
+    # Show which document the current results are from (if any)
+    if (
+        "canonical_recs_result" in st.session_state
+        and st.session_state.canonical_recs_result
+        and st.session_state.last_analysed_doc
+        and st.session_state.last_analysed_doc != selected_doc
+    ):
+        st.info(f"📋 Current results are from: **{st.session_state.last_analysed_doc}**")
+        if st.button("🗑️ Clear results to analyse a new document"):
+            for k in ("canonical_recs_result", "canonical_recs_profile", "canonical_recs_min_confidence"):
+                if k in st.session_state:
+                    del st.session_state[k]
+            st.session_state.last_analysed_doc = None
+            st.rerun()
+
+    if st.button("🔍 Extract recommendations (canonical)", type="primary"):
+        from daphne_core.canonical import extract_recommendations_from_pdf
+        from pathlib import Path
+
+        doc = next((d for d in documents if d["filename"] == selected_doc), None)
+        if not doc:
+            st.error("Document not available")
+            return
+
+        pdf_path = doc.get("pdf_path")
+        if not pdf_path:
+            st.error(
+                "This pipeline requires the original PDF path. "
+                "Please ensure the document was uploaded as a PDF in this session."
+            )
+            return
+
+        with st.spinner("Analysing document with canonical extractor..."):
+            try:
+                result = extract_recommendations_from_pdf(
+                    Path(pdf_path),
+                    source_document=selected_doc,
+                    profile=v2_profile,
+                    action_verb_min_confidence=min_confidence,
+                    pfd_atomize_concerns=False,
+                    enable_pfd_directives=False,
+                    dedupe_action_verbs=True,
+                )
+            except Exception as e:
+                st.error(f"❌ Error extracting recommendations: {str(e)}")
+                with st.expander("Show error details"):
+                    st.code(traceback.format_exc())
+                return
+
+        if not result.recommendations:
+            st.warning("⚠️ No extracted items found in the PDF.")
+            return
+
+        st.session_state.canonical_recs_result = result
+        st.session_state.canonical_recs_profile = v2_profile
+        st.session_state.canonical_recs_min_confidence = float(min_confidence)
+        st.session_state.last_analysed_doc = selected_doc
+
+    # Display latest canonical results (if any)
+    if (
+        "canonical_recs_result" in st.session_state
+        and st.session_state.canonical_recs_result
+        and st.session_state.last_analysed_doc == selected_doc
+    ):
+        used_profile = st.session_state.get("canonical_recs_profile", v2_profile)
+        used_conf = float(st.session_state.get("canonical_recs_min_confidence", min_confidence))
+        st.success(
+            f"✅ Showing results for {st.session_state.last_analysed_doc} "
+            f"(profile={used_profile}, min_confidence={used_conf:.2f})"
+        )
+        _render_canonical_results(
+            st.session_state.canonical_recs_result,
+            profile=used_profile,
+            min_conf=used_conf,
+        )
 
 
 def main():
