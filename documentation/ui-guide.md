@@ -12,6 +12,9 @@ How the Streamlit UI is structured and how it connects to core logic.
   - **Action Verbs** (v1 recommendations, run over **v2-preprocessed** text),
   - **Full concerns** (v2 PFD concerns as blocks), and
   - **Extended Action Verbs** (v2 PFD concerns atomised into sentences).
+- Display-only formatting toggles:
+  - Recommendations and Alignment tabs include a “Display: single paragraph” toggle.
+  - This is presentation-only; extraction/matching still uses the underlying sentence/layout structures.
 - Display helpers: `ui/display_search.py`, `ui/display_shared.py`, and `ui/alignment_display.py` format search and alignment outputs.
 - Search orchestration: `ui/search_logic.py` selects search modes and shapes result dicts; heavy lifting delegated to core helpers.
 

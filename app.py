@@ -322,8 +322,10 @@ def render_semantic_search_tab():
 
 
 def render_recommendations_tab():
-    """Render the improved recommendations extraction tab"""
+    """Render the recommendations extraction tab."""
     st.header("🎯 Extract Recommendations")
+
+    from daphne_core.text_utils import format_display_markdown
     
     if 'documents' not in st.session_state or not st.session_state.documents:
         st.warning("📁 Please upload documents first in the Upload tab.")
@@ -365,12 +367,22 @@ def render_recommendations_tab():
 
     view_mode = st.radio(
         "View mode",
-        ["Single (current)", "Compare (3 columns)"],
+        ["Canonical", "Compare (audit)"],
         horizontal=True,
-        help="Compare shows Action Verbs vs v2 structured+extras vs Extended Action Verbs side-by-side.",
+        help="Canonical is the mainline pipeline; Compare is a screenshare/audit view.",
     )
 
-    if view_mode == "Compare (3 columns)":
+    single_paragraph = st.checkbox(
+        "Display: single paragraph (display-only)",
+        value=True,
+        help="Only changes how text is rendered in the UI. Extraction still uses sentence-aware preprocessing under the hood.",
+        key="display_single_paragraph_recs",
+    )
+
+    def fmt(text: str) -> str:
+        return format_display_markdown(text, single_paragraph=single_paragraph)
+
+    if view_mode == "Compare (audit)":
         def extract_action_verbs_only(text: str, min_confidence: float) -> list[dict]:
             """
             Run the legacy v1 sentence-based action-verb inference regardless of whether
@@ -412,7 +424,7 @@ def render_recommendations_tab():
 
         profile_label = st.selectbox(
             "v2 document type",
-            ["Explicit recommendation report", "PFD (coroner) report"],
+            ["Recommendation report", "PFD (coroner) report"],
             help="Choose how v2 interprets the document structure.",
             key="recs_compare_v2_profile",
         )
@@ -513,7 +525,7 @@ def render_recommendations_tab():
                     method = rec.get("method", "unknown")
                     title = f"{idx}. {_trigger_label_from_method(method)} ({conf:.0%})"
                     with st.expander(title, expanded=(idx <= 5)):
-                        st.write(rec_text)
+                        st.markdown(fmt(rec_text))
             else:
                 st.info("No Action Verbs found.")
 
@@ -539,7 +551,7 @@ def render_recommendations_tab():
                     for idx, rec in enumerate(sorted(items, key=lambda r: (r.rec_number or 9999, r.span[0])), 1):
                         title = f"{idx}. Concern {rec.rec_number or rec.rec_id or ''}".strip()
                         with st.expander(title, expanded=(idx <= 3)):
-                            st.write(rec.text.strip())
+                            st.markdown(fmt(rec.text.strip()))
             else:
                 if not items:
                     st.info("No structured recommendations found.")
@@ -547,7 +559,7 @@ def render_recommendations_tab():
                     for idx, rec in enumerate(items, 1):
                         title = f"{idx}. Recommendation {rec.rec_id or rec.rec_number or ''}".strip()
                         with st.expander(title, expanded=(idx <= 3)):
-                            st.write(rec.text.strip())
+                            st.markdown(fmt(rec.text.strip()))
 
         with col3:
             st.subheader("Extended Action Verbs")
@@ -565,7 +577,7 @@ def render_recommendations_tab():
                         label = rec.rec_number or rec.rec_id or ""
                         title = f"{idx}. {trigger} (Concern {label})".strip()
                         with st.expander(title, expanded=(idx <= 5)):
-                            st.write(rec.text.strip())
+                            st.markdown(fmt(rec.text.strip()))
             else:
                 st.caption("Action verbs only (currently matches v1 baseline for non-PFD)")
                 st.metric("Count", len(v1_action_verbs))
@@ -579,47 +591,51 @@ def render_recommendations_tab():
                         method = rec.get("method", "unknown")
                         title = f"{idx}. {_trigger_label_from_method(method)} ({conf:.0%})"
                         with st.expander(title, expanded=(idx <= 5)):
-                            st.write(rec_text)
+                            st.markdown(fmt(rec_text))
 
         return
 
-    engine = st.radio(
-        "Extraction engine",
-        ["v1 (current)", "v2 (experimental)"],
-        horizontal=True,
-        help="v2 uses the new layout-aware pipeline; v1 uses the strict text-only extractor.",
-    )
+    st.caption("Canonical pipeline: v2 preprocessing + structure-first extraction + Action Verbs as a second pass on uncovered text.")
+    engine = "v2 (experimental)"
 
     v2_profile = "explicit_recs"
     pfd_atomize_concerns = False
-    if engine == "v2 (experimental)":
-        profile_label = st.selectbox(
-            "v2 document type",
-            ["Explicit recommendation report", "PFD (coroner) report"],
-            help="Choose how v2 interprets the document structure.",
+    min_confidence = st.slider(
+        "min_confidence (Action Verbs)",
+        min_value=0.50,
+        max_value=0.95,
+        value=0.75,
+        step=0.05,
+        help="Rule-based threshold (not calibrated probability). Increasing it disables whole rule families.",
+    )
+
+    profile_label = st.selectbox(
+        "Document type",
+        ["Recommendation report", "PFD (coroner) report"],
+        help="Choose how the canonical pipeline interprets the document structure.",
+    )
+    if profile_label == "PFD (coroner) report":
+        v2_profile = "pfd_report"
+        pfd_atomize_concerns = st.checkbox(
+            "Audit mode: atomise MATTERS OF CONCERN into sentence-level items",
+            value=False,
+            help="When enabled, each numbered concern is split into individual sentences and only triggered lines are emitted.",
         )
-        if profile_label == "PFD (coroner) report":
-            v2_profile = "pfd_report"
-            pfd_atomize_concerns = st.checkbox(
-                "Atomise MATTERS OF CONCERN into sentence-level items",
-                value=False,
-                help="When enabled, each numbered concern is split into individual sentences for easier review/tuning.",
-            )
     
     # Track which document was analysed (but don't auto-clear results)
     if 'last_analysed_doc' not in st.session_state:
         st.session_state.last_analysed_doc = None
     
     # Show which document the current results are from (if any)
-    if 'extracted_recommendations' in st.session_state and st.session_state.extracted_recommendations:
+    if "v2_extracted_recommendations" in st.session_state and st.session_state.v2_extracted_recommendations:
         if st.session_state.last_analysed_doc and st.session_state.last_analysed_doc != selected_doc:
             st.info(f"📋 Current results are from: **{st.session_state.last_analysed_doc}**")
-            if st.button("🗑️ Clear results to analyse new document"):
-                del st.session_state.extracted_recommendations
+            if st.button("🗑️ Clear results to analyse a new document"):
+                del st.session_state.v2_extracted_recommendations
                 st.session_state.last_analysed_doc = None
                 st.rerun()
     
-    if st.button("🔍 Extract Recommendations", type="primary"):
+    if st.button("🔍 Extract recommendations (canonical)", type="primary"):
         doc = next((d for d in documents if d['filename'] == selected_doc), None)
         
         if engine == "v1 (current)":
@@ -687,7 +703,7 @@ def render_recommendations_tab():
                                     title = f"{conf_icon} **{idx}. {verb}** ({confidence:.0%})"
                                     
                                     with st.expander(title, expanded=(idx <= 5)):
-                                        st.markdown(rec_text)
+                                        st.markdown(fmt(rec_text))
                                         st.caption(f"Detection method: {method}")
                             
                             st.markdown("---")
@@ -718,8 +734,7 @@ def render_recommendations_tab():
             else:
                 st.error("Document text not available")
         else:
-            from daphne_core.v2.preprocess import extract_text as extract_text_v2
-            from daphne_core.v2.recommendations import RecommendationExtractorV2
+            from daphne_core.canonical import extract_recommendations_from_pdf
             from pathlib import Path
 
             if not doc:
@@ -734,17 +749,21 @@ def render_recommendations_tab():
                 )
                 return
 
-            with st.spinner("Analysing document with v2 layout-aware extractor..."):
+            with st.spinner("Analysing document with canonical extractor..."):
                 try:
-                    preprocessed = extract_text_v2(Path(pdf_path))
-                    extractor_v2 = RecommendationExtractorV2(
+                    result = extract_recommendations_from_pdf(
+                        Path(pdf_path),
+                        source_document=selected_doc,
                         profile=v2_profile,
+                        action_verb_min_confidence=min_confidence,
                         pfd_atomize_concerns=bool(pfd_atomize_concerns),
+                        enable_pfd_directives=False,
+                        dedupe_action_verbs=True,
                     )
-                    recs_v2 = extractor_v2.extract(preprocessed, source_document=selected_doc)
+                    recs_v2 = result.recommendations
 
                     if not recs_v2:
-                        st.warning("⚠️ No recommendations found in the PDF (v2).")
+                        st.warning("⚠️ No recommendations found in the PDF.")
                         return
 
                     numbered_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "numbered"]
@@ -753,13 +772,13 @@ def render_recommendations_tab():
                     action_verb_v2 = [r for r in recs_v2 if getattr(r, "rec_type", None) == "action_verb"]
 
                     st.success(
-                        f"✅ Found {len(recs_v2)} recommendations (v2 experimental) – "
+                        f"✅ Found {len(recs_v2)} extracted items (canonical) – "
                         f"numbered={len(numbered_v2)}, pfd_concerns={len(pfd_concerns_v2)}, "
                         f"pfd_directives={len(pfd_directives_v2)}, action-verb={len(action_verb_v2)}"
                     )
 
                     st.markdown("---")
-                    st.subheader("📋 Extracted Recommendations (v2)")
+                    st.subheader("📋 Extracted Items (canonical)")
                     if v2_profile == "pfd_report":
                         st.caption(
                             "PFD concerns (MATTERS OF CONCERN), directive sentences, and action-verb recommendations"
@@ -767,7 +786,7 @@ def render_recommendations_tab():
                     else:
                         st.caption("Numbered headings and action-verb recommendations from the PDF layout")
 
-                    st.markdown("#### 🎨 Confidence Guide (v2 action-verb)")
+                    st.markdown("#### 🎨 Confidence Guide (Action Verbs)")
                     st.caption(
                         "Confidence is rule-based (ported from v1), not a learned probability; it indicates how explicit the language pattern is."
                     )
@@ -782,7 +801,7 @@ def render_recommendations_tab():
                         st.markdown("🟠 **Standard (75-84%)**")
                         st.caption("Weaker modal/imperative patterns — still valid recommendations")
 
-                    with st.expander("ℹ️ How to interpret `min_confidence` in v2", expanded=False):
+                    with st.expander("ℹ️ How to interpret `min_confidence`", expanded=False):
                         st.markdown(
                             """
 `min_confidence` is a **hard threshold over fixed rule scores** (e.g., 0.95, 0.90, 0.85, 0.80, 0.75).
@@ -798,7 +817,7 @@ def render_recommendations_tab():
                             if len(rec_text) > 10:
                                 title = f"**{idx}. Recommendation {rec.rec_id or '(unlabelled)'}**"
                                 with st.expander(title, expanded=(idx <= 5)):
-                                    st.markdown(rec_text)
+                                    st.markdown(fmt(rec_text))
                                     st.caption(
                                         f"Type: {getattr(rec, 'rec_type', None) or 'numbered'} | "
                                         f"ID: {rec.rec_id!r} | Num: {rec.rec_number} | "
@@ -813,7 +832,7 @@ def render_recommendations_tab():
                             if len(rec_text) > 10:
                                 title = f"**{idx}. Concern {rec.rec_number or rec.rec_id or ''}**"
                                 with st.expander(title, expanded=(idx <= 5)):
-                                    st.markdown(rec_text)
+                                    st.markdown(fmt(rec_text))
                                     st.caption(
                                         f"Type: {getattr(rec, 'rec_type', None)} | "
                                         f"Method: {getattr(rec, 'detection_method', None)} | "
@@ -828,7 +847,7 @@ def render_recommendations_tab():
                             if len(rec_text) > 10:
                                 title = f"**{idx}. Directive**"
                                 with st.expander(title, expanded=(idx <= 5)):
-                                    st.markdown(rec_text)
+                                    st.markdown(fmt(rec_text))
                                     st.caption(
                                         f"Type: {getattr(rec, 'rec_type', None)} | "
                                         f"Method: {getattr(rec, 'detection_method', None)} | "
@@ -838,6 +857,7 @@ def render_recommendations_tab():
                     if action_verb_v2:
                         st.markdown("---")
                         st.markdown("##### Action-verb recommendations")
+                        verb_extractor = StrictRecommendationExtractor()
                         action_verb_sorted = sorted(
                             action_verb_v2,
                             key=lambda r: float(getattr(r, "confidence", 0.0) or 0.0),
@@ -861,9 +881,13 @@ def render_recommendations_tab():
                                     conf_label = f"{conf:.0%}"
 
                                 method = getattr(rec, "detection_method", None) or "unknown"
-                                title = f"{conf_icon} **{idx}. {method}** ({conf_label})"
+                                cleaned = verb_extractor.clean_text(rec_text)
+                                _is_rec, _c, _m, verb = verb_extractor.is_genuine_recommendation(
+                                    cleaned, is_numbered_rec=False
+                                )
+                                title = f"{conf_icon} **{idx}. {(verb or 'Action')}** ({conf_label})"
                                 with st.expander(title, expanded=(idx <= 3)):
-                                    st.markdown(rec_text)
+                                    st.markdown(fmt(rec_text))
                                     st.caption(
                                         f"Type: {getattr(rec, 'rec_type', None) or 'action_verb'} | "
                                         f"Method: {method} | "

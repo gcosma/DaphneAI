@@ -1,7 +1,7 @@
 ## PFD (Regulation 28) – Recommendation ↔ Response Alignment
 
 This note documents how we approach **Prevention of Future Deaths (PFD)** style documents
-(Regulation 28) in v2, and how that differs from “explicit recommendation reports”.
+(Regulation 28) in v2, and how that differs from “Recommendation reports”.
 
 The intent is to keep these behaviours **profile-scoped** (so they don’t leak into the
 `explicit_recs` pipeline) and to make alignment semantics explicit (so we don’t “force”

@@ -90,21 +90,22 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
     st.markdown("---")
     st.markdown("#### 🔍 Step 2: Extract & Match")
 
-    engine = st.radio(
-        "Alignment engine",
-        ["v1 (current)", "v2 (experimental)"],
-        horizontal=True,
-        help="v2 uses the new layout-aware pipeline; v1 uses the legacy text-only path.",
+    st.caption("Canonical alignment: v2 preprocessing + structure-first extraction + alignment.")
+    engine = "v2 (experimental)"
+
+    v2_doc_type = st.selectbox(
+        "Document type",
+        ["Recommendation report", "PFD (coroner) report"],
+        key="v2_alignment_doc_type",
+        help="Choose how the canonical pipeline interprets document structure and how alignment is performed.",
     )
 
-    v2_doc_type = "Explicit recommendation report"
-    if engine == "v2 (experimental)":
-        v2_doc_type = st.selectbox(
-            "v2 document type",
-            ["Explicit recommendation report", "PFD (coroner) report"],
-            key="v2_alignment_doc_type",
-            help="Choose how v2 interprets document structure and how alignment is performed.",
-        )
+    st.checkbox(
+        "Display: single paragraph (display-only)",
+        value=True,
+        help="Only changes how text is rendered in the UI. Extraction and matching still use the underlying sentence/layout structures.",
+        key="display_single_paragraph_alignment",
+    )
 
     if st.button("🚀 Extract Recommendations & Find Responses", type="primary"):
         rec_text = ""
@@ -180,22 +181,23 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
                 )
                 return
 
-            progress = st.progress(0, text="Extracting recommendations (v2)...")
+            progress = st.progress(0, text="Extracting recommendations (canonical)...")
 
             try:
                 recs_pre = extract_text_v2(Path(rec_pdf_path))
                 resps_pre = extract_text_v2(Path(resp_pdf_path))
 
                 if v2_doc_type == "PFD (coroner) report":
-                    rec_extractor = RecommendationExtractorV2(profile="pfd_report")
+                    rec_extractor = RecommendationExtractorV2(profile="pfd_report", enable_pfd_directives=True)
                     recommendations_v2 = rec_extractor.extract(recs_pre, source_document=rec_doc_name)
                     if not recommendations_v2:
-                        st.warning("⚠️ No recommendations found in the PDF (v2 PFD mode).")
+                        st.warning("⚠️ No recommendations found in the PDF (PFD mode).")
                         progress.empty()
                         return
 
                     directives = [r for r in recommendations_v2 if getattr(r, "rec_type", None) == "pfd_directive"]
                     concerns = [r for r in recommendations_v2 if getattr(r, "rec_type", None) == "pfd_concern"]
+                    items_for_alignment = directives if directives else concerns
 
                     progress.progress(
                         33,
@@ -218,7 +220,7 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
                     )
 
                     pfd_alignments = align_pfd_directives_to_response_blocks(
-                        directives,
+                        items_for_alignment,
                         blocks,
                         responder_aliases=responder_aliases,
                     )
@@ -229,14 +231,14 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
                     st.session_state.v2_alignment_mode = "pfd"
                     st.session_state.pfd_alignment_results = pfd_alignments
                     st.session_state.pfd_recommendations = recommendations_v2
-                    st.session_state.pfd_directives = directives
+                    st.session_state.pfd_directives = items_for_alignment
                     st.session_state.pfd_concerns = concerns
                     st.session_state.pfd_response_blocks = blocks
                     st.session_state.pfd_responder_aliases = sorted(responder_aliases)
 
                     st.success(
-                        f"✅ PFD mode: extracted {len(directives)} directives and "
-                        f"segmented {len(blocks)} response blocks (v2 experimental)"
+                        f"✅ PFD mode: aligned {len(items_for_alignment)} extracted items to "
+                        f"{len(blocks)} response blocks (canonical)"
                     )
                 else:
                     rec_extractor = RecommendationExtractorV2(profile="explicit_recs")
@@ -244,7 +246,7 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
 
                     recommendations_v2 = rec_extractor.extract(recs_pre, source_document=rec_doc_name)
                     if not recommendations_v2:
-                        st.warning("⚠️ No recommendations found in the PDF (v2).")
+                        st.warning("⚠️ No recommendations found in the PDF.")
                         progress.empty()
                         return
 
@@ -269,7 +271,7 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
 
                     progress.progress(
                         66,
-                        text=f"Found {len(responses_v2)} responses (v2). Matching...",
+                        text=f"Found {len(responses_v2)} responses. Matching...",
                     )
 
                     strategy = AlignmentStrategyV2(enforce_one_to_one=False)
@@ -285,7 +287,7 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
 
                     st.success(
                         f"✅ Matched {len(recommendations_v2)} recommendations with "
-                        f"{len(responses_v2)} responses (v2 experimental)"
+                        f"{len(responses_v2)} responses (canonical)"
                     )
             except Exception as e:  # pragma: no cover - UI path
                 progress.empty()
@@ -296,13 +298,10 @@ def render_simple_alignment_interface(documents: List[Dict[str, Any]]):
                     st.code(traceback.format_exc())
                 return
 
-    if engine == "v1 (current)" and "alignment_results" in st.session_state and st.session_state.alignment_results:
-        display_alignment_results(st.session_state.alignment_results)
-    elif engine == "v2 (experimental)":
-        if st.session_state.get("v2_alignment_mode") == "pfd" and "pfd_alignment_results" in st.session_state:
-            display_pfd_alignment_results(st.session_state.pfd_alignment_results)
-        elif "v2_alignment_results" in st.session_state:
-            display_v2_alignment_results(st.session_state.v2_alignment_results)
+    if st.session_state.get("v2_alignment_mode") == "pfd" and "pfd_alignment_results" in st.session_state:
+        display_pfd_alignment_results(st.session_state.pfd_alignment_results)
+    elif "v2_alignment_results" in st.session_state:
+        display_v2_alignment_results(st.session_state.v2_alignment_results)
 
 
 def display_alignment_results(alignments: List[Dict[str, Any]]):
@@ -453,52 +452,145 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 
 def display_v2_alignment_results(alignments: List[Any]):
-    """Display v2 alignment results (AlignmentResult objects)."""
+    """Display v2 alignment results with a v1-style UI."""
     st.markdown("---")
-    st.markdown("### 📊 Alignment Results (v2 experimental)")
+    st.markdown("### 📊 Alignment Results")
+
+    from daphne_core.text_utils import format_display_markdown
+
+    single_paragraph = bool(st.session_state.get("display_single_paragraph_alignment", True))
+
+    def fmt(text: str) -> str:
+        return format_display_markdown(text, single_paragraph=single_paragraph)
 
     total = len(alignments)
     with_response = sum(1 for a in alignments if a.response is not None)
 
-    col1, col2 = st.columns(2)
-    col1.metric("Total recommendations", total)
-    col2.metric("With responses", with_response)
+    def classify_status(text: str) -> str:
+        matcher = get_matcher()
+        try:
+            status, _conf = matcher._classify_response_status(text)  # type: ignore[attr-defined]
+            return status
+        except Exception:  # pragma: no cover - defensive UI path
+            return "Unclear"
+
+    status_counts = Counter()
+    per_alignment_status: list[str] = []
+    for a in alignments:
+        if a.response is None:
+            status = "No Response"
+        else:
+            status = classify_status(a.response.text or "")
+        per_alignment_status.append(status)
+        status_counts[status] += 1
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Total", total)
+    col2.metric("✅ Accepted", status_counts.get("Accepted", 0))
+    col3.metric("⚠️ Partial", status_counts.get("Partial", 0))
+    col4.metric("❌ Rejected", status_counts.get("Rejected", 0))
+    col5.metric("❓ No Response", status_counts.get("No Response", 0) + status_counts.get("Unclear", 0))
 
     st.markdown("---")
-    st.markdown("#### 📋 Detailed Results (v2)")
 
-    for idx, alignment in enumerate(alignments, 1):
+    sort_option = st.selectbox(
+        "Sort by:",
+        ["Original Order", "Status (Accepted first)", "Status (No Response first)", "Match Confidence"],
+        key="v2_alignment_sort",
+    )
+
+    indexed = list(enumerate(alignments))
+    if sort_option == "Status (Accepted first)":
+        status_order = {"Accepted": 0, "Partial": 1, "Noted": 2, "Rejected": 3, "Unclear": 4, "No Response": 5}
+
+        def key_fn(pair: tuple[int, Any]) -> int:
+            idx0, _a = pair
+            return status_order.get(per_alignment_status[idx0], 5)
+
+        indexed.sort(key=key_fn)
+    elif sort_option == "Status (No Response first)":
+        indexed.sort(key=lambda p: 0 if p[1].response is None else 1)
+    elif sort_option == "Match Confidence":
+        indexed.sort(key=lambda p: float(p[1].similarity or 0.0), reverse=True)
+
+    st.markdown("#### 📋 Detailed Results")
+    for display_idx, (orig_idx, alignment) in enumerate(indexed, 1):
         rec = alignment.recommendation
         resp = alignment.response
-        sim = alignment.similarity or 0.0
+        sim = float(alignment.similarity or 0.0)
         method = alignment.match_method
 
-        rec_preview = rec.text.strip()
+        status = per_alignment_status[orig_idx]
+        status_icon = {"Accepted": "✅", "Partial": "⚠️", "Rejected": "❌", "Noted": "📝"}.get(status, "❓")
+
+        rec_preview = rec.text.strip().replace("\n", " ")
         if len(rec_preview) > 80:
             rec_preview = rec_preview[:80] + "..."
 
-        with st.expander(f"📝 {idx}. {rec_preview}", expanded=(idx <= 3)):
-            st.markdown("**Recommendation (v2):**")
-            st.info(rec.text)
-            st.caption(f"ID: {rec.rec_id!r} | Num: {rec.rec_number} | Source: {rec.source_document}")
+        with st.expander(f"{status_icon} **{display_idx}.** {rec_preview}", expanded=(display_idx <= 3)):
+            st.markdown("**📝 Recommendation:**")
+            st.info(fmt(rec.text))
+
+            col_a, col_b, col_c = st.columns(3)
+            col_a.caption(f"ID: {rec.rec_id!r}")
+            col_b.caption(f"Num: {rec.rec_number}")
+            col_c.caption(f"Source: {rec.source_document}")
 
             st.markdown("---")
-            st.markdown("**Response (v2):**")
+            st.markdown(f"**📢 Government Response:** {status_icon} **{status}**")
+
             if resp is None:
-                st.warning("No matching response found (v2).")
+                st.warning("No matching response found.")
             else:
-                st.success(resp.text)
-                st.caption(
-                    f"ID: {resp.rec_id!r} | Num: {resp.rec_number} | "
-                    f"Type: {resp.response_type} | Source: {resp.source_document}"
-                )
-                st.caption(f"Match similarity: {sim:.0%} | Method: {method}")
+                st.success(fmt(resp.text))
+                col1, col2, col3 = st.columns(3)
+                col1.caption(f"Match: {sim:.0%}")
+                col2.caption(f"Method: {method}")
+                col3.caption(f"Source: {resp.source_document}")
+
+    st.markdown("---")
+    st.markdown("#### 💾 Export Results")
+
+    export_rows: List[Dict[str, Any]] = []
+    for idx, alignment in enumerate(alignments, 1):
+        rec = alignment.recommendation
+        resp = alignment.response
+        status = per_alignment_status[idx - 1]
+        export_rows.append(
+            {
+                "Number": idx,
+                "Recommendation_ID": rec.rec_id,
+                "Recommendation_Number": rec.rec_number,
+                "Recommendation_Text": rec.text,
+                "Response_ID": resp.rec_id if resp else None,
+                "Response_Number": resp.rec_number if resp else None,
+                "Response_Text": resp.text if resp else "",
+                "Response_Status": status,
+                "Match_Confidence": float(alignment.similarity or 0.0),
+                "Match_Method": alignment.match_method,
+            }
+        )
+
+    df = pd.DataFrame(export_rows)
+    st.download_button(
+        "📥 Download CSV",
+        df.to_csv(index=False),
+        f"alignment_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        "text/csv",
+    )
 
 
 def display_pfd_alignment_results(alignments: List[PfdScopedAlignment]):
     """Display PFD scoped alignment results."""
     st.markdown("---")
     st.markdown("### 📊 Alignment Results (v2 PFD mode)")
+
+    from daphne_core.text_utils import format_display_markdown
+
+    single_paragraph = bool(st.session_state.get("display_single_paragraph_alignment", True))
+
+    def fmt(text: str) -> str:
+        return format_display_markdown(text, single_paragraph=single_paragraph)
 
     directives = st.session_state.get("pfd_directives", [])
     blocks = st.session_state.get("pfd_response_blocks", [])
@@ -525,7 +617,7 @@ def display_pfd_alignment_results(alignments: List[PfdScopedAlignment]):
             title = title[:80] + "..."
         with st.expander(f"🧾 {idx}. [{a.status}] {title}", expanded=(idx <= 3)):
             st.markdown("**Directive:**")
-            st.info(directive.text)
+            st.info(fmt(directive.text))
             if a.addressees:
                 st.caption(f"Addressees: {', '.join(a.addressees)}")
             st.markdown("---")
@@ -535,7 +627,7 @@ def display_pfd_alignment_results(alignments: List[PfdScopedAlignment]):
             else:
                 st.success(f"Block: {a.response_block.header}")
                 if a.response_snippet:
-                    st.write(a.response_snippet)
+                    st.write(fmt(a.response_snippet))
 
     # Orphan blocks: response_to_findings candidates.
     if blocks:
@@ -551,7 +643,7 @@ def display_pfd_alignment_results(alignments: List[PfdScopedAlignment]):
                 if len(snippet) > 220:
                     snippet = snippet[:220] + "..."
                 with st.expander(f"📄 Block {idx}: {b.header}", expanded=False):
-                    st.write(snippet)
+                    st.write(fmt(snippet))
 
 
 __all__ = ["render_simple_alignment_interface"]

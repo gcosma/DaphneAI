@@ -70,6 +70,19 @@ class ResponseExtractorV2:
         headers = list(header_pattern.finditer(text))
         logger.info("v2: Found %d structured response headers", len(headers))
 
+        # Some response documents include embedded "Recommendation N ..." excerpts
+        # between response blocks. To avoid pulling recommendation excerpts into the
+        # response content, stop the response block at the first heading-like
+        # "Recommendation N" marker after the header.
+        #
+        # We intentionally treat these as *headings* by requiring start-of-line,
+        # which avoids matching inline references like "see the response to
+        # recommendation 13".
+        rec_marker_re = re.compile(
+            r"(?m)^\s*(?:Recommendations?\s+)?Recommendation\s+(\d{1,3})(?:\s+([A-Z]))?\b"
+        )
+        rec_markers: List[re.Match[str]] = list(rec_marker_re.finditer(text))
+
         for idx, match in enumerate(headers):
             rec_id = match.group(1)
             rec_number: Optional[int] = None
@@ -81,6 +94,16 @@ class ResponseExtractorV2:
 
             start_body = match.end()
             end_block = headers[idx + 1].start() if idx + 1 < len(headers) else len(text)
+
+            # v1-style delimiter: stop at the first "Recommendation N <letter>" marker.
+            for rec_m in rec_markers:
+                pos = rec_m.start()
+                if pos <= start_body:
+                    continue
+                if pos < end_block:
+                    end_block = pos
+                    break
+
             span = (start_body, end_block)
             body_text = text[start_body:end_block].strip()
             if not body_text:

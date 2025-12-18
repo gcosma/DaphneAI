@@ -35,6 +35,37 @@ _LINE_END_NUMERIC_STOPWORDS = {
     "page",
 }
 
+def _repair_broken_urls(text: str) -> str:
+    """
+    Repair common PDF extraction artefacts that insert whitespace inside URLs.
+
+    Current targeted fix:
+    - If a URL is broken at a hyphen boundary like:
+        "https://.../national- guidance-on-quality-..."
+      (or with a newline instead of a space),
+      then we assume the whitespace is spurious and remove it *only* when the
+      token after the whitespace is immediately followed by another hyphen:
+        "- <word> -"
+
+    This is intentionally conservative to avoid changing normal prose like
+    "risk-based guidance - on quality ...".
+    """
+    if not text:
+        return ""
+
+    repaired = text
+    # Apply repeatedly to handle multiple breaks in a single URL.
+    # We only repair when the prefix looks like the start of a URL and the
+    # break matches "- <token> -".
+    pattern = re.compile(r"(?i)(https?://\S*)-\s+([A-Za-z0-9]+)([-/])")
+    while True:
+        new = pattern.sub(r"\1-\2\3", repaired)
+        if new == repaired:
+            break
+        repaired = new
+
+    return repaired
+
 
 def _clean_page_break_artifacts(text: str) -> str:
     """
@@ -200,6 +231,7 @@ def _build_text_and_pages(pdf_path: Path) -> Tuple[str, List[Span]]:
         # paragraph breaks at every element boundary. Headers/footers have
         # already been removed via repetition detection above.
         page_text = "\n".join(filtered_chunks).strip()
+        page_text = _repair_broken_urls(page_text)
         page_text = _clean_page_break_artifacts(page_text)
         if not page_text:
             continue
