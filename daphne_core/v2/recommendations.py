@@ -114,54 +114,71 @@ class RecommendationExtractorV2:
             # extractor but applied to the centralised v2 preprocessed text.
             # We treat the token following "Recommendation" as a label (rec_id),
             # which may be a simple integer ("1") or a more complex code ("2018/007").
-            heading_pattern = re.compile(r"(?:Recommendations?\s+)?Recommendation\b", re.IGNORECASE)
+            # Heading forms supported:
+            # - "Recommendation 1 ..." (legacy GOV.UK style)
+            # - "Recommendation 2018/007: ..." (coded label)
+            # - "<Descriptor> recommendation R/2024/025: ..." (e.g. "Safety recommendation R/2024/025:")
+            #
+            # We keep this general by:
+            # - requiring start-of-line (`(?m)^`) to avoid inline references,
+            # - extracting a code-like label only when it matches a clear pattern
+            #   (e.g. "R/2024/025"), and
+            # - avoiding "Government response to recommendation ..." which can
+            #   appear in combined documents.
 
-            # Only treat matches that look like true headings, i.e. those that
-            # start at the beginning of the text or immediately after a newline.
-            all_matches = list(heading_pattern.finditer(text))
-            matches: List[re.Match[str]] = []
-            for m in all_matches:
-                start = m.start()
-                if start == 0 or text[start - 1] == "\n":
-                    matches.append(m)
+            base_heading_re = re.compile(r"(?mi)^(?:\s*Recommendations?\s+)?Recommendation\b")
+            coded_heading_re = re.compile(
+                r"(?mi)^(?:\s*Recommendations?\s+)?"
+                r"(?!Government\s+response\s+to\s+recommendation\b)"
+                r"[A-Za-z][A-Za-z-]{2,40}\s+recommendations?\s+"
+                r"([A-Za-z]/\d{4}/\d{3,})(?::|\b)"
+            )
 
-            logger.info("v2: Found %d numbered recommendation headings", len(matches))
+            heading_entries: List[dict] = []
+            for m in base_heading_re.finditer(text):
+                heading_entries.append({"start": m.start(), "end": m.end(), "rec_id": None})
+            for m in coded_heading_re.finditer(text):
+                heading_entries.append({"start": m.start(), "end": m.end(), "rec_id": m.group(1)})
 
-            for idx, match in enumerate(matches):
-                # Derive rec_id from the token(s) immediately following the
-                # "Recommendation" keyword.
-                after = text[match.end() :]
-                # Skip whitespace after "Recommendation".
-                m_ws = re.match(r"\s+", after)
-                offset = m_ws.end() if m_ws else 0
-                after = after[offset:]
+            heading_entries.sort(key=lambda d: int(d["start"]))
+            logger.info("v2: Found %d structured recommendation headings", len(heading_entries))
 
-                rec_id: Optional[str] = None
+            for idx, entry in enumerate(heading_entries):
+                rec_id: Optional[str] = entry.get("rec_id")
                 rec_number: Optional[int] = None
 
-                # Case 1: code followed by colon, e.g. "2018/007:"
-                m_label_colon = re.match(r"([^\s:]+):", after)
-                if m_label_colon:
-                    rec_id = m_label_colon.group(1)
-                else:
-                    # Case 2: handle spaced digits like "1 1" -> "11".
-                    m_spaced_digits = re.match(r"(\d{1,2})\s+(\d)\b", after)
-                    if m_spaced_digits:
-                        rec_id = f"{m_spaced_digits.group(1)}{m_spaced_digits.group(2)}"
-                    else:
-                        # Case 3: simple integer label ("1", "12").
-                        m_int = re.match(r"(\d{1,3})\b", after)
-                        if m_int:
-                            rec_id = m_int.group(1)
+                # For plain "Recommendation ..." headings, derive the label from
+                # the token(s) immediately following the keyword.
+                if not rec_id:
+                    after = text[int(entry["end"]) :]
+                    m_ws = re.match(r"\s+", after)
+                    after = after[m_ws.end() :] if m_ws else after
 
+                    # Case 1: code followed by colon, e.g. "2018/007:"
+                    m_label_colon = re.match(r"([^\s:]+):", after)
+                    if m_label_colon:
+                        rec_id = m_label_colon.group(1)
+                    else:
+                        # Case 2: handle spaced digits like "1 1" -> "11".
+                        m_spaced_digits = re.match(r"(\d{1,2})\s+(\d)\b", after)
+                        if m_spaced_digits:
+                            rec_id = f"{m_spaced_digits.group(1)}{m_spaced_digits.group(2)}"
+                        else:
+                            # Case 3: simple integer label ("1", "12").
+                            m_int = re.match(r"(\d{1,3})\b", after)
+                            if m_int:
+                                rec_id = m_int.group(1)
+
+                if rec_id:
+                    rec_id = rec_id.strip().rstrip(":")
                 if rec_id and rec_id.isdigit():
                     try:
                         rec_number = int(rec_id)
                     except ValueError:
                         rec_number = None
 
-                start = match.start()
-                end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+                start = int(entry["start"])
+                end = int(heading_entries[idx + 1]["start"]) if idx + 1 < len(heading_entries) else len(text)
                 span = (start, end)
                 raw_block = text[start:end]
 
