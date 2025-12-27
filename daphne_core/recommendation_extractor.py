@@ -319,6 +319,52 @@ class StrictRecommendationExtractor:
                 return verb
         
         return 'unknown'
+
+    # ===== NEW METHOD TO FIND THE END OF THE RECOMMENDATION =====
+    def _find_recommendation_end(self, text: str, start_pos: int, next_rec_pos: int) -> int:
+        """
+        Find the proper end position for a recommendation.
+        Fixes the issue where the last recommendation captures the entire rest of document.
+        """
+        # If there's a next recommendation, that's our boundary
+        if next_rec_pos < len(text):
+            return next_rec_pos
+        
+        # For the last recommendation, find section boundaries
+        section_markers = [
+            r'\bOur vision for (?:a |the )?(?:better )?future\b',
+            r'\bKey facts\b',
+            r'\bMethodology\b',
+            r'\bFindings\b',
+            r'\bAppendix(?:es)?(?:\s+\d+)?\b',
+            r'\bGlossary\b',
+            r'\bReferences\b',
+            r'\bCase studies\b',
+            r'\bConclusion(?:s)?(?:\s+and\s+next\s+steps)?\b',
+            r'\bAcknowledgements?\b',
+            r'\bAbout (?:this|the) (?:report|review)\b',
+            r'\bData mapping\b',
+            r'\bSafety issues framework\b',
+            r'\bMeasuring what matters:\b',
+            r'\bPoor safety outcomes\b',
+            r'\bAll content is available under\b',
+            r'©\s*Crown copyright',
+            r'\bThroughout the review\b',
+        ]
+        
+        earliest_boundary = next_rec_pos
+        search_start = start_pos + 20  # Skip past "Recommendation N" header
+        
+        for pattern in section_markers:
+            match = re.search(pattern, text[search_start:], re.IGNORECASE)
+            if match:
+                boundary = search_start + match.start()
+                if boundary < earliest_boundary:
+                    earliest_boundary = boundary
+        
+        return earliest_boundary
+    # ===== END OF NEW METHOD =====
+
     
     def extract_recommendations(self, text: str, min_confidence: float = 0.75) -> List[Dict]:
         """Extract genuine recommendations from text."""
@@ -349,12 +395,14 @@ class StrictRecommendationExtractor:
 
         logger.info(f"Found {len(heading_matches)} numbered recommendation headings")
 
+#GC fixed
         for idx, match in enumerate(heading_matches):
             start = match.start()
-            end = heading_matches[idx + 1].start() if idx + 1 < len(heading_matches) else len(cleaned_full_text)
+            next_rec_pos = heading_matches[idx + 1].start() if idx + 1 < len(heading_matches) else len(cleaned_full_text)
+            end = self._find_recommendation_end(cleaned_full_text, start, next_rec_pos)
             raw_block = cleaned_full_text[start:end]
             cleaned = self.clean_text(raw_block)
-            
+
             # Check garbage with numbered_rec flag (allows longer text)
             is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=True)
             if is_garbage:
