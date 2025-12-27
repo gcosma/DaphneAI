@@ -292,48 +292,70 @@ class RecommendationResponseMatcher:
         match = re.search(r"recommendation\s+(\d+)", text.lower())
         return match.group(1) if match else None
 
+    #
     def _classify_response_status(self, text: str) -> Tuple[str, float]:
         """
-        Classify the response status with improved detection of implicit acceptance.
+        Classify government response status with context-aware detection.
+        v2.0 - Fixed false positives for 'will consider' and 'do not support mandating'
         """
         text_lower = text.lower()
         
-        # PRIORITY 1: Check rejection patterns FIRST (to avoid false positives)
-        rejected_patterns = [
-            r"\breject(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation|rec)",
-            r"\bdoes?\s+not\s+accept",
-            r"\bcannot\s+accept",
-            r"\bwill\s+not\s+(?:be\s+)?(?:implement|accept|support)",
-            r"\bdisagree(?:s|d)?",
-            r"\bnot\s+(?:feasible|possible|practical)",
-            r"\bdo(?:es)?\s+not\s+support",
+        # =========================================================================
+        # PRIORITY 1: Check for full rejection (recommendation itself rejected)
+        # =========================================================================
+        full_rejection_patterns = [
+            r"\breject(?:s|ed)?\s+(?:this\s+|the\s+)?recommendation",
+            r"\bdoes?\s+not\s+accept\s+(?:this\s+|the\s+)?recommendation",
+            r"\bcannot\s+accept\s+(?:this\s+|the\s+)?recommendation",
+            r"\bwill\s+not\s+(?:be\s+)?implement(?:ing)?\s+(?:this\s+|the\s+)?recommendation",
+            r"\bdisagree(?:s|d)?\s+with\s+(?:this\s+|the\s+)?recommendation",
+            r"\bdo(?:es)?\s+not\s+(?:support|accept)\s+(?:this\s+|the\s+)?recommendation",
         ]
-        for pattern in rejected_patterns:
+        for pattern in full_rejection_patterns:
             if re.search(pattern, text_lower):
                 return "Rejected", 0.9
         
-        # PRIORITY 2: Check "in principle" / partial patterns
+        # =========================================================================
+        # PRIORITY 2: Check for partial acceptance
+        # MUST check BEFORE explicit acceptance to catch "accepts in principle"
+        # =========================================================================
         partial_patterns = [
-            r"\baccept(?:s|ed)?\s+in\s+(?:part|principle)",
+            r"\baccept(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation\s+)?in\s+(?:part|principle)",
             r"\bpartially\s+accept",
-            r"\bsupport(?:s|ed)?\s+in\s+principle",
-            r"\bbroadly\s+support",
-            r"\bwill\s+consider",
-            r"\bunder\s+consideration",
+            r"\bsupport(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation\s+)?in\s+principle",
+            r"\bin\s+principle[,.]?\s+(?:we\s+)?(?:support|accept|agree)",
+            r"\bbroadly\s+support(?:s|ed)?(?!\s+(?:the|this)\s+recommendation)",
             r"\baccept(?:s|ed)?\s+(?:the\s+)?(?:intent|spirit)",
+            r"\bunder\s+consideration",
+            r"\bwill\s+consider\s+(?:the\s+|this\s+)?(?:recommendation|proposal|request)",
+            r"\brequires?\s+further\s+consideration",
         ]
         for pattern in partial_patterns:
             if re.search(pattern, text_lower):
                 return "Partial", 0.85
         
-        # PRIORITY 3: Check explicit acceptance patterns
+        # Check for partial rejection of approach (not full rejection)
+        # e.g., "do not support mandating how systems review" = Partial
+        partial_rejection_patterns = [
+            r"\bdo(?:es)?\s+not\s+support\s+(?:mandating|requiring|prescribing)\b",
+            r"\bwill\s+not\s+(?:be\s+)?mandat(?:ing|e)\b",
+            r"\bcannot\s+(?:mandate|require|prescribe)\b",
+        ]
+        for pattern in partial_rejection_patterns:
+            if re.search(pattern, text_lower):
+                if re.search(r"\b(?:recognis|support|expect|however|important)", text_lower):
+                    return "Partial", 0.8
+        
+        # =========================================================================
+        # PRIORITY 3: Check for explicit acceptance
+        # =========================================================================
         accepted_patterns = [
-            r"\baccept(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation|rec)",
-            r"\bsupport(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation|rec)",
-            r"\bagree(?:s|d)?\s+(?:with\s+)?(?:this\s+|the\s+)?(?:recommendation|rec)",
-            r"\bthe\s+government\s+support(?:s|ed)?\b",
+            r"\baccept(?:s|ed)?\s+(?:this\s+|the\s+)?recommendation",
+            r"\bsupport(?:s|ed)?\s+(?:this\s+|the\s+)?recommendation",
+            r"\bagree(?:s|d)?\s+(?:with\s+)?(?:this\s+|the\s+)?recommendation",
+            r"\bthe\s+government\s+support(?:s|ed)?\s+(?:this|the)\b",
             r"\bthe\s+government\s+accept(?:s|ed)?\b",
-            r"\bwill\s+implement",
+            r"\bwill\s+implement\b",
             r"\bfully\s+accept",
             r"\baccept(?:s|ed)?\s+in\s+full",
             r"\bwill\s+be\s+(?:implementing|taking\s+forward)",
@@ -343,10 +365,12 @@ class RecommendationResponseMatcher:
             if re.search(pattern, text_lower):
                 return "Accepted", 0.9
         
-        # PRIORITY 4: Check implicit acceptance indicators (government action language)
+        # =========================================================================
+        # PRIORITY 4: Check for implicit acceptance (government taking action)
+        # =========================================================================
         implicit_acceptance_patterns = [
             r"\bcommitted\s+to\s+(?:working|improving|delivering|ensuring)",
-            r"\bconvened\s+a\s+(?:ministerial|steering|working)\s+(?:group|committee)",
+            r"\bconvened\s+(?:a\s+)?(?:ministerial|steering|working)[\s-]+(?:led\s+)?(?:group|committee)",
             r"\bintends?\s+to\s+(?:provide|publish|deliver|implement)",
             r"\bwill\s+(?:provide|publish|deliver|work\s+with)",
             r"\bprogramme\s+of\s+work",
@@ -356,35 +380,45 @@ class RecommendationResponseMatcher:
             r"\baction\s+(?:is\s+)?underway",
             r"\bwill\s+be\s+(?:taking|addressing|responding)",
             r"\bis\s+(?:taking|addressing)\s+(?:steps|action|forward)",
-            r"\bby\s+(?:july|january|march|april|june|september|october|november|december)\s+\d{4}",
-            r"\bupdate\s+(?:by|in|within)",
+            r"\bby\s+(?:early\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}",
+            r"\bupdate\s+(?:on\s+progress\s+)?(?:by|in|within)",
+            r"\bministerial[\s-]+led",
         ]
         for pattern in implicit_acceptance_patterns:
             if re.search(pattern, text_lower):
                 return "Accepted", 0.8
         
-        # PRIORITY 5: Check noted patterns
+        # =========================================================================
+        # PRIORITY 5: Check for "noted" patterns
+        # =========================================================================
         noted_patterns = [
-            r"\bnote(?:s|d)?\s+(?:this\s+|the\s+)?(?:recommendation|rec)",
-            r"\backnowledge(?:s|d)?",
+            r"\bnote(?:s|d)?\s+(?:this\s+|the\s+)?recommendation",
+            r"\backnowledge(?:s|d)?\s+(?:this\s+|the\s+)?recommendation",
             r"\btake(?:s|n)?\s+note",
-            r"\brecogni[sz]e(?:s|d)?",
+            r"\bthe\s+government\s+recognis(?:es|ed)",
         ]
         for pattern in noted_patterns:
             if re.search(pattern, text_lower):
                 return "Noted", 0.75
         
+        # =========================================================================
         # PRIORITY 6: Keyword fallback
-        acceptance_keywords = ["supports", "support", "accepts", "accept", "agreed", "agrees"]
-        if any(kw in text_lower for kw in acceptance_keywords):
+        # =========================================================================
+        if re.search(r"^the\s+government\s+support", text_lower):
+            return "Accepted", 0.85
+        
+        if re.search(r"\b(?:supports?|accepts?|agreed?)\b", text_lower):
             if "recommendation" in text_lower:
                 return "Accepted", 0.7
         
-        # Check for action-oriented language even without explicit acceptance
-        action_keywords = ["will", "committed", "working", "programme", "steering", "ministerial"]
+        action_keywords = ["committed", "programme", "steering", "ministerial", "convened"]
         action_count = sum(1 for kw in action_keywords if kw in text_lower)
         if action_count >= 2:
             return "Accepted", 0.65
+        
+        if re.search(r"\bwill\s+(?:work|ensure|provide|deliver)\b", text_lower):
+            if re.search(r"\b(?:expect|importance|recognis)", text_lower):
+                return "Accepted", 0.6
         
         return "Unclear", 0.5
 
