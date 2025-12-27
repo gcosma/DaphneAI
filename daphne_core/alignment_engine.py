@@ -388,56 +388,6 @@ class RecommendationResponseMatcher:
         
         return "Unclear", 0.5
 
-    
-    #old method
-    def _classify_response_statusOLD(self, text: str) -> Tuple[str, float]:
-        text_lower = text.lower()
-        accepted_patterns = [
-            r"\baccept(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation|rec)",
-            r"\bsupport(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation|rec)",
-            r"\bagree(?:s|d)?\s+(?:with\s+)?(?:this\s+|the\s+)?(?:recommendation|rec)",
-            r"\bthe\s+government\s+support(?:s|ed)?\s+(?:this\s+|the\s+)?recommendation",
-            r"\bwill\s+implement",
-            r"\bfully\s+accept",
-            r"\baccept(?:s|ed)?\s+in\s+full",
-        ]
-        rejected_patterns = [
-            r"\breject(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation|rec)",
-            r"\bdoes?\s+not\s+accept",
-            r"\bcannot\s+accept",
-            r"\bdisagree(?:s|d)?",
-        ]
-        partial_patterns = [
-            r"\baccept(?:s|ed)?\s+in\s+(?:part|principle)",
-            r"\bpartially\s+accept",
-            r"\bsupport(?:s|ed)?\s+in\s+principle",
-            r"\bwill\s+consider",
-            r"\bunder\s+consideration",
-        ]
-        noted_patterns = [
-            r"\bnote(?:s|d)?\s+(?:this\s+|the\s+)?(?:recommendation|rec)",
-            r"\backnowledge(?:s|d)?",
-            r"\btake(?:s|n)?\s+note",
-        ]
-
-        for pattern in accepted_patterns:
-            if re.search(pattern, text_lower):
-                return "Accepted", 0.9
-        for pattern in rejected_patterns:
-            if re.search(pattern, text_lower):
-                return "Rejected", 0.9
-        for pattern in partial_patterns:
-            if re.search(pattern, text_lower):
-                return "Partial", 0.8
-        for pattern in noted_patterns:
-            if re.search(pattern, text_lower):
-                return "Noted", 0.75
-        if any(kw in text_lower for kw in ["supports", "support", "accepts", "accept"]):
-            if "recommendation" in text_lower:
-                return "Accepted", 0.7
-        return "Unclear", 0.5
-
-
 # --------------------------------------------------------------------------- #
 # Response extraction helpers
 # --------------------------------------------------------------------------- #
