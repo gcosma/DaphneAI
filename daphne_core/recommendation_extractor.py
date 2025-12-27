@@ -261,6 +261,9 @@ class StrictRecommendationExtractor:
     
     def _extract_verb(self, text: str) -> str:
         """Extract the main action verb from recommendation text"""
+        if not text:
+            return 'unknown'
+        
         text_lower = text.lower()
         
         # Check for "should [verb]" pattern
@@ -335,7 +338,13 @@ class StrictRecommendationExtractor:
     
     def is_genuine_recommendation(self, text: str, is_numbered_rec: bool = False) -> Tuple[bool, float, str, str]:
         """Determine if text is a genuine recommendation."""
+        if not text:
+            return False, 0.0, 'empty', 'unknown'
+        
         cleaned = self.clean_text(text)
+        if not cleaned:
+            return False, 0.0, 'empty', 'unknown'
+        
         text_lower = cleaned.lower()
         
         # Length checks for sentence-based extraction
