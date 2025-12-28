@@ -535,19 +535,3 @@ class RecommendationResponseMatcher:
             return "Accepted", 0.6
         
         return "Unclear", 0.5
-
-
-# =============================================================================
-# EXPORTS
-# =============================================================================
-
-__all__ = [
-    "RecommendationResponseMatcher",
-    "extract_response_sentences",
-    "extract_hsib_responses",
-    "extract_government_responses",
-    "is_hsib_document",
-    "is_recommendation_text",
-    "is_genuine_response",
-    "clean_pdf_artifacts",
-]
