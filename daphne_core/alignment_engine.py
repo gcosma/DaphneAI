@@ -1,802 +1,693 @@
 """
-Core alignment engine: recommendation/response matching + response extraction.
-Moved out of the Streamlit UI to keep logic reusable and testable.
+Strict Recommendation Extractor v2.8
+Based on v2.5 with HSIB boundary detection AND improved deduplication.
+
+v2.8 Changes:
+- FIXED: HSIB boundary detection for last recommendation (2018/011)
+- FIXED: Duplicate extraction when recommendations appear multiple times
+- Added HSIB-specific section markers to stop extraction at correct boundaries
+- Improved deduplication using rec_number tracking
+
+Usage:
+    from recommendation_extractor import extract_recommendations
+    
+    recommendations = extract_recommendations(document_text, min_confidence=0.75)
+    for rec in recommendations:
+        print(f"{rec['method']}: {rec['text'][:100]}...")
 """
 
-import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
-
-import numpy as np
-
-from .search_utils import STOP_WORDS, get_meaningful_words
+import logging
+from typing import List, Dict, Tuple, Optional, Set
+from collections import Counter
 
 logger = logging.getLogger(__name__)
 
 
-class RecommendationResponseMatcher:
+class StrictRecommendationExtractor:
     """
-    Semantic/keyword matcher for recommendation-response alignment.
-    Falls back to keyword matching when sentence-transformers are unavailable.
+    Extract genuine recommendations with aggressive pre-filtering.
+    Handles both government-style numbered recommendations and general documents.
     """
-
+    
+    MAX_SENTENCE_LENGTH = 500
+    MAX_NUMBERED_REC_LENGTH = 2500
+    
     def __init__(self):
-        self.model = None
-        self.use_transformer = False
-        self._initialize_model()
-
-    def _initialize_model(self):
-        try:
-            from sentence_transformers import SentenceTransformer
-            import torch
-
-            device = "cpu"
-            torch.set_default_device("cpu")
-            self.model = SentenceTransformer("BAAI/bge-small-en-v1.5", device=device)
-            self.use_transformer = True
-            logger.info("✅ Sentence transformer model loaded (BAAI/bge-small-en-v1.5)")
-        except ImportError:
-            logger.warning("sentence-transformers not installed, using keyword matching")
-            self.use_transformer = False
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning(f"Could not load transformer model: {e}")
-            self.use_transformer = False
-
-    def encode_texts(self, texts: List[str]) -> Optional[np.ndarray]:
-        if not self.use_transformer or not self.model:
-            return None
-        try:
-            import torch
-
-            with torch.no_grad():
-                embeddings = self.model.encode(texts, convert_to_tensor=False, batch_size=16)
-            return np.array(embeddings)
-        except Exception as e:  # pragma: no cover - defensive
-            logger.error(f"Encoding failed: {e}")
-            return None
-
-    def calculate_similarity(self, text1: str, text2: str) -> float:
-        if self.use_transformer and self.model:
-            try:
-                embeddings = self.encode_texts([text1, text2])
-                if embeddings is not None:
-                    similarity = np.dot(embeddings[0], embeddings[1]) / (
-                        np.linalg.norm(embeddings[0]) * np.linalg.norm(embeddings[1])
-                    )
-                    return float(similarity)
-            except Exception as e:
-                logger.warning(f"Transformer similarity failed: {e}")
-        return self._keyword_similarity(text1, text2)
-
-    def find_best_matches(self, recommendations: List[Dict], responses: List[Dict], top_k: int = 3) -> List[Dict]:
-        if not recommendations or not responses:
-            return []
-
-        cleaned_responses = []
-        for resp in responses:
-            cleaned_text = self._clean_response_text(resp["text"])
-            cleaned_responses.append({**resp, "cleaned_text": cleaned_text})
-
-        if self.use_transformer and self.model:
-            return self._semantic_matching(recommendations, cleaned_responses, top_k)
-        return self._keyword_matching(recommendations, cleaned_responses, top_k)
-
-    def _semantic_matching(self, recommendations: List[Dict], responses: List[Dict], top_k: int) -> List[Dict]:
-        responses_by_number: Dict[str, List[Dict]] = {}
-        for resp in responses:
-            if resp.get("rec_number"):
-                num = resp["rec_number"]
-                responses_by_number.setdefault(num, []).append(resp)
-
-        rec_texts = [r["text"] for r in recommendations]
-        resp_texts = [r["cleaned_text"] for r in responses]
-
-        try:
-            rec_embeddings = self.encode_texts(rec_texts)
-            resp_embeddings = self.encode_texts(resp_texts)
-            if rec_embeddings is None or resp_embeddings is None:
-                return self._keyword_matching(recommendations, responses, top_k)
-
-            rec_norms = np.linalg.norm(rec_embeddings, axis=1, keepdims=True)
-            resp_norms = np.linalg.norm(resp_embeddings, axis=1, keepdims=True)
-            rec_embeddings_norm = rec_embeddings / rec_norms
-            resp_embeddings_norm = resp_embeddings / resp_norms
-            similarity_matrix = np.dot(rec_embeddings_norm, resp_embeddings_norm.T)
-
-            alignments = []
-            for rec_idx, rec in enumerate(recommendations):
-                best_match = None
-                best_score = 0.0
-
-                rec_num = self._extract_rec_number(rec["text"])
-                if rec_num and rec_num in responses_by_number:
-                    for resp in responses_by_number[rec_num]:
-                        resp_text = resp["cleaned_text"]
-                        if self._is_self_match(rec["text"], resp_text):
-                            continue
-                        resp_idx = next((i for i, r in enumerate(responses) if r is resp), None)
-                        score = similarity_matrix[rec_idx][resp_idx] if resp_idx is not None else 0.7
-                        score = min(score + 0.4, 1.0)
-                        if score > best_score:
-                            best_score = score
-                            status, status_conf = self._classify_response_status(resp_text)
-                            best_match = {
-                                "response_text": resp_text,
-                                "similarity": score,
-                                "status": status,
-                                "status_confidence": status_conf,
-                                "source_document": resp.get("source_document", "unknown"),
-                                "match_method": "number_match",
-                            }
-
-                if best_match is None:
-                    similarities = similarity_matrix[rec_idx]
-                    top_indices = np.argsort(similarities)[::-1][: top_k * 2]
-                    for resp_idx in top_indices:
-                        resp = responses[resp_idx]
-                        score = similarities[resp_idx]
-                        if score < 0.4:
-                            continue
-                        if self._is_self_match(rec["text"], resp["cleaned_text"]):
-                            continue
-                        if is_recommendation_text(resp["cleaned_text"]):
-                            continue
-                        if not self._has_government_response_language(resp["cleaned_text"]):
-                            score *= 0.7
-                        if score > best_score:
-                            best_score = min(score, 1.0)
-                            status, status_conf = self._classify_response_status(resp["cleaned_text"])
-                            best_match = {
-                                "response_text": resp["cleaned_text"],
-                                "similarity": best_score,
-                                "status": status,
-                                "status_confidence": status_conf,
-                                "source_document": resp.get("source_document", "unknown"),
-                                "match_method": "semantic",
-                            }
-
-                alignments.append(
-                    {
-                        "recommendation": rec,
-                        "response": best_match,
-                        "has_response": best_match is not None,
-                    }
-                )
-
-            return alignments
-        except Exception as e:  # pragma: no cover - defensive
-            logger.error(f"Semantic matching failed: {e}")
-            return self._keyword_matching(recommendations, responses, top_k)
-
-    def _keyword_matching(self, recommendations: List[Dict], responses: List[Dict], top_k: int) -> List[Dict]:
-        alignments = []
-        for rec in recommendations:
-            best_match = None
-            best_score = 0.0
-            for resp in responses:
-                resp_text = resp.get("cleaned_text", resp["text"])
-                if self._is_self_match(rec["text"], resp_text):
-                    continue
-                score = self._keyword_similarity(rec["text"], resp_text)
-                rec_num = self._extract_rec_number(rec["text"])
-                resp_num = self._extract_rec_number(resp_text)
-                if rec_num and resp_num and rec_num == resp_num:
-                    score += 0.4
-                if self._has_government_response_language(resp_text):
-                    score += 0.2
-                if score > best_score and score >= 0.25:
-                    best_score = score
-                    status, status_conf = self._classify_response_status(resp_text)
-                    best_match = {
-                        "response_text": resp_text,
-                        "similarity": min(score, 1.0),
-                        "status": status,
-                        "status_confidence": status_conf,
-                        "source_document": resp.get("source_document", "unknown"),
-                        "match_method": "keyword",
-                    }
-            alignments.append(
-                {
-                    "recommendation": rec,
-                    "response": best_match,
-                    "has_response": best_match is not None,
-                }
-            )
-        return alignments
-
-    def _keyword_similarity(self, text1: str, text2: str) -> float:
-        words1 = set(re.findall(r"\b\w+\b", text1.lower())) - STOP_WORDS
-        words2 = set(re.findall(r"\b\w+\b", text2.lower())) - STOP_WORDS
-        if not words1 or not words2:
-            return 0.0
-        intersection = len(words1 & words2)
-        union = len(words1 | words2)
-        base_score = intersection / union if union > 0 else 0.0
-
-        gov_terms = {
-            "government",
-            "recommendation",
-            "accept",
-            "support",
-            "implement",
-            "policy",
-            "department",
-            "nhs",
-            "england",
-            "health",
-            "care",
-            "provider",
-            "commissioner",
-            "trust",
-            "board",
-            "cqc",
+        """Initialise with strict patterns"""
+        
+        self.action_verbs = {
+            'establish', 'implement', 'develop', 'create', 'improve', 'enhance',
+            'strengthen', 'expand', 'increase', 'reduce', 'review', 'assess',
+            'evaluate', 'consider', 'adopt', 'introduce', 'maintain', 'monitor',
+            'provide', 'support', 'enable', 'facilitate', 'promote', 'encourage',
+            'prioritise', 'prioritize', 'address', 'tackle', 'resolve', 'prevent',
+            'ensure', 'commission', 'consult', 'update', 'clarify', 'publish',
+            'engage', 'deliver', 'conduct', 'undertake', 'initiate', 'collaborate',
+            'coordinate', 'oversee', 'regulate', 'enforce', 'mandate', 'allocate',
+            'fund', 'resource', 'train', 'educate', 'inform', 'report', 'audit',
+            'inspect', 'investigate', 'examine', 'reform', 'revise', 'amend',
+            'streamline', 'simplify', 'standardise', 'standardize', 'integrate',
+            'consolidate', 'extend', 'limit', 'restrict', 'remove', 'set',
+            'define', 'specify', 'determine', 'approve', 'authorise', 'authorize',
+            'build', 'design', 'plan', 'prepare', 'bring', 'make', 'take', 'meet',
+            'come', 'form', 'work', 'learn', 'drive',
         }
-        gov_matches = len((words1 & words2) & gov_terms)
-        gov_boost = min(gov_matches * 0.05, 0.15)
-        return min(base_score + gov_boost, 1.0)
-
-    def _clean_response_text(self, text: str) -> str:
-        markers = [
-            "Government response to recommendation",
-            "government response to recommendation",
-            "The government supports",
-            "The government accepts",
-            "The government agrees",
-            "The government notes",
-            "The government rejects",
-            "The Government supports",
-            "The Government accepts",
+        
+        self.recommending_entities = [
+            r'NHS\s+England',
+            r'(?:the\s+)?(?:Home\s+Office|Cabinet\s+Office|Treasury)',
+            r'(?:the\s+)?(?:Department|Ministry)\s+(?:of|for)\s+\w+',
+            r'(?:the\s+)?(?:Secretary|Minister)\s+of\s+State',
+            r'(?:the\s+)?CQC|Care\s+Quality\s+Commission',
+            r'(?:the\s+)?IOPC',
+            r'(?:the\s+)?College\s+of\s+Policing',
+            r'(?:the\s+)?(?:ICS|ICB)s?',
+            r'(?:the\s+)?(?:Trust|Provider|Board)s?',
+            r'(?:the\s+)?Government',
+            r'(?:the\s+)?(?:Review|Committee|Panel|Commission|Inquiry)',
+            r'(?:All|Every)\s+(?:providers?|commissioners?|trusts?|boards?)',
+            r'Every\s+(?:provider\s+)?board',
+            r'(?:Professional\s+)?bodies',
+            r'(?:Local\s+)?(?:authorities|councils)',
+            r'DHSC',
+            r'Regulators?',
+            r'Inpatient\s+staff',
+            r'Government\s+ministers?',
         ]
-        text_lower = text.lower()
-        for marker in markers:
-            marker_lower = marker.lower()
-            pos = text_lower.find(marker_lower)
-            if pos > 0:
-                return text[pos:]
-        return text
-
-    def _is_self_match(self, rec_text: str, resp_text: str) -> bool:
-        rec_clean = re.sub(r"\s+", " ", rec_text.lower().strip())
-        resp_clean = re.sub(r"\s+", " ", resp_text.lower().strip())
-        if rec_clean == resp_clean:
-            return True
-        if len(rec_clean) > 100 and len(resp_clean) > 100:
-            if rec_clean in resp_clean or resp_clean in rec_clean:
-                if "government response" in resp_clean[:100] or "the government" in resp_clean[:100]:
-                    return False
-                return True
-        if len(rec_clean) > 150 and len(resp_clean) > 150:
-            if rec_clean[:150] == resp_clean[:150]:
-                return True
-        return False
-
-    def _has_government_response_language(self, text: str) -> bool:
-        text_lower = text.lower()
-        indicators = [
-            "government response",
-            "the government supports",
-            "the government accepts",
-            "the government agrees",
-            "the government notes",
-            "the government rejects",
-            "we accept",
-            "we support",
-            "we agree",
-            "accept the recommendation",
-            "support the recommendation",
-            "accept this recommendation",
-        ]
-        return any(ind in text_lower for ind in indicators)
-
-    def _extract_rec_number(self, text: str) -> Optional[str]:
-        match = re.search(r"recommendation\s+(\d+)", text.lower())
-        return match.group(1) if match else None
-
-    #
-    def _classify_response_status(self, text: str) -> Tuple[str, float]:
-        """
-        Classify government response status with context-aware detection.
-        v2.0 - Fixed false positives for 'will consider' and 'do not support mandating'
-        v2.3 - Added HSIB implicit acceptance patterns for NHS England responses
-        """
-        text_lower = text.lower()
-        
-        # =========================================================================
-        # PRIORITY 1: Check for full rejection (recommendation itself rejected)
-        # =========================================================================
-        full_rejection_patterns = [
-            r"\breject(?:s|ed)?\s+(?:this\s+|the\s+)?recommendation",
-            r"\bdoes?\s+not\s+accept\s+(?:this\s+|the\s+)?recommendation",
-            r"\bcannot\s+accept\s+(?:this\s+|the\s+)?recommendation",
-            r"\bwill\s+not\s+(?:be\s+)?implement(?:ing)?\s+(?:this\s+|the\s+)?recommendation",
-            r"\bdisagree(?:s|d)?\s+with\s+(?:this\s+|the\s+)?recommendation",
-            r"\bdo(?:es)?\s+not\s+(?:support|accept)\s+(?:this\s+|the\s+)?recommendation",
-        ]
-        for pattern in full_rejection_patterns:
-            if re.search(pattern, text_lower):
-                return "Rejected", 0.9
-        
-        # =========================================================================
-        # PRIORITY 2: Check for partial acceptance
-        # MUST check BEFORE explicit acceptance to catch "accepts in principle"
-        # =========================================================================
-        partial_patterns = [
-            r"\baccept(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation\s+)?in\s+(?:part|principle)",
-            r"\bpartially\s+accept",
-            r"\bsupport(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation\s+)?in\s+principle",
-            r"\bin\s+principle[,.]?\s+(?:we\s+)?(?:support|accept|agree)",
-            r"\bbroadly\s+support(?:s|ed)?(?!\s+(?:the|this)\s+recommendation)",
-            r"\baccept(?:s|ed)?\s+(?:the\s+)?(?:intent|spirit)",
-            r"\bunder\s+consideration",
-            r"\bwill\s+consider\s+(?:the\s+|this\s+)?(?:recommendation|proposal|request)",
-            r"\brequires?\s+further\s+consideration",
-        ]
-        for pattern in partial_patterns:
-            if re.search(pattern, text_lower):
-                return "Partial", 0.85
-        
-        # v2.3: CQC-specific partial acceptance (legislative constraints)
-        cqc_partial_patterns = [
-            r"\bcannot\s+routinely\s+inspect",
-            r"\bwithout\s+legislative\s+change",
-            r"\bcurrent\s+(?:legislative\s+)?(?:approach|framework)\s+(?:is\s+)?determined\s+by\s+legislation",
-        ]
-        for pattern in cqc_partial_patterns:
-            if re.search(pattern, text_lower):
-                return "Partial", 0.85
-        
-        # Check for partial rejection of approach (not full rejection)
-        # e.g., "do not support mandating how systems review" = Partial
-        partial_rejection_patterns = [
-            r"\bdo(?:es)?\s+not\s+support\s+(?:mandating|requiring|prescribing)\b",
-            r"\bwill\s+not\s+(?:be\s+)?mandat(?:ing|e)\b",
-            r"\bcannot\s+(?:mandate|require|prescribe)\b",
-        ]
-        for pattern in partial_rejection_patterns:
-            if re.search(pattern, text_lower):
-                if re.search(r"\b(?:recognis|support|expect|however|important)", text_lower):
-                    return "Partial", 0.8
-        
-        # =========================================================================
-        # PRIORITY 3: Check for explicit acceptance
-        # =========================================================================
-        accepted_patterns = [
-            r"\baccept(?:s|ed)?\s+(?:this\s+|the\s+)?recommendation",
-            r"\bsupport(?:s|ed)?\s+(?:this\s+|the\s+)?recommendation",
-            r"\bagree(?:s|d)?\s+(?:with\s+)?(?:this\s+|the\s+)?recommendation",
-            r"\bthe\s+government\s+support(?:s|ed)?\s+(?:this|the)\b",
-            r"\bthe\s+government\s+accept(?:s|ed)?\b",
-            r"\bwill\s+implement\b",
-            r"\bfully\s+accept",
-            r"\baccept(?:s|ed)?\s+in\s+full",
-            r"\bwill\s+be\s+(?:implementing|taking\s+forward)",
-            r"\bhas\s+already\s+(?:begun|started|commenced)",
-        ]
-        for pattern in accepted_patterns:
-            if re.search(pattern, text_lower):
-                return "Accepted", 0.9
-        
-        # =========================================================================
-        # PRIORITY 4: Check for implicit acceptance (government taking action)
-        # =========================================================================
-        implicit_acceptance_patterns = [
-            r"\bcommitted\s+to\s+(?:working|improving|delivering|ensuring)",
-            r"\bconvened\s+(?:a\s+)?(?:ministerial|steering|working)[\s-]+(?:led\s+)?(?:group|committee)",
-            r"\bintends?\s+to\s+(?:provide|publish|deliver|implement)",
-            r"\bwill\s+(?:provide|publish|deliver|work\s+with)",
-            r"\bprogramme\s+of\s+work",
-            r"\bsteering\s+group",
-            r"\bworking\s+(?:closely\s+)?with\s+(?:partners|stakeholders|nhs)",
-            r"\balready\s+(?:taking|undertaking|progressing)",
-            r"\baction\s+(?:is\s+)?underway",
-            r"\bwill\s+be\s+(?:taking|addressing|responding)",
-            r"\bis\s+(?:taking|addressing)\s+(?:steps|action|forward)",
-            r"\bby\s+(?:early\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}",
-            r"\bupdate\s+(?:on\s+progress\s+)?(?:by|in|within)",
-            r"\bministerial[\s-]+led",
-        ]
-        for pattern in implicit_acceptance_patterns:
-            if re.search(pattern, text_lower):
-                return "Accepted", 0.8
-        
-        # =========================================================================
-        # v2.3 NEW: HSIB-specific implicit acceptance patterns
-        # These are common in NHS England responses (like Report 2)
-        # =========================================================================
-        hsib_implicit_patterns = [
-            # NHS England action patterns
-            r"\bnhs\s+england\s+will\s+(?:work|ensure|use|require|promote|continue)",
-            r"\bnhs\s+england\s+and\s+nhs\s+improvement\s+(?:will|are|have)",
-            r"\bnhs\s+england\s+continues\s+to\s+require",
-            r"\bnhs\s+england\s+has\s+(?:committed|established|published)",
-            # Long Term Plan references
-            r"\blong\s+term\s+plan\s+(?:was\s+published|published|commits|recognises|sets\s+out)",
-            r"\bthe\s+(?:nhs\s+)?long\s+term\s+plan\b",
-            r"\bltp\s+(?:was\s+published|commits|published)",
-            # Collaborative/programme establishment
-            r"\b(?:transitions?\s+)?collaborative\s+(?:has\s+been\s+)?established",
-            r"\bestablished\s+(?:a\s+|the\s+)?(?:collaborative|programme|working\s+group)",
-            # Timescale/completion indicators
-            r"\btimescale:\s*completed",
-            r"\bcompleted\s+(?:december|january|february|march|april|may|june|july|august|september|october|november)\s+\d{4}",
-            r"\balready\s+underway",
-            # Clinical review patterns
-            r"\bclinically[\s-]+led\s+review",
-            r"\bnccmh\s+(?:has\s+been\s+)?commissioned",
-            r"\bclinical\s+review\s+(?:was\s+)?published",
-        ]
-        for pattern in hsib_implicit_patterns:
-            if re.search(pattern, text_lower):
-                return "Accepted", 0.8
-        
-        # =========================================================================
-        # PRIORITY 5: Check for "noted" patterns
-        # =========================================================================
-        noted_patterns = [
-            r"\bnote(?:s|d)?\s+(?:this\s+|the\s+)?recommendation",
-            r"\backnowledge(?:s|d)?\s+(?:this\s+|the\s+)?recommendation",
-            r"\btake(?:s|n)?\s+note",
-            r"\bthe\s+government\s+recognis(?:es|ed)",
-        ]
-        for pattern in noted_patterns:
-            if re.search(pattern, text_lower):
-                return "Noted", 0.75
-        
-        # =========================================================================
-        # PRIORITY 6: Keyword fallback
-        # =========================================================================
-        if re.search(r"^the\s+government\s+support", text_lower):
-            return "Accepted", 0.85
-        
-        if re.search(r"\b(?:supports?|accepts?|agreed?)\b", text_lower):
-            if "recommendation" in text_lower:
-                return "Accepted", 0.7
-        
-        action_keywords = ["committed", "programme", "steering", "ministerial", "convened"]
-        action_count = sum(1 for kw in action_keywords if kw in text_lower)
-        if action_count >= 2:
-            return "Accepted", 0.65
-        
-        if re.search(r"\bwill\s+(?:work|ensure|provide|deliver)\b", text_lower):
-            if re.search(r"\b(?:expect|importance|recognis)", text_lower):
-                return "Accepted", 0.6
-        
-        return "Unclear", 0.5
-
-# --------------------------------------------------------------------------- #
-# Response extraction helpers
-# --------------------------------------------------------------------------- #
-
-
-def is_recommendation_text(text: str) -> bool:
-    text_lower = text.lower().strip()
-    recommendation_starters = [
-        r"^nhs\s+england\s+should",
-        r"^providers?\s+should",
-        r"^trusts?\s+should",
-        r"^boards?\s+should",
-        r"^icss?\s+should",
-        r"^ics\s+and\s+provider",
-        r"^cqc\s+should",
-        r"^dhsc\s+should",
-        r"^dhsc,?\s+in\s+partnership",
-        r"^every\s+provider",
-        r"^all\s+providers?\s+should",
-        r"^provider\s+boards?\s+should",
-        r"^this\s+multi-professional\s+alliance\s+should",
-        r"^the\s+review\s+should",
-        r"^commissioners?\s+should",
-        r"^regulators?\s+should",
-        r"^recommendation\s+\d+\s+[a-z]",
-        r"^we\s+recommend",
-        r"^it\s+should\s+also",
-        r"^they\s+should",
-        r"^this\s+forum\s+should",
-        r"^this\s+programme\s+should",
-        r"^these\s+systems\s+should",
-        r"^the\s+digital\s+platforms",
-        r"^the\s+output\s+of\s+the",
-        r"^including,?\s+where\s+appropriate",
-        r"^to\s+facilitate\s+this",
-    ]
-    return any(re.search(pattern, text_lower) for pattern in recommendation_starters)
-
-
-def is_genuine_response(text: str) -> bool:
-    text_lower = text.lower().strip()
-    strong_starters = [
-        r"^government\s+response",
-        r"^the\s+government\s+supports?",
-        r"^the\s+government\s+accepts?",
-        r"^the\s+government\s+agrees?",
-        r"^the\s+government\s+notes?",
-        r"^the\s+government\s+rejects?",
-        r"^the\s+government\s+recognises?",
-        r"^the\s+government\s+is\s+committed",
-        r"^the\s+government\s+will",
-        r"^we\s+support",
-        r"^we\s+accept",
-        r"^we\s+agree",
-        r"^dhsc\s+and\s+nhs\s+england\s+support",
-        r"^nhs\s+england\s+will",
-    ]
-    return any(re.search(pattern, text_lower) for pattern in strong_starters)
-
-
-def has_pdf_artifacts(text: str) -> bool:
-    artifacts = [
-        r"\d{1,2}/\d{1,2}/\d{2,4},?\s+\d{1,2}:\d{2}\s*(AM|PM)?",
-        r"GOV\.UK",
-        r"https?://www\.gov\.uk",
-        r"https?://www\.england\.nhs\.uk",
-        r"\d+/\d+\s*$",
-    ]
-    return any(re.search(pattern, text, re.IGNORECASE) for pattern in artifacts)
-
-
-def clean_pdf_artifacts(text: str) -> str:
-    text = re.sub(r"\d{1,2}/\d{1,2}/\d{2,4},?\s+\d{1,2}:\d{2}\s*(AM|PM)?\s*", "", text)
-    text = re.sub(r"https?://[^\s]+", "", text)
-    text = re.sub(r"Government response to the rapid review.*?GOV\.UK[^\n]*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def extract_response_sentences(text: str) -> List[Dict]:
-    """
-    Extract sentences that are government responses.
-    Uses strict filtering to exclude recommendation text.
-    """
-    if not text:
-        return []
-
-    text = clean_pdf_artifacts(text)
-    responses: List[Dict] = []
-    seen_responses = set()
-
-    gov_resp_starts = []
-    for match in re.finditer(r"Government\s+response\s+to\s+recommendation\s+(\d+)", text, re.IGNORECASE):
-        gov_resp_starts.append({"pos": match.start(), "end": match.end(), "rec_num": match.group(1)})
-
-    rec_positions = []
-    for match in re.finditer(r"Recommendation\s+(\d+)\s+([A-Z])", text):
-        rec_positions.append({"pos": match.start(), "rec_num": match.group(1)})
-
-    logger.info(f"Found {len(gov_resp_starts)} government response headers")
-    logger.info(f"Found {len(rec_positions)} recommendation markers")
-
-    structured_spans: List[Tuple[int, int]] = []
-    structured_texts: List[str] = []
-
-    for i, gov_resp in enumerate(gov_resp_starts):
-        start_pos = gov_resp["end"]
-        rec_num = gov_resp["rec_num"]
-        end_pos = len(text)
-
-        if i + 1 < len(gov_resp_starts):
-            next_gov = gov_resp_starts[i + 1]["pos"]
-            if next_gov < end_pos:
-                end_pos = next_gov
-
-        for rec_pos in rec_positions:
-            if rec_pos["pos"] > start_pos and rec_pos["pos"] < end_pos:
-                end_pos = rec_pos["pos"]
-                break
-
-        resp_content = text[start_pos:end_pos].strip()
-        if not resp_content:
-            continue
-        resp_content = clean_pdf_artifacts(resp_content)
-
-        # For structured responses we trust the header
-        # "Government response to recommendation N" as the primary source of
-        # rec_number. Body cross-references (e.g. "see the response to
-        # recommendation 13") should not override this.
-        responses.append(
-            {
-                "text": resp_content,
-                "position": start_pos,
-                "response_type": "structured",
-                "confidence": 0.95,
-                "rec_number": rec_num,
-            }
-        )
-        structured_spans.append((start_pos, end_pos))
-        structured_texts.append(resp_content)
-
-    # Sentence-level responses with explicit span tracking to avoid
-    # re-detecting content that already belongs to structured response blocks.
-    sentence_spans = []
-    start_idx = 0
-    for match in re.finditer(r"(?<=[.!?])\s+", text):
-        end_idx = match.end()
-        sentence_spans.append((start_idx, end_idx))
-        start_idx = end_idx
-    if start_idx < len(text):
-        sentence_spans.append((start_idx, len(text)))
-
-    for idx, (start_idx, end_idx) in enumerate(sentence_spans):
-        sentence_raw = text[start_idx:end_idx]
-        sentence_clean = clean_pdf_artifacts(sentence_raw.strip())
-        if len(sentence_clean) < 40 or len(sentence_clean) > 500:
-            continue
-        if is_recommendation_text(sentence_clean):
-            continue
-        if not is_genuine_response(sentence_clean):
-            continue
-        # Skip sentences that fall within any structured response span.
-        if any(start <= start_idx < end for start, end in structured_spans):
-            continue
-
-        # Skip sentences that substantially duplicate an existing structured
-        # response. This is a conservative textual overlap check so that
-        # scattered responses do not simply re-add content that already lives
-        # inside a structured section.
-        sent_norm = re.sub(r"\s+", " ", sentence_clean.lower()).strip()
-        is_struct_dup = False
-        for struct_text in structured_texts:
-            struct_norm = re.sub(r"\s+", " ", struct_text.lower()).strip()
-            if not struct_norm:
-                continue
-            # Direct containment (sentence is fully inside a structured block).
-            if sent_norm and sent_norm in struct_norm:
-                is_struct_dup = True
-                break
-            # For longer candidates, use a simple token-overlap heuristic.
-            sent_tokens = set(sent_norm.split())
-            if not sent_tokens:
-                continue
-            overlap = len(sent_tokens & set(struct_norm.split())) / len(sent_tokens)
-            if overlap >= 0.8:
-                is_struct_dup = True
-                break
-        if is_struct_dup:
-            continue
-
-        resp_key = sentence_clean[:100].lower()
-        if resp_key in seen_responses:
-            continue
-        seen_responses.add(resp_key)
-        rec_ref = re.search(r"recommendation\s+(\d+)", sentence_clean.lower())
-        responses.append(
-            {
-                "text": sentence_clean,
-                "position": idx,
-                "response_type": "sentence",
-                "confidence": 0.85,
-                "rec_number": rec_ref.group(1) if rec_ref else None,
-            }
-        )
-
-    logger.info(f"Extracted {len(responses)} genuine responses (no bleeding)")
-    return responses
-
-
-__all__ = [
-    "RecommendationResponseMatcher",
-    "is_recommendation_text",
-    "is_genuine_response",
-    "has_pdf_artifacts",
-    "clean_pdf_artifacts",
-    "extract_response_sentences",
-    "find_pattern_matches",
-    "align_recommendations_with_responses",
-    "determine_alignment_status",
-    "calculate_simple_similarity",
-    "classify_content_type",
-]
-
-# --------------------------------------------------------------------------- #
-# Lightweight keyword-based response finding and alignment (exposed for UI)
-# --------------------------------------------------------------------------- #
-
-
-def classify_content_type(sentence: str) -> str:
-    """Classify sentence content type based on common policy categories."""
-    sentence_lower = sentence.lower()
-    if any(word in sentence_lower for word in ["implementation", "deploy", "roll out", "deliver"]):
-        return "Implementation"
-    if any(word in sentence_lower for word in ["monitor", "measure", "evaluate", "review"]):
-        return "Monitoring"
-    if any(word in sentence_lower for word in ["training", "education", "workforce"]):
-        return "Workforce"
-    if any(word in sentence_lower for word in ["technology", "digital", "data", "system"]):
-        return "Technology"
-    if any(word in sentence_lower for word in ["policy", "framework", "guideline"]):
-        return "Policy"
-    if any(word in sentence_lower for word in ["financial", "budget", "cost"]):
-        return "Financial"
-    return "General"
-
-
-def find_pattern_matches(documents: List[Dict[str, Any]], patterns: List[str], match_type: str) -> List[Dict[str, Any]]:
-    """Find sentences containing any of the provided patterns."""
-    matches: List[Dict[str, Any]] = []
-    normalized = [p.lower() for p in patterns]
-
-    for doc in documents:
-        text = doc.get("text", "")
+    
+    def fix_encoding(self, text: str) -> str:
+        """Fix common PDF extraction encoding issues"""
         if not text:
-            continue
-
-        for sentence in re.split(r"[.!?]+", text):
-            sentence_clean = sentence.strip()
-            if not sentence_clean:
-                continue
-
-            sentence_lower = sentence_clean.lower()
-            if any(pat in sentence_lower for pat in normalized):
-                pos = text.find(sentence_clean)
-                matches.append(
-                    {
-                        "sentence": sentence_clean,
-                        "document": doc,
-                        "pattern": match_type,
-                        "position": pos,
-                        "page_number": max(1, pos // 2000 + 1) if pos >= 0 else 1,
-                        "content_type": classify_content_type(sentence_clean),
-                    }
-                )
-
-    return matches
-
-
-def determine_alignment_status(responses: List[Dict[str, Any]]) -> str:
-    """Heuristic alignment status for a recommendation."""
-    if not responses:
-        return "No response found"
-    top_response = responses[0]
-    if top_response.get("same_document"):
-        return "Direct response"
-    if top_response.get("combined_score", 0) >= 0.5:
-        return "Possible response"
-    return "Uncertain"
-
-
-def align_recommendations_with_responses(
-    recommendations: List[Dict[str, Any]], responses: List[Dict[str, Any]], similarity_threshold: float
-) -> List[Dict[str, Any]]:
-    """Align recommendations with responses using meaningful-word similarity."""
-    alignments = []
-    for rec in recommendations:
-        rec_doc = rec["document"]["filename"]
-        best_responses = []
-        for resp in responses:
-            similarity = calculate_simple_similarity(rec["sentence"], resp["sentence"])
-            if resp["document"]["filename"] == rec_doc:
-                similarity *= 1.2
-            if resp.get("document", {}).get("filename") == rec_doc and resp.get("position", 0) > rec.get("position", 0):
-                similarity *= 1.1
-            if similarity >= similarity_threshold:
-                best_responses.append(
-                    {
-                        "response": resp,
-                        "combined_score": min(similarity, 1.0),
-                        "similarity_score": similarity,
-                        "same_document": resp["document"]["filename"] == rec_doc,
-                    }
-                )
-        best_responses.sort(key=lambda x: x["combined_score"], reverse=True)
-        alignment = {
-            "recommendation": rec,
-            "responses": best_responses[:3],
-            "alignment_confidence": best_responses[0]["combined_score"] if best_responses else 0,
-            "alignment_status": determine_alignment_status(best_responses),
-            "detection_method": rec.get("method", "unknown"),
-            "detection_confidence": rec.get("confidence", 0),
-            "action_verb": rec.get("verb", "unknown"),
+            return ""
+        
+        replacements = {
+            'â€™': "'", 'â€œ': '"', 'â€': '"', 'â€"': '—', 'â€"': '–',
+            'Â ': ' ', '\u00a0': ' ', '�': '', '\ufffd': '',
         }
-        alignments.append(alignment)
-    alignments.sort(key=lambda x: x["detection_confidence"], reverse=True)
-    return alignments
+        
+        for bad, good in replacements.items():
+            text = text.replace(bad, good)
+        
+        return text
+    
+    def clean_text(self, text: str) -> str:
+        """Aggressively clean text of all noise"""
+        if not text:
+            return ""
+        
+        text = self.fix_encoding(text)
+        
+        # Remove URLs
+        text = re.sub(r'https?://[^\s<>"\']+', '', text)
+        text = re.sub(r'www\.[^\s<>"\']+', '', text)
+        text = re.sub(r'[a-zA-Z0-9.-]+\.gov\.uk[^\s]*', '', text)
+        text = re.sub(r'[a-zA-Z0-9.-]+\.org\.uk[^\s]*', '', text)
+        text = re.sub(r'[a-zA-Z0-9.-]+\.nhs\.uk[^\s]*', '', text)
+        
+        # Remove timestamps
+        text = re.sub(r'\d{1,2}/\d{1,2}/\d{2,4},?\s*\d{1,2}:\d{2}\s*(?:AM|PM)?[^A-Z]*(?=[A-Z]|$)', ' ', text, flags=re.IGNORECASE)
+        
+        # Remove page numbers (but NOT HSIB numbers like 2018/006 or R/2023/220)
+        # Only match short page numbers like 1/84, 12/84
+        text = re.sub(r'\b(\d{1,2})/(\d{1,3})\b', '', text)
+        text = re.sub(r'\bPage\s+\d+\s+(?:of\s+\d+)?', '', text, flags=re.IGNORECASE)
+        
+        # Remove GOV.UK footer artifacts
+        text = re.sub(
+            r'11/24/25, 5:39 PM Rapid review into data on mental health inpatient settings: final report and recommendations - GOV\.UK[\s\S]*?\d{1,2}/84',
+            '',
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r'Rapid review into data on mental health inpatient settings:.*?GOV\.?UK',
+            '',
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r'\bRecommendations\s+Recommendation\s+(\d+)\b',
+            r'Recommendation \1',
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(r'final report and recommendations\s*-?\s*GOV\.?UK?', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'-\s*GOV\.?\s*UK?\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'^UK\s+', '', text)
+        text = re.sub(r'\s+', ' ', text)
+        text = text.strip()
+        
+        return text
+    
+    def is_garbage(self, text: str, is_numbered_rec: bool = False) -> Tuple[bool, str]:
+        """FIRST-PASS filter: reject obvious garbage before any analysis."""
+        if not text:
+            return True, "empty"
+        
+        cleaned = self.clean_text(text)
+        
+        if len(cleaned) < 40:
+            return True, "too_short"
+        
+        if not is_numbered_rec:
+            if len(cleaned) > self.MAX_SENTENCE_LENGTH:
+                return True, "too_long"
+        
+        if re.match(r'^(?:Appendix|Section|Chapter|Table|Figure|Footnote)\s+\d+', cleaned, re.IGNORECASE):
+            return True, "header"
+        
+        special_chars = sum(1 for c in cleaned if not c.isalnum() and not c.isspace() and c not in '.,;:!?\'"-()[]')
+        if len(cleaned) > 0 and special_chars / len(cleaned) > 0.12:
+            return True, "corrupted"
+        
+        if not is_numbered_rec:
+            digits = sum(1 for c in cleaned if c.isdigit())
+            if len(cleaned) > 0 and digits / len(cleaned) > 0.15:
+                return True, "too_many_numbers"
+        
+        return False, ""
+    
+    def is_meta_recommendation(self, text: str) -> bool:
+        """Check if text is talking ABOUT recommendations rather than making one."""
+        if not text:
+            return False
+        text_lower = text.lower()
+        
+        meta_patterns = [
+            r'^the\s+recommendations?\s+(?:have|has|are|were|will|can|may|should|from)',
+            r'^these\s+recommendations?\s+(?:will|can|should|may|have|are)',
+            r'^(?:our|their|its|his|her)\s+recommendations?',
+            r'recommendations?\s+(?:from|of|in)\s+(?:this|the)\s+(?:review|report)',
+            r'(?:implement|implementing|implemented)\s+(?:these|the|all|our)?\s*recommendations?',
+            r'once\s+implemented.*recommendations?',
+            r'recommendations?\s+(?:will|can|should)\s+help',
+            r'i\s+(?:truly\s+)?believe.*recommendations?',
+            r'i\s+hope.*recommendations?',
+            r'^our\s+objectives\s+were\s+to',
+            r'^we\s+(?:were|are)\s+(?:told|informed|advised)',
+            r'^when\s+we\s+(?:first\s+)?established',
+            r'^we\s+found\s+that',
+            r'^they\s+proposed\s+practical',
+            r'^this\s+document\s+outlines',
+            r'^the\s+insights\s+below',
+            r'^the\s+goal\s+is\s+to\s+provide',
+        ]
+        
+        for pattern in meta_patterns:
+            if re.search(pattern, text_lower):
+                return True
+        
+        return False
+    
+    def _extract_verb(self, text: str) -> str:
+        """Extract the main action verb from recommendation text"""
+        if not text:
+            return 'unknown'
+        
+        text_lower = text.lower()
+        
+        should_match = re.search(r'\bshould\s+(?:also\s+)?(?:urgently\s+)?(?:be\s+)?(\w+)', text_lower)
+        if should_match:
+            verb = should_match.group(1)
+            if verb in self.action_verbs:
+                return verb
+        
+        for verb in sorted(self.action_verbs, key=len, reverse=True):
+            if re.search(rf'\b{verb}\b', text_lower):
+                return verb
+        
+        return 'unknown'
+    
+    def _find_recommendation_end(self, text: str, start_pos: int, next_rec_pos: int) -> int:
+        """
+        Find the proper end position for a recommendation.
+        v2.8: Enhanced with HSIB-specific section markers.
+        """
+        # If there's a next recommendation, that's our boundary
+        if next_rec_pos < len(text):
+            return next_rec_pos
+        
+        # =====================================================================
+        # HSIB-SPECIFIC SECTION MARKERS - Check these FIRST (more specific)
+        # These patterns appear in HSIB reports after the recommendations
+        # =====================================================================
+        hsib_section_markers = [
+            # Safety Observations section (appears after Safety Recommendations)
+            r'\bThe\s+investigation\s+makes\s+(?:two|three|four|one|the\s+following)\s+Safety\s+Observation',
+            r'\bSafety\s+Observation(?:s)?(?:\s+for|\s+to|\s*:)',
+            # Numbered sections in HSIB reports
+            r'\b\d+\s+Background\s+and\s+context\b',
+            r'\b\d+\s+The\s+reference\s+event\b',
+            r'\b\d+\s+Involvement\s+of\s+HSIB\b',
+            r'\b\d+\s+Findings\s+and\s+analysis\b',
+            r'\b\d+\s+Summary\s+of\s+(?:HSIB\s+)?[Ff]indings\b',
+            # HSIB footer/end markers
+            r'\bHSIB\s+has\s+directed\s+safety\s+recommendations\s+to\b',
+            r'\bThese\s+organisations\s+are\s+expected\s+to\s+respond\b',
+            r'\bWe\s+will\s+publish\s+their\s+responses\b',
+            r'\bProviding\s+feedback\b',
+            r'\bEndnotes\b',
+            # Summary section markers
+            r'\b6\.2\.?\s*Safety\s+Recommendations\b',
+            r'\b6\.3\.?\s*Safety\s+Observations\b',
+        ]
+        
+        earliest_boundary = next_rec_pos
+        search_start = start_pos + 30  # Skip past recommendation header
+        
+        # Check HSIB-specific markers FIRST
+        for pattern in hsib_section_markers:
+            match = re.search(pattern, text[search_start:], re.IGNORECASE)
+            if match:
+                boundary = search_start + match.start()
+                if boundary < earliest_boundary:
+                    earliest_boundary = boundary
+                    logger.debug(f"Found HSIB boundary at {boundary}: {pattern[:40]}")
+        
+        # If we found an HSIB boundary, use it
+        if earliest_boundary < next_rec_pos:
+            return earliest_boundary
+        
+        # =====================================================================
+        # UNIVERSAL SECTION MARKERS - Check these as fallback
+        # =====================================================================
+        section_markers = [
+            r'\bOur vision for (?:a |the )?(?:better )?future\b',
+            r'\bKey facts\b',
+            r'\bMethodology\b',
+            r'\bFindings\b',
+            r'\bAppendix(?:es)?(?:\s+\d+)?\b',
+            r'\bGlossary\b',
+            r'\bReferences\b',
+            r'\bCase studies\b',
+            r'\bConclusion(?:s)?(?:\s+and\s+next\s+steps)?\b',
+            r'\bAcknowledgements?\b',
+            r'\bAbout (?:this|the) (?:report|review)\b',
+            r'\bData mapping\b',
+            r'\bSafety issues framework\b',
+            r'\bMeasuring what matters:\b',
+            r'\bPoor safety outcomes\b',
+            r'\bAll content is available under\b',
+            r'©\s*Crown copyright',
+            r'\bThroughout the review\b',
+        ]
+        
+        for pattern in section_markers:
+            match = re.search(pattern, text[search_start:], re.IGNORECASE)
+            if match:
+                boundary = search_start + match.start()
+                if boundary < earliest_boundary:
+                    earliest_boundary = boundary
+        
+        return earliest_boundary
+    
+    def is_genuine_recommendation(self, text: str, is_numbered_rec: bool = False) -> Tuple[bool, float, str, str]:
+        """Determine if text is a genuine recommendation."""
+        if not text:
+            return False, 0.0, 'empty', 'unknown'
+        
+        cleaned = self.clean_text(text)
+        if not cleaned:
+            return False, 0.0, 'empty', 'unknown'
+        
+        text_lower = cleaned.lower()
+        
+        if not is_numbered_rec:
+            if len(cleaned) > self.MAX_SENTENCE_LENGTH:
+                return False, 0.0, 'too_long', 'none'
+        
+        # NEW: HSIB 2023+ format (e.g., "Safety recommendation R/2023/220")
+        hsib_2023_match = re.match(
+            r'^Safety\s+recommendation\s+(R/\d{4}/\d{3})[:\s]+(.+)',
+            cleaned,
+            re.IGNORECASE,
+        )
+        if hsib_2023_match:
+            rec_num = hsib_2023_match.group(1)
+            rec_text = hsib_2023_match.group(2)
+            verb = self._extract_verb(rec_text)
+            return True, 0.98, f'hsib_recommendation_{rec_num}', verb
+        
+        # HSIB 2018 format (e.g., "Recommendation 2018/006")
+        hsib_2018_match = re.match(
+            r'^Recommendation\s+(\d{4}/\d{3})[:\s]+(.+)',
+            cleaned,
+            re.IGNORECASE,
+        )
+        if hsib_2018_match:
+            rec_num = hsib_2018_match.group(1)
+            rec_text = hsib_2018_match.group(2)
+            verb = self._extract_verb(rec_text)
+            return True, 0.98, f'hsib_recommendation_{rec_num}', verb
+        
+        # Standard numbered recommendation (e.g., "Recommendation 1")
+        numbered_match = re.match(
+            r'^(?:Recommendations?\s+)?Recommendation\s+(\d{1,2})(?:\s+(\d))?\s+(.+)',
+            cleaned,
+            re.IGNORECASE,
+        )
+        if numbered_match:
+            num_part = numbered_match.group(1)
+            extra_digit = numbered_match.group(2)
+            if extra_digit and len(num_part) == 1:
+                rec_num = f"{num_part}{extra_digit}"
+            else:
+                rec_num = num_part
+            rec_text = numbered_match.group(3)
+            verb = self._extract_verb(rec_text)
+            return True, 0.98, f'numbered_recommendation_{rec_num}', verb
+        
+        # Entity + should pattern
+        for entity_pattern in self.recommending_entities:
+            pattern = rf'{entity_pattern}\s+should\s+(?:also\s+)?(?:urgently\s+)?(?:\w+ly\s+)?(\w+)'
+            match = re.search(pattern, cleaned, re.IGNORECASE)
+            if match and match.group(1):
+                verb = match.group(1).lower()
+                if verb in self.action_verbs or verb.endswith('e') or verb.endswith('ise') or verb.endswith('ize'):
+                    return True, 0.95, 'entity_should', verb
+        
+        # "We recommend" pattern
+        if re.search(r'\bwe\s+recommend\b', text_lower):
+            verb = self._extract_verb(cleaned)
+            return True, 0.90, 'we_recommend', verb
+        
+        # "should be" + action (passive)
+        should_be_match = re.search(r'(\w+(?:\s+\w+)?)\s+should\s+be\s+(\w+ed)\b', text_lower)
+        if should_be_match:
+            subject = should_be_match.group(1)
+            verb = should_be_match.group(2)
+            if subject not in ['this', 'it', 'that', 'recommendation', 'the recommendation']:
+                return True, 0.85, 'should_be_passive', verb
+        
+        # Modal + action verb
+        modal_match = re.search(r'\b(should|must|shall)\s+(\w+)\b', text_lower)
+        if modal_match:
+            verb = modal_match.group(2)
+            if verb in self.action_verbs:
+                words = cleaned.split()
+                if len(words) >= 10:
+                    if not re.search(r'recommendations?\s+(?:should|must|shall)', text_lower):
+                        return True, 0.80, 'modal_verb', verb
+        
+        # Imperative starting with action verb
+        first_word = cleaned.split()[0].lower() if cleaned.split() else ''
+        if first_word in self.action_verbs:
+            if len(cleaned.split()) >= 10:
+                return True, 0.75, 'imperative', first_word
+        
+        return False, 0.0, 'none', 'unknown'
+    
+    def _extract_rec_number_from_text(self, text: str) -> Optional[str]:
+        """Extract recommendation number from text for deduplication."""
+        # HSIB 2018 format: 2018/006
+        hsib_match = re.search(r'Recommendation\s+(\d{4}/\d{3})', text, re.IGNORECASE)
+        if hsib_match:
+            return hsib_match.group(1)
+        
+        # HSIB 2023+ format: R/2023/220
+        hsib_2023_match = re.search(r'Safety\s+recommendation\s+(R/\d{4}/\d{3})', text, re.IGNORECASE)
+        if hsib_2023_match:
+            return hsib_2023_match.group(1)
+        
+        # Standard format: Recommendation 1
+        std_match = re.search(r'Recommendation\s+(\d{1,2})\b', text, re.IGNORECASE)
+        if std_match:
+            return std_match.group(1)
+        
+        return None
+    
+    def extract_recommendations(self, text: str, min_confidence: float = 0.75) -> List[Dict]:
+        """Extract genuine recommendations from text."""
+        recommendations = []
+        seen_rec_numbers: Set[str] = set()  # Track seen rec numbers for deduplication
+        
+        if not text or not text.strip():
+            logger.warning("Empty text passed to extract_recommendations")
+            return []
+        
+        logger.info(f"Extracting recommendations from text of length {len(text)}")
+        
+        cleaned_full_text = self.clean_text(text)
+        
+        # =======================================================================
+        # PHASE 1: Try HSIB 2023+ format first (Safety recommendation R/YYYY/NNN)
+        # =======================================================================
+        hsib_2023_pattern = re.compile(
+            r'Safety\s+recommendation\s+(R/\d{4}/\d{3})[:\s]',
+            re.IGNORECASE
+        )
+        hsib_2023_matches = list(hsib_2023_pattern.finditer(cleaned_full_text))
+        
+        if hsib_2023_matches:
+            logger.info(f"Found {len(hsib_2023_matches)} HSIB 2023+ recommendations")
+            for idx, match in enumerate(hsib_2023_matches):
+                rec_num = match.group(1)
+                
+                # Skip duplicates
+                if rec_num in seen_rec_numbers:
+                    logger.debug(f"Skipping duplicate HSIB 2023 rec: {rec_num}")
+                    continue
+                
+                start = match.start()
+                next_rec_pos = hsib_2023_matches[idx + 1].start() if idx + 1 < len(hsib_2023_matches) else len(cleaned_full_text)
+                end = self._find_recommendation_end(cleaned_full_text, start, next_rec_pos)
+                raw_block = cleaned_full_text[start:end]
+                cleaned = self.clean_text(raw_block)
+                
+                is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=True)
+                if is_garbage:
+                    continue
+                
+                is_rec, confidence, method, verb = self.is_genuine_recommendation(cleaned, is_numbered_rec=True)
+                
+                if is_rec and confidence >= min_confidence:
+                    seen_rec_numbers.add(rec_num)
+                    recommendations.append({
+                        'text': cleaned,
+                        'verb': verb,
+                        'method': method,
+                        'confidence': round(confidence, 3),
+                        'position': idx,
+                        'in_section': True,
+                        'rec_number': rec_num,
+                    })
+            
+            if recommendations:
+                recommendations = self._deduplicate(recommendations)
+                logger.info(f"Found {len(recommendations)} recommendations")
+                return recommendations
+        
+        # =======================================================================
+        # PHASE 2: Try HSIB 2018 format (Recommendation YYYY/NNN)
+        # =======================================================================
+        hsib_2018_pattern = re.compile(
+            r'Recommendation\s+(\d{4}/\d{3})[:\s]',
+            re.IGNORECASE
+        )
+        hsib_2018_matches = list(hsib_2018_pattern.finditer(cleaned_full_text))
+        
+        if hsib_2018_matches:
+            logger.info(f"Found {len(hsib_2018_matches)} HSIB 2018 recommendations")
+            for idx, match in enumerate(hsib_2018_matches):
+                rec_num = match.group(1)
+                
+                # Skip duplicates
+                if rec_num in seen_rec_numbers:
+                    logger.debug(f"Skipping duplicate HSIB 2018 rec: {rec_num}")
+                    continue
+                
+                start = match.start()
+                next_rec_pos = hsib_2018_matches[idx + 1].start() if idx + 1 < len(hsib_2018_matches) else len(cleaned_full_text)
+                end = self._find_recommendation_end(cleaned_full_text, start, next_rec_pos)
+                raw_block = cleaned_full_text[start:end]
+                cleaned = self.clean_text(raw_block)
+                
+                is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=True)
+                if is_garbage:
+                    continue
+                
+                is_rec, confidence, method, verb = self.is_genuine_recommendation(cleaned, is_numbered_rec=True)
+                
+                if is_rec and confidence >= min_confidence:
+                    seen_rec_numbers.add(rec_num)
+                    recommendations.append({
+                        'text': cleaned,
+                        'verb': verb,
+                        'method': method,
+                        'confidence': round(confidence, 3),
+                        'position': idx,
+                        'in_section': True,
+                        'rec_number': rec_num,
+                    })
+            
+            if recommendations:
+                recommendations = self._deduplicate(recommendations)
+                logger.info(f"Found {len(recommendations)} recommendations")
+                return recommendations
+        
+        # =======================================================================
+        # PHASE 3: Standard "Recommendation N" format
+        # =======================================================================
+        heading_pattern = re.compile(
+            r'(?:Recommendations?\s+)?Recommendation\s+(\d{1,2})(?:\s+(\d))?\b',
+            re.IGNORECASE,
+        )
+        heading_matches = list(heading_pattern.finditer(cleaned_full_text))
+        
+        logger.info(f"Found {len(heading_matches)} standard recommendation headings")
+        
+        for idx, match in enumerate(heading_matches):
+            # Calculate rec_num first for deduplication
+            heading_num = match.group(1)
+            extra_digit = match.group(2)
+            if extra_digit and len(heading_num) == 1:
+                rec_num = f"{heading_num}{extra_digit}"
+            else:
+                rec_num = heading_num
+            
+            # Skip duplicates
+            if rec_num in seen_rec_numbers:
+                logger.debug(f"Skipping duplicate standard rec: {rec_num}")
+                continue
+            
+            start = match.start()
+            next_rec_pos = heading_matches[idx + 1].start() if idx + 1 < len(heading_matches) else len(cleaned_full_text)
+            end = self._find_recommendation_end(cleaned_full_text, start, next_rec_pos)
+            raw_block = cleaned_full_text[start:end]
+            cleaned = self.clean_text(raw_block)
+            
+            is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=True)
+            if is_garbage:
+                logger.debug(f"Skipping numbered rec {idx}: {reason}")
+                continue
+            
+            is_rec, confidence, method, verb = self.is_genuine_recommendation(cleaned, is_numbered_rec=True)
+            
+            if is_rec and confidence >= min_confidence:
+                # Update rec_num from method if available
+                if method.startswith("numbered_recommendation_"):
+                    try:
+                        rec_num = method.split("_")[-1]
+                    except Exception:
+                        pass
+                
+                seen_rec_numbers.add(rec_num)
+                
+                norm_pattern = r'^(?:Recommendations?\s+)?Recommendation\s+(\d{1,2})(?:\s+(\d))?\b'
+                normalized_text = re.sub(norm_pattern, f"Recommendation {rec_num}", cleaned, count=1, flags=re.IGNORECASE)
+                
+                recommendations.append({
+                    'text': normalized_text,
+                    'verb': verb,
+                    'method': method,
+                    'confidence': round(confidence, 3),
+                    'position': idx,
+                    'in_section': True,
+                    'rec_number': rec_num,
+                })
+        
+        # =======================================================================
+        # PHASE 4: Fallback to sentence extraction
+        # =======================================================================
+        if len(recommendations) == 1:
+            only_rec = recommendations[0]
+            if len(only_rec.get("text", "")) > self.MAX_NUMBERED_REC_LENGTH:
+                logger.info("Single oversized recommendation - falling back to sentence extraction")
+                recommendations = []
+        
+        if len(recommendations) == 0:
+            logger.info("No numbered recommendations found, falling back to sentence extraction")
+            
+            sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
+            
+            for idx, sentence in enumerate(sentences):
+                cleaned = self.clean_text(sentence)
+                
+                is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=False)
+                if is_garbage:
+                    continue
+                
+                if self.is_meta_recommendation(cleaned):
+                    continue
+                
+                is_rec, confidence, method, verb = self.is_genuine_recommendation(cleaned, is_numbered_rec=False)
+                
+                if is_rec and confidence >= min_confidence:
+                    recommendations.append({
+                        'text': cleaned,
+                        'verb': verb,
+                        'method': method,
+                        'confidence': round(confidence, 3),
+                        'position': idx,
+                        'in_section': False,
+                    })
+        
+        recommendations = self._deduplicate(recommendations)
+        logger.info(f"Found {len(recommendations)} recommendations")
+        
+        return recommendations
+    
+    def _deduplicate(self, recommendations: List[Dict]) -> List[Dict]:
+        """Remove duplicate recommendations using both text and rec_number."""
+        seen_text = set()
+        seen_numbers = set()
+        unique = []
+        
+        for rec in recommendations:
+            # Check by rec_number first (most reliable for HSIB)
+            rec_num = rec.get('rec_number')
+            if rec_num and rec_num in seen_numbers:
+                logger.debug(f"Deduplicating by rec_number: {rec_num}")
+                continue
+            
+            # Also check by text prefix
+            key = re.sub(r'\s+', ' ', rec['text'].lower().strip())[:150]
+            if key in seen_text:
+                logger.debug(f"Deduplicating by text: {key[:50]}...")
+                continue
+            
+            if rec_num:
+                seen_numbers.add(rec_num)
+            seen_text.add(key)
+            unique.append(rec)
+        
+        return unique
+    
+    def get_statistics(self, recommendations: List[Dict]) -> Dict:
+        """Get statistics about extracted recommendations."""
+        if not recommendations:
+            return {
+                'total': 0,
+                'unique_verbs': 0,
+                'avg_confidence': 0,
+                'in_section_count': 0,
+                'methods': {},
+                'top_verbs': {},
+                'high_confidence': 0,
+                'medium_confidence': 0,
+            }
+        
+        verb_counts = Counter(r['verb'] for r in recommendations)
+        method_counts = Counter(r['method'] for r in recommendations)
+        in_section = sum(1 for r in recommendations if r.get('in_section', False))
+        
+        return {
+            'total': len(recommendations),
+            'unique_verbs': len(verb_counts),
+            'methods': dict(method_counts),
+            'top_verbs': dict(verb_counts.most_common(10)),
+            'avg_confidence': round(sum(r['confidence'] for r in recommendations) / len(recommendations), 3),
+            'in_section_count': in_section,
+            'high_confidence': sum(1 for r in recommendations if r['confidence'] >= 0.9),
+            'medium_confidence': sum(1 for r in recommendations if 0.75 <= r['confidence'] < 0.9),
+        }
 
 
-def calculate_simple_similarity(text1: str, text2: str) -> float:
-    """Calculate similarity using meaningful words only."""
-    words1 = set(get_meaningful_words(text1))
-    words2 = set(get_meaningful_words(text2))
-    if not words1 or not words2:
-        return 0.0
-    intersection = len(words1 & words2)
-    union = len(words1 | words2)
-    return intersection / union if union > 0 else 0.0
+AdvancedRecommendationExtractor = StrictRecommendationExtractor
+
+
+def extract_recommendations(text: str, min_confidence: float = 0.75) -> List[Dict]:
+    """Main function to extract recommendations."""
+    extractor = StrictRecommendationExtractor()
+    return extractor.extract_recommendations(text, min_confidence)
