@@ -1,12 +1,12 @@
 """
-Recommendation Extractor v3.2
+Recommendation Extractor v3.3
 Extracts recommendation blocks from government and health sector documents.
 
-v3.2 Changes:
-- FIXED: Deduplication now uses rec_number for HSIB documents (prevents duplicates from summary/detail sections)
-- FIXED: Section marker boundary detection now catches "N.N." patterns (e.g., "6.3. Safety Observations")
-- FIXED: Strips preamble text before "That" in HSIB recommendations
-- IMPROVED: Better handling of footnote markers in recommendation text
+v3.3 Changes:
+- FIXED: Reverted boundary detection to v3.1 behaviour (was too aggressive in v3.2)
+- FIXED: Deduplication by rec_number for HSIB documents only (prevents duplicates from summary/detail sections)
+- FIXED: Footnote marker removal [N] for cleaner text
+- PRESERVED: Full extraction of standard government recommendations (Recs 2, 5, 9, 12, 13 now complete)
 
 v3.1 Changes:
 - Boundary detection catches inline "Recommendation N" patterns
@@ -43,7 +43,7 @@ class StrictRecommendationExtractor:
     
     # Length limits
     MAX_SENTENCE_LENGTH = 500
-    MAX_RECOMMENDATION_LENGTH = 1500  # Single recommendation should not exceed this
+    MAX_RECOMMENDATION_LENGTH = 2500  # v3.3: Restored to v3.1 value
     MIN_RECOMMENDATION_LENGTH = 50
     
     def __init__(self):
@@ -65,7 +65,6 @@ class StrictRecommendationExtractor:
             'define', 'specify', 'determine', 'approve', 'authorise', 'authorize',
             'build', 'design', 'plan', 'prepare', 'bring', 'make', 'take', 'meet',
             'come', 'form', 'work', 'learn', 'drive', 'produce', 'require',
-            'extend', 'extends',
         }
         
         self.recommending_entities = [
@@ -156,60 +155,15 @@ class StrictRecommendationExtractor:
         # Remove "UK " prefix at start
         text = re.sub(r'^UK\s+', '', text)
         
-        # v3.2: Remove footnote markers like [2], [27] from within text
-        # But preserve HSIB numbers in brackets
-        text = re.sub(r'\[(\d{1,2})\](?!\d{3})', '', text)
+        # v3.3: Remove footnote markers like [2], [27] from within text
+        # But preserve HSIB numbers which have 3+ digits after slash
+        text = re.sub(r'\[(\d{1,2})\](?!\d)', '', text)
         
         # Clean up whitespace
         text = re.sub(r'\s+', ' ', text)
         text = text.strip()
         
         return text
-    
-    def _clean_hsib_recommendation_text(self, text: str) -> str:
-        """
-        v3.2: Additional cleaning specifically for HSIB recommendations.
-        Strips preamble text and section markers from the recommendation body.
-        """
-        if not text:
-            return ""
-        
-        # First, do standard cleaning
-        cleaned = self.clean_text(text)
-        
-        # v3.2: For HSIB recommendations, the actual recommendation usually starts with "That"
-        # Strip any preamble text that comes before the recommendation header
-        # Pattern: "Recommendation YYYY/NNN: <preamble> That NHS England..."
-        # We want: "Recommendation YYYY/NNN: That NHS England..."
-        
-        # Check if this is an HSIB recommendation
-        hsib_match = re.match(r'^(Recommendation\s+\d{4}/\d{3}[:\s]+)', cleaned, re.IGNORECASE)
-        if hsib_match:
-            header = hsib_match.group(1)
-            body = cleaned[len(header):].strip()
-            
-            # Look for "That" which typically starts the actual recommendation
-            that_match = re.search(r'\bThat\s+(?:NHS|the\s+Care|CQC)', body, re.IGNORECASE)
-            if that_match and that_match.start() > 0 and that_match.start() < 200:
-                # There's preamble text before "That" - strip it
-                body = body[that_match.start():]
-                cleaned = header + body
-        
-        # v3.2: Remove section markers that got captured at the end
-        # Pattern: "6.3. Safety Observations" or "6.3 Safety Observations"
-        cleaned = re.sub(r'\s+\d+\.\d+\.?\s+[A-Z][a-z]+(?:\s+[A-Z]?[a-z]+)*\s*$', '', cleaned)
-        
-        # Remove trailing section headers
-        section_end_patterns = [
-            r'\s+Safety\s+Observations?\s*$',
-            r'\s+Local-level\s+learning\s*$',
-            r'\s+Background\s+and\s+context\s*$',
-            r'\s+Summary\s*$',
-        ]
-        for pattern in section_end_patterns:
-            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
-        
-        return cleaned.strip()
     
     def is_garbage(self, text: str, is_numbered_rec: bool = False) -> Tuple[bool, str]:
         """First-pass filter to reject obvious garbage"""
@@ -269,53 +223,40 @@ class StrictRecommendationExtractor:
         return False
     
     def _is_section_boundary(self, remaining: str) -> bool:
-        """Check if remaining text starts with a section boundary"""
+        """
+        Check if remaining text starts with a section boundary.
+        v3.3: Restored to v3.1 behaviour - only match clear section headers.
+        """
         if not remaining:
             return False
         
         remaining_stripped = remaining.lstrip()
         
-        # Universal section markers
+        # Universal section markers - only very clear ones
         section_markers = [
             r'^(?:Appendix|Annex|Schedule)\s+[A-Z0-9]',
             r'^(?:Chapter|Section|Part)\s+\d',
-            r'^References\b',
-            r'^Glossary\b',
-            r'^Acknowledgements?\b',
-            r'^Bibliography\b',
-            r'^Endnotes?\b',
+            r'^References\s*$',
+            r'^Glossary\s*$',
+            r'^Acknowledgements?\s*$',
+            r'^Bibliography\s*$',
+            r'^Endnotes?\s*$',
             r'^About\s+(?:this|the)\s+(?:report|review)',
-            r'^Safety\s+[Oo]bservation(?:s)?',
+            # HSIB-specific
+            r'^Safety\s+[Oo]bservation(?:s)?\s*(?:[A-Z0-9/]+)?:',
             r'^Local-level\s+learning',
-            r'^Background\s+and\s+context',
-            # v3.2: Section numbers like "6.3. Safety Observations"
-            r'^\d+\.\d+\.?\s+[A-Z]',
         ]
         
         for pattern in section_markers:
             if re.match(pattern, remaining_stripped, re.IGNORECASE):
                 return True
         
-        # Title case headers on their own line
-        lines = remaining.split('\n')
-        if lines:
-            first_line = lines[0].strip()
-            if (len(first_line) > 5 and len(first_line) < 80 and 
-                first_line[0].isupper() and
-                not first_line.endswith('.') and
-                not first_line.startswith(('The ', 'A ', 'An ', 'This ', 'That ', 'It '))):
-                words = first_line.split()
-                if len(words) >= 2:
-                    caps = sum(1 for w in words if w[0].isupper() or w.lower() in ['and', 'the', 'of', 'for', 'to', 'in', 'a', 'an'])
-                    if caps >= len(words) * 0.7:
-                        return True
-        
         return False
     
     def _find_recommendation_end_generic(self, text: str, start_pos: int, next_rec_pos: int) -> int:
         """
         GENERIC end-of-recommendation detection.
-        Uses structural heuristics rather than document-specific patterns.
+        v3.3: Restored to v3.1 behaviour - less aggressive boundary detection.
         """
         if next_rec_pos < len(text):
             search_limit = next_rec_pos
@@ -324,7 +265,7 @@ class StrictRecommendationExtractor:
         
         search_start = start_pos + 50
         
-        # Check for inline "Recommendation N" patterns
+        # v3.1 FIX: Check for inline "Recommendation N" patterns
         inline_rec_pattern = re.compile(
             r'\bRecommendation\s+\d{1,2}(?:\s+\d)?\s+(?:All|The|NHS|Every|Provider|Trust|Board|ICS|CQC|DHSC|Ward|More|Professional|Except)',
             re.IGNORECASE
@@ -336,37 +277,28 @@ class StrictRecommendationExtractor:
                 logger.debug(f"Found inline recommendation boundary at position {potential_end}")
                 search_limit = potential_end
         
-        # Universal end markers
+        # Universal end markers - only very clear document-end markers
         universal_markers = [
-            r'\bAppendix(?:es)?(?:\s+[A-Z0-9]+)?\b',
-            r'\bGlossary\b',
-            r'\bReferences\b',
-            r'\bEndnotes?\b',
-            r'\bAcknowledgements?\b',
-            r'\bBibliography\b',
-            r'\bFurther\s+(?:reading|information)\b',
+            r'\bAppendix(?:es)?(?:\s+[A-Z0-9]+)?\s*$',
+            r'\bGlossary\s*$',
+            r'\bReferences\s*$',
+            r'\bEndnotes?\s*$',
+            r'\bAcknowledgements?\s*$',
+            r'\bBibliography\s*$',
             r'\bAbout\s+(?:this|the)\s+(?:report|review|investigation|document)\b',
             r'©\s*(?:Crown\s+)?[Cc]opyright',
             r'\bAll\s+content\s+is\s+available\s+under\b',
             r'\bISBN\b',
-            # Section transitions
-            r'\bSafety\s+[Oo]bservation(?:s)?(?:\s+[A-Z0-9/]+)?[:\s]',
+            # HSIB-specific section transitions
+            r'\bSafety\s+[Oo]bservation(?:s)?(?:\s+[A-Z0-9/]+)?:',
             r'\bLocal-level\s+learning\b',
-            r'\bBackground\s+and\s+context\b',
-            r'\bFindings\s+and\s+analysis\b',
-            r'\bSummary\s+of\s+(?:findings|recommendations)\b',
-            r'\bThe\s+investigation\s+(?:found|makes|identified)\b',
-            # v3.2: Section numbers like "6.3. Safety Observations"
-            r'\b\d+\.\d+\.?\s+Safety\s+Observation',
-            # Numbered sections
-            r'\n\s*\d+\.?\s+[A-Z][a-z]+(?:\s+[a-z]+){0,3}\s*\n',
         ]
         
         earliest_boundary = search_limit
         
         for pattern in universal_markers:
             try:
-                match = re.search(pattern, text[search_start:search_limit], re.IGNORECASE)
+                match = re.search(pattern, text[search_start:search_limit], re.IGNORECASE | re.MULTILINE)
                 if match:
                     boundary = search_start + match.start()
                     if boundary < earliest_boundary:
@@ -374,22 +306,15 @@ class StrictRecommendationExtractor:
             except re.error:
                 continue
         
-        # Check for section boundaries using heuristics
-        chunk_size = 200
-        pos = search_start
-        while pos < min(earliest_boundary, search_limit):
-            chunk = text[pos:pos + chunk_size]
-            if self._is_section_boundary(chunk):
-                if pos < earliest_boundary:
-                    earliest_boundary = pos
+        # v3.3: Only check for section boundaries at line starts, not mid-text
+        lines = text[search_start:earliest_boundary].split('\n')
+        cumulative_pos = search_start
+        for line in lines:
+            if self._is_section_boundary(line):
+                if cumulative_pos < earliest_boundary:
+                    earliest_boundary = cumulative_pos
                 break
-            pos += chunk_size // 2
-        
-        # Length sanity check
-        if earliest_boundary - start_pos > self.MAX_RECOMMENDATION_LENGTH:
-            sentence_end = text.find('.', start_pos + self.MIN_RECOMMENDATION_LENGTH, start_pos + self.MAX_RECOMMENDATION_LENGTH)
-            if sentence_end != -1:
-                earliest_boundary = sentence_end + 1
+            cumulative_pos += len(line) + 1  # +1 for newline
         
         return earliest_boundary
     
@@ -551,6 +476,7 @@ class StrictRecommendationExtractor:
                 cleaned_full_text, hsib_2023_matches, 'hsib_2023', min_confidence
             )
             if recommendations:
+                # v3.3: Use rec_number deduplication for HSIB
                 return self._deduplicate(recommendations, by_rec_number=True)
         
         # =======================================================================
@@ -568,7 +494,7 @@ class StrictRecommendationExtractor:
                 cleaned_full_text, hsib_2018_matches, 'hsib_2018', min_confidence
             )
             if recommendations:
-                # v3.2: Use rec_number deduplication for HSIB
+                # v3.3: Use rec_number deduplication for HSIB
                 return self._deduplicate(recommendations, by_rec_number=True)
         
         # =======================================================================
@@ -586,6 +512,7 @@ class StrictRecommendationExtractor:
                 cleaned_full_text, standard_matches, 'standard', min_confidence
             )
             if recommendations:
+                # v3.3: Use rec_number deduplication for standard format too
                 return self._deduplicate(recommendations, by_rec_number=True)
         
         # =======================================================================
@@ -637,12 +564,7 @@ class StrictRecommendationExtractor:
             end = self._find_recommendation_end_generic(text, start, next_rec_pos)
             
             raw_block = text[start:end]
-            
-            # v3.2: Use HSIB-specific cleaning for HSIB documents
-            if pattern_type in ('hsib_2018', 'hsib_2023'):
-                cleaned = self._clean_hsib_recommendation_text(raw_block)
-            else:
-                cleaned = self.clean_text(raw_block)
+            cleaned = self.clean_text(raw_block)
             
             is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=True)
             if is_garbage:
@@ -686,7 +608,7 @@ class StrictRecommendationExtractor:
         """
         Remove duplicate recommendations.
         
-        v3.2: Added by_rec_number parameter for HSIB documents where the same
+        v3.3: Added by_rec_number parameter for HSIB documents where the same
         recommendation may appear in summary and detail sections.
         """
         if not recommendations:
@@ -695,7 +617,7 @@ class StrictRecommendationExtractor:
         unique = []
         
         if by_rec_number:
-            # v3.2: Deduplicate by rec_number, keeping the LONGEST version
+            # v3.3: Deduplicate by rec_number, keeping the LONGEST version
             # (the detailed version is usually longer than the summary)
             seen_numbers = {}
             for rec in recommendations:
@@ -714,8 +636,24 @@ class StrictRecommendationExtractor:
             # Combine the deduplicated numbered recs with any non-numbered ones
             unique.extend(seen_numbers.values())
             
-            # Sort by position to maintain order
-            unique.sort(key=lambda x: x.get('position', 0))
+            # Sort by rec_number for consistent ordering
+            def sort_key(r):
+                num = r.get('rec_number', '')
+                # Handle different formats: "1", "2018/006", "R/2023/220"
+                if '/' in str(num):
+                    # HSIB format - extract numeric part
+                    parts = str(num).replace('R/', '').split('/')
+                    try:
+                        return (1, int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+                    except ValueError:
+                        return (2, 0, 0)
+                else:
+                    try:
+                        return (0, int(num), 0)
+                    except (ValueError, TypeError):
+                        return (2, 0, 0)
+            
+            unique.sort(key=sort_key)
         else:
             # Original text-based deduplication
             seen = set()
