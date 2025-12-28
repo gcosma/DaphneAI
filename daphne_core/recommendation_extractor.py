@@ -33,6 +33,18 @@ class StrictRecommendationExtractor:
     MAX_SENTENCE_LENGTH = 500
     MAX_NUMBERED_REC_LENGTH = 2500
     
+    HSIB_HARD_BOUNDARIES = [
+        r'\n\s*The\s+investigation\s+makes\s+'
+        r'(?:one|two|three|the\s+following)\s+'
+        r'Safety\s+Observations?',
+        
+        r'\n\s*Safety\s+Observation(?:s)?\s*[:.]',
+        
+        r'\n\s*HSIB\s+has\s+directed\s+safety\s+recommendations',
+        
+        r'\n\s*\d+\s+Background\s+and\s+context',
+    ]
+
     def __init__(self):
         """Initialise with strict patterns"""
         
@@ -252,18 +264,6 @@ class StrictRecommendationExtractor:
         """Find the proper end position for a recommendation."""
         if next_rec_pos < len(text):
             return next_rec_pos
-
-        HSIB_HARD_BOUNDARIES = [
-            r'\n\s*The\s+investigation\s+makes\s+'
-            r'(?:one|two|three|the\s+following)\s+'
-            r'Safety\s+Observations?',
-            
-            r'\n\s*Safety\s+Observation(?:s)?\s*[:.]',
-            
-            r'\n\s*HSIB\s+has\s+directed\s+safety\s+recommendations',
-            
-            r'\n\s*\d+\s+Background\s+and\s+context',
-        ]
 
         # Section markers that indicate end of recommendations
         # v2.6: Added HSIB-specific markers
