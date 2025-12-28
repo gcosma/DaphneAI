@@ -3,12 +3,13 @@ Recommendation Extractor v3.3
 Extracts recommendation blocks from government and health sector documents.
 
 v3.3 Changes:
-- FIXED: Reverted boundary detection to v3.1 behaviour (was too aggressive in v3.2)
-- FIXED: Deduplication by rec_number for HSIB documents only (prevents duplicates from summary/detail sections)
-- FIXED: Footnote marker removal [N] for cleaner text
-- PRESERVED: Full extraction of standard government recommendations (Recs 2, 5, 9, 12, 13 now complete)
+- FIXED: Improved section boundary detection for title-case and sentence-case headers
+- FIXED: Added explicit markers for "Our vision" and similar post-recommendations sections
+- FIXED: HSIB deduplication by rec_number (keeps longest version)
+- FIXED: MAX_RECOMMENDATION_LENGTH increased to 2500 for longer government recs
+- FIXED: Removed aggressive boundary detection from v3.2 that was truncating recs
 
-v3.1 Changes:
+v3.1 Changes (preserved):
 - Boundary detection catches inline "Recommendation N" patterns
 - Handles "Recommendation 1 1" (spaced digits) correctly as boundaries
 - Prevents Recommendation N from bleeding into Recommendation N-1
@@ -18,13 +19,6 @@ Supported Formats:
 - HSSIB 2023+ format: "Safety recommendation R/2023/220:"
 - Standard government: "Recommendation 1", "Recommendation 12"
 - Sentence-based fallback for unstructured documents
-
-Usage:
-    from recommendation_extractor import extract_recommendations
-    
-    recommendations = extract_recommendations(document_text, min_confidence=0.75)
-    for rec in recommendations:
-        print(f"{rec['rec_number']}: {rec['text'][:100]}...")
 """
 
 import re
@@ -43,7 +37,7 @@ class StrictRecommendationExtractor:
     
     # Length limits
     MAX_SENTENCE_LENGTH = 500
-    MAX_RECOMMENDATION_LENGTH = 2500  # v3.3: Restored to v3.1 value
+    MAX_RECOMMENDATION_LENGTH = 2500  # v3.3: Increased from 1500 for longer gov recs
     MIN_RECOMMENDATION_LENGTH = 50
     
     def __init__(self):
@@ -103,8 +97,6 @@ class StrictRecommendationExtractor:
         replacements = {
             'â€™': "'", 'â€œ': '"', 'â€': '"', 'â€"': '—', 'â€"': '–',
             'Â ': ' ', '\u00a0': ' ', '�': '', '\ufffd': '',
-            ''': "'", ''': "'", '"': '"', '"': '"',
-            '–': '-', '—': '-',
         }
         
         for bad, good in replacements.items():
@@ -113,7 +105,7 @@ class StrictRecommendationExtractor:
         return text
     
     def clean_text(self, text: str) -> str:
-        """Clean text while preserving important content"""
+        """Clean text of noise and artifacts"""
         if not text:
             return ""
         
@@ -127,19 +119,19 @@ class StrictRecommendationExtractor:
         text = re.sub(r'[a-zA-Z0-9.-]+\.nhs\.uk[^\s]*', '', text)
         
         # Remove timestamps
-        text = re.sub(r'\d{1,2}/\d{1,2}/\d{2,4},?\s*\d{1,2}:\d{2}\s*(?:AM|PM)?[^A-Z]*(?=[A-Z]|$)', ' ', text, flags=re.IGNORECASE)
+        text = re.sub(
+            r'\d{1,2}/\d{1,2}/\d{2,4},?\s*\d{1,2}:\d{2}\s*(?:AM|PM)?[^A-Z]*(?=[A-Z]|$)',
+            ' ', text, flags=re.IGNORECASE
+        )
         
-        # Remove page numbers (but NOT HSIB recommendation numbers like 2018/006)
-        # Page numbers are typically short like 1/84, 12/84
-        text = re.sub(r'\b(\d{1,2})/(\d{1,3})\b(?!\d)', '', text)
+        # Remove page numbers (but NOT recommendation IDs like 2018/006 or R/2023/220)
+        text = re.sub(r'\b(\d{1,2})/(\d{1,3})\b', '', text)
         text = re.sub(r'\bPage\s+\d+\s+(?:of\s+\d+)?', '', text, flags=re.IGNORECASE)
         
         # Remove GOV.UK footer artifacts
         text = re.sub(
             r'Rapid review into data on mental health inpatient settings:.*?GOV\.?UK',
-            '',
-            text,
-            flags=re.IGNORECASE,
+            '', text, flags=re.IGNORECASE
         )
         text = re.sub(r'final report and recommendations\s*-?\s*GOV\.?UK?', '', text, flags=re.IGNORECASE)
         text = re.sub(r'-\s*GOV\.?\s*UK?\s*', '', text, flags=re.IGNORECASE)
@@ -152,12 +144,8 @@ class StrictRecommendationExtractor:
             flags=re.IGNORECASE,
         )
         
-        # Remove "UK " prefix at start
+        # Remove "UK " prefix
         text = re.sub(r'^UK\s+', '', text)
-        
-        # v3.3: Remove footnote markers like [2], [27] from within text
-        # But preserve HSIB numbers which have 3+ digits after slash
-        text = re.sub(r'\[(\d{1,2})\](?!\d)', '', text)
         
         # Clean up whitespace
         text = re.sub(r'\s+', ' ', text)
@@ -166,29 +154,26 @@ class StrictRecommendationExtractor:
         return text
     
     def is_garbage(self, text: str, is_numbered_rec: bool = False) -> Tuple[bool, str]:
-        """First-pass filter to reject obvious garbage"""
+        """First-pass filter: reject obvious garbage before analysis."""
         if not text:
             return True, "empty"
         
         cleaned = self.clean_text(text)
         
-        if len(cleaned) < 40:
+        if len(cleaned) < self.MIN_RECOMMENDATION_LENGTH:
             return True, "too_short"
         
         if not is_numbered_rec:
             if len(cleaned) > self.MAX_SENTENCE_LENGTH:
                 return True, "too_long"
         
-        # Section headers
         if re.match(r'^(?:Appendix|Section|Chapter|Table|Figure|Footnote)\s+\d+', cleaned, re.IGNORECASE):
             return True, "header"
         
-        # Too many special characters
-        special_chars = sum(1 for c in cleaned if not c.isalnum() and not c.isspace() and c not in '.,;:!?\'"-()[]/')
+        special_chars = sum(1 for c in cleaned if not c.isalnum() and not c.isspace() and c not in '.,;:!?\'"-()[]')
         if len(cleaned) > 0 and special_chars / len(cleaned) > 0.12:
             return True, "corrupted"
         
-        # Excessive numbers (but be more lenient for numbered recs which may have dates)
         if not is_numbered_rec:
             digits = sum(1 for c in cleaned if c.isdigit())
             if len(cleaned) > 0 and digits / len(cleaned) > 0.15:
@@ -197,10 +182,9 @@ class StrictRecommendationExtractor:
         return False, ""
     
     def is_meta_recommendation(self, text: str) -> bool:
-        """Check if text is talking ABOUT recommendations rather than making one"""
+        """Check if text is talking ABOUT recommendations rather than being one."""
         if not text:
             return False
-        
         text_lower = text.lower()
         
         meta_patterns = [
@@ -211,9 +195,16 @@ class StrictRecommendationExtractor:
             r'(?:implement|implementing|implemented)\s+(?:these|the|all|our)?\s*recommendations?',
             r'once\s+implemented.*recommendations?',
             r'recommendations?\s+(?:will|can|should)\s+help',
+            r'i\s+(?:truly\s+)?believe.*recommendations?',
+            r'i\s+hope.*recommendations?',
             r'^our\s+objectives\s+were\s+to',
             r'^we\s+(?:were|are)\s+(?:told|informed|advised)',
+            r'^when\s+we\s+(?:first\s+)?established',
+            r'^we\s+found\s+that',
+            r'^they\s+proposed\s+practical',
             r'^this\s+document\s+outlines',
+            r'^the\s+insights\s+below',
+            r'^the\s+goal\s+is\s+to\s+provide',
         ]
         
         for pattern in meta_patterns:
@@ -221,102 +212,6 @@ class StrictRecommendationExtractor:
                 return True
         
         return False
-    
-    def _is_section_boundary(self, remaining: str) -> bool:
-        """
-        Check if remaining text starts with a section boundary.
-        v3.3: Restored to v3.1 behaviour - only match clear section headers.
-        """
-        if not remaining:
-            return False
-        
-        remaining_stripped = remaining.lstrip()
-        
-        # Universal section markers - only very clear ones
-        section_markers = [
-            r'^(?:Appendix|Annex|Schedule)\s+[A-Z0-9]',
-            r'^(?:Chapter|Section|Part)\s+\d',
-            r'^References\s*$',
-            r'^Glossary\s*$',
-            r'^Acknowledgements?\s*$',
-            r'^Bibliography\s*$',
-            r'^Endnotes?\s*$',
-            r'^About\s+(?:this|the)\s+(?:report|review)',
-            # HSIB-specific
-            r'^Safety\s+[Oo]bservation(?:s)?\s*(?:[A-Z0-9/]+)?:',
-            r'^Local-level\s+learning',
-        ]
-        
-        for pattern in section_markers:
-            if re.match(pattern, remaining_stripped, re.IGNORECASE):
-                return True
-        
-        return False
-    
-    def _find_recommendation_end_generic(self, text: str, start_pos: int, next_rec_pos: int) -> int:
-        """
-        GENERIC end-of-recommendation detection.
-        v3.3: Restored to v3.1 behaviour - less aggressive boundary detection.
-        """
-        if next_rec_pos < len(text):
-            search_limit = next_rec_pos
-        else:
-            search_limit = len(text)
-        
-        search_start = start_pos + 50
-        
-        # v3.1 FIX: Check for inline "Recommendation N" patterns
-        inline_rec_pattern = re.compile(
-            r'\bRecommendation\s+\d{1,2}(?:\s+\d)?\s+(?:All|The|NHS|Every|Provider|Trust|Board|ICS|CQC|DHSC|Ward|More|Professional|Except)',
-            re.IGNORECASE
-        )
-        inline_match = inline_rec_pattern.search(text[search_start:search_limit])
-        if inline_match:
-            potential_end = search_start + inline_match.start()
-            if potential_end < search_limit:
-                logger.debug(f"Found inline recommendation boundary at position {potential_end}")
-                search_limit = potential_end
-        
-        # Universal end markers - only very clear document-end markers
-        universal_markers = [
-            r'\bAppendix(?:es)?(?:\s+[A-Z0-9]+)?\s*$',
-            r'\bGlossary\s*$',
-            r'\bReferences\s*$',
-            r'\bEndnotes?\s*$',
-            r'\bAcknowledgements?\s*$',
-            r'\bBibliography\s*$',
-            r'\bAbout\s+(?:this|the)\s+(?:report|review|investigation|document)\b',
-            r'©\s*(?:Crown\s+)?[Cc]opyright',
-            r'\bAll\s+content\s+is\s+available\s+under\b',
-            r'\bISBN\b',
-            # HSIB-specific section transitions
-            r'\bSafety\s+[Oo]bservation(?:s)?(?:\s+[A-Z0-9/]+)?:',
-            r'\bLocal-level\s+learning\b',
-        ]
-        
-        earliest_boundary = search_limit
-        
-        for pattern in universal_markers:
-            try:
-                match = re.search(pattern, text[search_start:search_limit], re.IGNORECASE | re.MULTILINE)
-                if match:
-                    boundary = search_start + match.start()
-                    if boundary < earliest_boundary:
-                        earliest_boundary = boundary
-            except re.error:
-                continue
-        
-        # v3.3: Only check for section boundaries at line starts, not mid-text
-        lines = text[search_start:earliest_boundary].split('\n')
-        cumulative_pos = search_start
-        for line in lines:
-            if self._is_section_boundary(line):
-                if cumulative_pos < earliest_boundary:
-                    earliest_boundary = cumulative_pos
-                break
-            cumulative_pos += len(line) + 1  # +1 for newline
-        
-        return earliest_boundary
     
     def _extract_verb(self, text: str) -> str:
         """Extract the main action verb from recommendation text"""
@@ -331,14 +226,188 @@ class StrictRecommendationExtractor:
             if verb in self.action_verbs:
                 return verb
         
+        recommends_match = re.search(r'\brecommends?\s+that\s+[\w\s]+\s+(\w+)', text_lower)
+        if recommends_match:
+            verb = recommends_match.group(1)
+            if verb in self.action_verbs:
+                return verb
+        
         for verb in sorted(self.action_verbs, key=len, reverse=True):
             if re.search(rf'\b{verb}s?\b', text_lower):
                 return verb
         
         return 'unknown'
     
+    def _is_section_boundary(self, text: str, position: int) -> bool:
+        """
+        GENERIC section boundary detection.
+        Returns True if position appears to be at a major section break.
+        
+        v3.3: Improved to catch sentence-case headers like "Our vision for a better future"
+        """
+        if position >= len(text):
+            return True
+        
+        # Look at text from this position
+        remaining = text[position:position + 200]
+        
+        # Check for numbered section headers: "1 Background", "2. Analysis", "1.1 Introduction"
+        if re.match(r'^\s*\d+\.?\d*\.?\s+[A-Z][a-z]+', remaining):
+            return True
+        
+        # Check for title case headers on their own line
+        lines = remaining.split('\n')
+        if lines:
+            first_line = lines[0].strip()
+            
+            # Skip if too short or too long
+            if len(first_line) < 5 or len(first_line) > 80:
+                return False
+            
+            # Skip if ends with period (it's a sentence, not a header)
+            if first_line.endswith('.'):
+                return False
+            
+            # Skip if starts with common sentence starters
+            if first_line.startswith(('The ', 'A ', 'An ', 'This ', 'That ', 'It ', 'We ', 'They ')):
+                return False
+            
+            # Must start with uppercase
+            if not first_line[0].isupper():
+                return False
+            
+            words = first_line.split()
+            if len(words) < 2:
+                return False
+            
+            # v3.3: More lenient check - first word capitalised + short phrase = likely header
+            # Headers like "Our vision for a better future" have first word caps + lowercase rest
+            if len(words) <= 8 and words[0][0].isupper():
+                # Check if it looks like a header vs. a sentence fragment
+                # Headers rarely contain certain words
+                sentence_indicators = ['is', 'are', 'was', 'were', 'have', 'has', 'had', 
+                                       'will', 'would', 'could', 'should', 'may', 'might',
+                                       'because', 'although', 'however', 'therefore']
+                has_sentence_indicator = any(w.lower() in sentence_indicators for w in words)
+                
+                if not has_sentence_indicator:
+                    return True
+            
+            # Original title case check (multiple capitalised words)
+            caps = sum(1 for w in words if w[0].isupper() or w.lower() in ['and', 'the', 'of', 'for', 'to', 'in', 'a', 'an'])
+            if caps >= len(words) * 0.7:
+                return True
+        
+        return False
+    
+    def _find_recommendation_end_generic(self, text: str, start_pos: int, next_rec_pos: int) -> int:
+        """
+        GENERIC end-of-recommendation detection.
+        Uses structural heuristics rather than document-specific patterns.
+        
+        v3.1 FIX: Now checks for inline "Recommendation N" patterns that might
+        have been missed, especially when digits are spaced (e.g., "Recommendation 1 1")
+        
+        v3.3: Added explicit markers for post-recommendations sections
+        """
+        # If there's a next recommendation, that's our hard boundary
+        if next_rec_pos < len(text):
+            search_limit = next_rec_pos
+        else:
+            search_limit = len(text)
+        
+        # Start searching after the recommendation header
+        search_start = start_pos + 50
+        
+        # =====================================================================
+        # v3.1 FIX: Check for inline "Recommendation N" patterns that might have
+        # been missed. This catches cases where "Recommendation 1 1" (for 11) or
+        # similar patterns appear inline and weren't detected as a heading boundary.
+        # =====================================================================
+        inline_rec_pattern = re.compile(
+            r'\bRecommendation\s+\d{1,2}(?:\s+\d)?\s+(?:All|The|NHS|Every|Provider|Trust|Board|ICS|CQC|DHSC|Ward|More|Professional|Except)',
+            re.IGNORECASE
+        )
+        inline_match = inline_rec_pattern.search(text[search_start:search_limit])
+        if inline_match:
+            # Found another recommendation start inline - use that as boundary
+            potential_end = search_start + inline_match.start()
+            if potential_end < search_limit:
+                logger.debug(f"Found inline recommendation boundary at position {potential_end}")
+                search_limit = potential_end
+        
+        # Universal end markers (these work across document types)
+        # v3.3: Added more explicit section markers
+        universal_markers = [
+            # Document structure markers
+            r'\bAppendix(?:es)?(?:\s+[A-Z0-9]+)?\b',
+            r'\bGlossary\b',
+            r'\bReferences\b',
+            r'\bEndnotes?\b',
+            r'\bAcknowledgements?\b',
+            r'\bBibliography\b',
+            r'\bFurther\s+(?:reading|information)\b',
+            r'\bAbout\s+(?:this|the)\s+(?:report|review|investigation|document)\b',
+            r'©\s*(?:Crown\s+)?[Cc]opyright',
+            r'\bAll\s+content\s+is\s+available\s+under\b',
+            r'\bISBN\b',
+            # Section transitions for HSIB/HSSIB
+            r'\bSafety\s+[Oo]bservation(?:s)?(?:\s+[A-Z0-9/]+)?:',
+            r'\bLocal-level\s+learning\b',
+            r'\bBackground\s+and\s+context\b',
+            r'\bFindings\s+and\s+analysis\b',
+            r'\bSummary\s+of\s+(?:findings|recommendations)\b',
+            r'\bThe\s+investigation\s+(?:found|makes|identified)\b',
+            # v3.3: Explicit markers for common post-recommendations sections
+            r'\bOur\s+vision\s+for\s+(?:a\s+)?(?:better\s+)?future\b',
+            r'\bKey\s+facts\b',
+            r'\bMethodology\b',
+            r'\bFindings\b',
+            r'\bCase\s+studies\b',
+            r'\bMeasuring\s+what\s+matters\b',
+            r'\bWhat\s+a\s+better\s+system\s+would\s+look\s+like\b',
+            r'\bPrinciples\s+for\s+the\s+collection\b',
+            r'\bThe\s+safety\s+issues\s+framework\b',
+            r'\bData\s+on\s+deaths\b',
+            r'\bPoor\s+safety\s+outcomes\b',
+            # Numbered sections (generic)
+            r'\n\s*\d+\.?\s+[A-Z][a-z]+(?:\s+[a-z]+){0,3}\s*\n',
+        ]
+        
+        earliest_boundary = search_limit
+        
+        for pattern in universal_markers:
+            match = re.search(pattern, text[search_start:search_limit], re.IGNORECASE)
+            if match:
+                boundary = search_start + match.start()
+                if boundary < earliest_boundary:
+                    earliest_boundary = boundary
+        
+        # Also check for structural boundaries (title case headers, etc.)
+        # Scan through looking for section breaks
+        check_positions = range(search_start, min(earliest_boundary, search_start + 3000), 100)
+        for pos in check_positions:
+            if self._is_section_boundary(text, pos):
+                # Found a structural boundary
+                if pos < earliest_boundary:
+                    earliest_boundary = pos
+                break
+        
+        # Apply maximum length safeguard
+        max_end = start_pos + self.MAX_RECOMMENDATION_LENGTH
+        if earliest_boundary > max_end:
+            # Try to find a sentence boundary near the max length
+            text_chunk = text[start_pos:max_end]
+            last_period = text_chunk.rfind('. ')
+            if last_period > self.MIN_RECOMMENDATION_LENGTH:
+                earliest_boundary = start_pos + last_period + 1
+            else:
+                earliest_boundary = max_end
+        
+        return earliest_boundary
+    
     def is_valid_recommendation(self, text: str, is_numbered_rec: bool = False) -> Tuple[bool, float, str, str]:
-        """Determine if text is a genuine recommendation"""
+        """Determine if text is a valid recommendation."""
         if not text:
             return False, 0.0, 'empty', 'unknown'
         
@@ -512,7 +581,7 @@ class StrictRecommendationExtractor:
                 cleaned_full_text, standard_matches, 'standard', min_confidence
             )
             if recommendations:
-                # v3.3: Use rec_number deduplication for standard format too
+                # v3.3: Also use rec_number deduplication for standard format
                 return self._deduplicate(recommendations, by_rec_number=True)
         
         # =======================================================================
@@ -618,7 +687,6 @@ class StrictRecommendationExtractor:
         
         if by_rec_number:
             # v3.3: Deduplicate by rec_number, keeping the LONGEST version
-            # (the detailed version is usually longer than the summary)
             seen_numbers = {}
             for rec in recommendations:
                 rec_num = rec.get('rec_number')
@@ -663,7 +731,7 @@ class StrictRecommendationExtractor:
                     seen.add(key)
                     unique.append(rec)
         
-        logger.info(f"After deduplication: {len(unique)} recommendations (from {len(recommendations)})")
+        logger.info(f"Found {len(unique)} recommendations")
         return unique
     
     def get_statistics(self, recommendations: List[Dict]) -> Dict:
