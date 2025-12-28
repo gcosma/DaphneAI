@@ -354,7 +354,7 @@ def render_recommendations_tab():
             | 🟡 | **85-94%** | Passive recommendations ("should be completed") |
             | 🟠 | **75-84%** | Modal verb patterns - still valid recommendations |
             
-            All extracted items are genuine recommendations - the colour simply indicates how explicit the recommendation language is.
+            All extracted items are recommendations - the colour simply indicates how explicit the recommendation language is.
             """)
         return
     
@@ -392,7 +392,7 @@ def render_recommendations_tab():
                         # SORT BY CONFIDENCE (highest first)
                         recommendations = sorted(recommendations, key=lambda x: x.get('confidence', 0), reverse=True)
                         
-                        st.success(f"✅ Found {len(recommendations)} genuine recommendations")
+                        st.success(f"✅ Found {len(recommendations)} recommendations")
                         
                         # Statistics
                         extractor = StrictRecommendationExtractor()
