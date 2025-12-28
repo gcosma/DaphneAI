@@ -1,11 +1,6 @@
 """
 Core alignment engine: recommendation/response matching + response extraction.
 Moved out of the Streamlit UI to keep logic reusable and testable.
-
-v2.2 Changes:
-- Preserved ALL v1 logic that works for standard government reports (Report 1)
-- ADDED HSIB-specific patterns for implicit acceptance (Report 2)
-- No modifications to existing patterns - only additions
 """
 
 import logging
@@ -294,18 +289,15 @@ class RecommendationResponseMatcher:
         return any(ind in text_lower for ind in indicators)
 
     def _extract_rec_number(self, text: str) -> Optional[str]:
-        # v2.2: Also try HSIB format (e.g., 2018/006)
-        hsib_match = re.search(r"recommendation\s+(\d{4}/\d{3})", text.lower())
-        if hsib_match:
-            return hsib_match.group(1)
-        # Standard format
         match = re.search(r"recommendation\s+(\d+)", text.lower())
         return match.group(1) if match else None
 
+    #
     def _classify_response_status(self, text: str) -> Tuple[str, float]:
         """
         Classify government response status with context-aware detection.
-        v2.2 - Added HSIB implicit acceptance patterns while preserving v1 logic
+        v2.0 - Fixed false positives for 'will consider' and 'do not support mandating'
+        v2.3 - Added HSIB implicit acceptance patterns for NHS England responses
         """
         text_lower = text.lower()
         
@@ -343,7 +335,7 @@ class RecommendationResponseMatcher:
             if re.search(pattern, text_lower):
                 return "Partial", 0.85
         
-        # v2.2: CQC-specific partial acceptance (legislative constraints)
+        # v2.3: CQC-specific partial acceptance (legislative constraints)
         cqc_partial_patterns = [
             r"\bcannot\s+routinely\s+inspect",
             r"\bwithout\s+legislative\s+change",
@@ -354,6 +346,7 @@ class RecommendationResponseMatcher:
                 return "Partial", 0.85
         
         # Check for partial rejection of approach (not full rejection)
+        # e.g., "do not support mandating how systems review" = Partial
         partial_rejection_patterns = [
             r"\bdo(?:es)?\s+not\s+support\s+(?:mandating|requiring|prescribing)\b",
             r"\bwill\s+not\s+(?:be\s+)?mandat(?:ing|e)\b",
@@ -385,7 +378,6 @@ class RecommendationResponseMatcher:
         
         # =========================================================================
         # PRIORITY 4: Check for implicit acceptance (government taking action)
-        # v2.2: Added HSIB-specific patterns at the end of this section
         # =========================================================================
         implicit_acceptance_patterns = [
             r"\bcommitted\s+to\s+(?:working|improving|delivering|ensuring)",
@@ -408,7 +400,7 @@ class RecommendationResponseMatcher:
                 return "Accepted", 0.8
         
         # =========================================================================
-        # v2.2 NEW: HSIB-specific implicit acceptance patterns
+        # v2.3 NEW: HSIB-specific implicit acceptance patterns
         # These are common in NHS England responses (like Report 2)
         # =========================================================================
         hsib_implicit_patterns = [
@@ -451,7 +443,7 @@ class RecommendationResponseMatcher:
                 return "Noted", 0.75
         
         # =========================================================================
-        # PRIORITY 6: Keyword fallback (unchanged from v1)
+        # PRIORITY 6: Keyword fallback
         # =========================================================================
         if re.search(r"^the\s+government\s+support", text_lower):
             return "Accepted", 0.85
@@ -471,9 +463,8 @@ class RecommendationResponseMatcher:
         
         return "Unclear", 0.5
 
-
 # --------------------------------------------------------------------------- #
-# Response extraction helpers (UNCHANGED from v1)
+# Response extraction helpers
 # --------------------------------------------------------------------------- #
 
 
@@ -597,6 +588,10 @@ def extract_response_sentences(text: str) -> List[Dict]:
             continue
         resp_content = clean_pdf_artifacts(resp_content)
 
+        # For structured responses we trust the header
+        # "Government response to recommendation N" as the primary source of
+        # rec_number. Body cross-references (e.g. "see the response to
+        # recommendation 13") should not override this.
         responses.append(
             {
                 "text": resp_content,
@@ -609,7 +604,8 @@ def extract_response_sentences(text: str) -> List[Dict]:
         structured_spans.append((start_pos, end_pos))
         structured_texts.append(resp_content)
 
-    # Sentence-level responses
+    # Sentence-level responses with explicit span tracking to avoid
+    # re-detecting content that already belongs to structured response blocks.
     sentence_spans = []
     start_idx = 0
     for match in re.finditer(r"(?<=[.!?])\s+", text):
@@ -628,18 +624,25 @@ def extract_response_sentences(text: str) -> List[Dict]:
             continue
         if not is_genuine_response(sentence_clean):
             continue
+        # Skip sentences that fall within any structured response span.
         if any(start <= start_idx < end for start, end in structured_spans):
             continue
 
+        # Skip sentences that substantially duplicate an existing structured
+        # response. This is a conservative textual overlap check so that
+        # scattered responses do not simply re-add content that already lives
+        # inside a structured section.
         sent_norm = re.sub(r"\s+", " ", sentence_clean.lower()).strip()
         is_struct_dup = False
         for struct_text in structured_texts:
             struct_norm = re.sub(r"\s+", " ", struct_text.lower()).strip()
             if not struct_norm:
                 continue
+            # Direct containment (sentence is fully inside a structured block).
             if sent_norm and sent_norm in struct_norm:
                 is_struct_dup = True
                 break
+            # For longer candidates, use a simple token-overlap heuristic.
             sent_tokens = set(sent_norm.split())
             if not sent_tokens:
                 continue
@@ -684,7 +687,7 @@ __all__ = [
 ]
 
 # --------------------------------------------------------------------------- #
-# Lightweight keyword-based response finding and alignment (UNCHANGED from v1)
+# Lightweight keyword-based response finding and alignment (exposed for UI)
 # --------------------------------------------------------------------------- #
 
 
