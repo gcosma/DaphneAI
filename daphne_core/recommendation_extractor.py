@@ -190,6 +190,7 @@ class StrictRecommendationExtractor:
         Checks formats in order of specificity.
         """
         # HSSIB 2023+: "Safety recommendation R/2023/220:"
+        # Also match "HSIB recommends" pattern
         hsib_2023 = list(re.finditer(
             r'Safety\s+recommendation\s+(R/\d{4}/\d{3})[:\s]',
             text, re.IGNORECASE
@@ -213,7 +214,52 @@ class StrictRecommendationExtractor:
         if standard:
             return 'standard', standard
         
+        # HSIB recommends pattern (for documents without numbered recommendations)
+        hsib_recommends = list(re.finditer(
+            r'HSIB\s+recommends\s+that\s+',
+            text, re.IGNORECASE
+        ))
+        if hsib_recommends:
+            return 'hsib_recommends', hsib_recommends
+        
         return 'unstructured', []
+    
+    def _is_valid_recommendation_text(self, text: str) -> bool:
+        """
+        Validate that extracted text is actually a recommendation.
+        Rejects garbage extractions.
+        """
+        if not text:
+            return False
+        
+        # Must be long enough to be meaningful
+        if len(text) < 50:
+            return False
+        
+        # Must contain directive language
+        text_lower = text.lower()
+        directive_indicators = [
+            'should', 'must', 'recommend', 'ensure', 'require',
+            'evaluate', 'review', 'develop', 'create', 'establish',
+            'work with', 'considers', 'forms', 'identifies'
+        ]
+        
+        has_directive = any(ind in text_lower for ind in directive_indicators)
+        if not has_directive:
+            return False
+        
+        # Should mention an entity or action target
+        entity_indicators = [
+            'nhs', 'england', 'trust', 'commission', 'cqc', 'nice',
+            'department', 'government', 'college', 'royal', 'providers',
+            'services', 'practitioners', 'organisations', 'inspections'
+        ]
+        
+        has_entity = any(ent in text_lower for ent in entity_indicators)
+        if not has_entity:
+            return False
+        
+        return True
     
     def extract_between_headers(self, text: str, matches: List, format_type: str) -> List[Dict]:
         """
@@ -234,6 +280,8 @@ class StrictRecommendationExtractor:
                 rec_id = match.group(1)  # R/2023/220
             elif format_type == 'hsib_2018':
                 rec_id = match.group(1)  # 2018/006
+            elif format_type == 'hsib_recommends':
+                rec_id = f"hsib_rec_{idx + 1}"  # Generate ID for unnumbered
             else:  # standard
                 num = match.group(1)
                 extra = match.group(2) if match.lastindex and match.lastindex >= 2 else None
@@ -241,6 +289,11 @@ class StrictRecommendationExtractor:
             
             # Clean and trim the block
             cleaned = self._clean_recommendation_block(raw_block, rec_id, format_type)
+            
+            # Validate the extraction
+            if not self._is_valid_recommendation_text(cleaned):
+                logger.debug(f"Rejected invalid extraction for {rec_id}: {cleaned[:50]}...")
+                continue
             
             if cleaned and len(cleaned) >= self.MIN_RECOMMENDATION_LENGTH:
                 verb = self._extract_verb(cleaned)
@@ -294,9 +347,13 @@ class StrictRecommendationExtractor:
             r'\.\s+Safety\s+[Oo]bservation',  # "Safety Observation" section
             r'\.\s+Local-level\s+learning',  # HSIB local learning section
             r'\.\s+Background\s+and\s+context',
+            r'\n\s*Response\b',  # Response section (for combined docs)
             r'\n\s*Appendix',
             r'\n\s*References\s*$',
             r'\n\s*Endnotes',
+            r'\n\s*Actions\s+planned',  # Actions planned section
+            r'\n\s*Safety\s+observations\b',  # Safety observations section
+            r'\n\s*Safety\s+actions\b',  # Safety actions section
         ]
         
         end_pos = len(content)
