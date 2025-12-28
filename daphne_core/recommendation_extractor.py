@@ -1,22 +1,24 @@
 """
-Strict Recommendation Extractor v2.7
-Based on v2.5 with fixed HSIB boundary detection for final recommendations.
+Strict Recommendation Extractor v2.8
+Based on v2.5 with HSIB boundary detection AND improved deduplication.
 
-v2.7 Changes:
-- Fixed boundary detection for LAST recommendation in HSIB documents
-- Added more section markers specific to HSIB report structure
-- Better handling of "Safety observation" as boundary marker
-- Fixed detection of section numbers like "1 Background and context"
+v2.8 Changes:
+- FIXED: HSIB boundary detection for last recommendation (2018/011)
+- FIXED: Duplicate extraction when recommendations appear multiple times
+- Added HSIB-specific section markers to stop extraction at correct boundaries
+- Improved deduplication using rec_number tracking
 
 Usage:
     from recommendation_extractor import extract_recommendations
     
     recommendations = extract_recommendations(document_text, min_confidence=0.75)
+    for rec in recommendations:
+        print(f"{rec['method']}: {rec['text'][:100]}...")
 """
 
 import re
 import logging
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional, Set
 from collections import Counter
 
 logger = logging.getLogger(__name__)
@@ -220,18 +222,19 @@ class StrictRecommendationExtractor:
     def _find_recommendation_end(self, text: str, start_pos: int, next_rec_pos: int) -> int:
         """
         Find the proper end position for a recommendation.
-        v2.7: Enhanced for HSIB documents with better section detection.
+        v2.8: Enhanced with HSIB-specific section markers.
         """
+        # If there's a next recommendation, that's our boundary
         if next_rec_pos < len(text):
             return next_rec_pos
         
         # =====================================================================
-        # HSIB-SPECIFIC SECTION MARKERS (checked first for HSIB documents)
-        # These mark the END of the recommendations section
+        # HSIB-SPECIFIC SECTION MARKERS - Check these FIRST (more specific)
+        # These patterns appear in HSIB reports after the recommendations
         # =====================================================================
         hsib_section_markers = [
             # Safety Observations section (appears after Safety Recommendations)
-            r'\bThe\s+investigation\s+makes\s+(?:two|three|four|one)\s+Safety\s+Observation',
+            r'\bThe\s+investigation\s+makes\s+(?:two|three|four|one|the\s+following)\s+Safety\s+Observation',
             r'\bSafety\s+Observation(?:s)?(?:\s+for|\s+to|\s*:)',
             # Numbered sections in HSIB reports
             r'\b\d+\s+Background\s+and\s+context\b',
@@ -245,12 +248,31 @@ class StrictRecommendationExtractor:
             r'\bWe\s+will\s+publish\s+their\s+responses\b',
             r'\bProviding\s+feedback\b',
             r'\bEndnotes\b',
+            # Summary section markers
+            r'\b6\.2\.?\s*Safety\s+Recommendations\b',
+            r'\b6\.3\.?\s*Safety\s+Observations\b',
         ]
         
+        earliest_boundary = next_rec_pos
+        search_start = start_pos + 30  # Skip past recommendation header
+        
+        # Check HSIB-specific markers FIRST
+        for pattern in hsib_section_markers:
+            match = re.search(pattern, text[search_start:], re.IGNORECASE)
+            if match:
+                boundary = search_start + match.start()
+                if boundary < earliest_boundary:
+                    earliest_boundary = boundary
+                    logger.debug(f"Found HSIB boundary at {boundary}: {pattern[:40]}")
+        
+        # If we found an HSIB boundary, use it
+        if earliest_boundary < next_rec_pos:
+            return earliest_boundary
+        
         # =====================================================================
-        # UNIVERSAL SECTION MARKERS
+        # UNIVERSAL SECTION MARKERS - Check these as fallback
         # =====================================================================
-        universal_markers = [
+        section_markers = [
             r'\bOur vision for (?:a |the )?(?:better )?future\b',
             r'\bKey facts\b',
             r'\bMethodology\b',
@@ -271,20 +293,7 @@ class StrictRecommendationExtractor:
             r'\bThroughout the review\b',
         ]
         
-        earliest_boundary = next_rec_pos
-        search_start = start_pos + 30  # Skip past recommendation header
-        
-        # Check HSIB markers first (they're more specific)
-        for pattern in hsib_section_markers:
-            match = re.search(pattern, text[search_start:], re.IGNORECASE)
-            if match:
-                boundary = search_start + match.start()
-                if boundary < earliest_boundary:
-                    earliest_boundary = boundary
-                    logger.debug(f"HSIB boundary found at {boundary}: {pattern}")
-        
-        # Then check universal markers
-        for pattern in universal_markers:
+        for pattern in section_markers:
             match = re.search(pattern, text[search_start:], re.IGNORECASE)
             if match:
                 boundary = search_start + match.start()
@@ -308,7 +317,7 @@ class StrictRecommendationExtractor:
             if len(cleaned) > self.MAX_SENTENCE_LENGTH:
                 return False, 0.0, 'too_long', 'none'
         
-        # HSIB 2023+ format (e.g., "Safety recommendation R/2023/220:")
+        # NEW: HSIB 2023+ format (e.g., "Safety recommendation R/2023/220")
         hsib_2023_match = re.match(
             r'^Safety\s+recommendation\s+(R/\d{4}/\d{3})[:\s]+(.+)',
             cleaned,
@@ -320,7 +329,7 @@ class StrictRecommendationExtractor:
             verb = self._extract_verb(rec_text)
             return True, 0.98, f'hsib_recommendation_{rec_num}', verb
         
-        # HSIB 2018 format (e.g., "Recommendation 2018/006:")
+        # HSIB 2018 format (e.g., "Recommendation 2018/006")
         hsib_2018_match = re.match(
             r'^Recommendation\s+(\d{4}/\d{3})[:\s]+(.+)',
             cleaned,
@@ -389,9 +398,29 @@ class StrictRecommendationExtractor:
         
         return False, 0.0, 'none', 'unknown'
     
+    def _extract_rec_number_from_text(self, text: str) -> Optional[str]:
+        """Extract recommendation number from text for deduplication."""
+        # HSIB 2018 format: 2018/006
+        hsib_match = re.search(r'Recommendation\s+(\d{4}/\d{3})', text, re.IGNORECASE)
+        if hsib_match:
+            return hsib_match.group(1)
+        
+        # HSIB 2023+ format: R/2023/220
+        hsib_2023_match = re.search(r'Safety\s+recommendation\s+(R/\d{4}/\d{3})', text, re.IGNORECASE)
+        if hsib_2023_match:
+            return hsib_2023_match.group(1)
+        
+        # Standard format: Recommendation 1
+        std_match = re.search(r'Recommendation\s+(\d{1,2})\b', text, re.IGNORECASE)
+        if std_match:
+            return std_match.group(1)
+        
+        return None
+    
     def extract_recommendations(self, text: str, min_confidence: float = 0.75) -> List[Dict]:
         """Extract genuine recommendations from text."""
         recommendations = []
+        seen_rec_numbers: Set[str] = set()  # Track seen rec numbers for deduplication
         
         if not text or not text.strip():
             logger.warning("Empty text passed to extract_recommendations")
@@ -413,6 +442,13 @@ class StrictRecommendationExtractor:
         if hsib_2023_matches:
             logger.info(f"Found {len(hsib_2023_matches)} HSIB 2023+ recommendations")
             for idx, match in enumerate(hsib_2023_matches):
+                rec_num = match.group(1)
+                
+                # Skip duplicates
+                if rec_num in seen_rec_numbers:
+                    logger.debug(f"Skipping duplicate HSIB 2023 rec: {rec_num}")
+                    continue
+                
                 start = match.start()
                 next_rec_pos = hsib_2023_matches[idx + 1].start() if idx + 1 < len(hsib_2023_matches) else len(cleaned_full_text)
                 end = self._find_recommendation_end(cleaned_full_text, start, next_rec_pos)
@@ -426,7 +462,7 @@ class StrictRecommendationExtractor:
                 is_rec, confidence, method, verb = self.is_genuine_recommendation(cleaned, is_numbered_rec=True)
                 
                 if is_rec and confidence >= min_confidence:
-                    rec_num = match.group(1)
+                    seen_rec_numbers.add(rec_num)
                     recommendations.append({
                         'text': cleaned,
                         'verb': verb,
@@ -454,6 +490,13 @@ class StrictRecommendationExtractor:
         if hsib_2018_matches:
             logger.info(f"Found {len(hsib_2018_matches)} HSIB 2018 recommendations")
             for idx, match in enumerate(hsib_2018_matches):
+                rec_num = match.group(1)
+                
+                # Skip duplicates
+                if rec_num in seen_rec_numbers:
+                    logger.debug(f"Skipping duplicate HSIB 2018 rec: {rec_num}")
+                    continue
+                
                 start = match.start()
                 next_rec_pos = hsib_2018_matches[idx + 1].start() if idx + 1 < len(hsib_2018_matches) else len(cleaned_full_text)
                 end = self._find_recommendation_end(cleaned_full_text, start, next_rec_pos)
@@ -467,7 +510,7 @@ class StrictRecommendationExtractor:
                 is_rec, confidence, method, verb = self.is_genuine_recommendation(cleaned, is_numbered_rec=True)
                 
                 if is_rec and confidence >= min_confidence:
-                    rec_num = match.group(1)
+                    seen_rec_numbers.add(rec_num)
                     recommendations.append({
                         'text': cleaned,
                         'verb': verb,
@@ -495,6 +538,19 @@ class StrictRecommendationExtractor:
         logger.info(f"Found {len(heading_matches)} standard recommendation headings")
         
         for idx, match in enumerate(heading_matches):
+            # Calculate rec_num first for deduplication
+            heading_num = match.group(1)
+            extra_digit = match.group(2)
+            if extra_digit and len(heading_num) == 1:
+                rec_num = f"{heading_num}{extra_digit}"
+            else:
+                rec_num = heading_num
+            
+            # Skip duplicates
+            if rec_num in seen_rec_numbers:
+                logger.debug(f"Skipping duplicate standard rec: {rec_num}")
+                continue
+            
             start = match.start()
             next_rec_pos = heading_matches[idx + 1].start() if idx + 1 < len(heading_matches) else len(cleaned_full_text)
             end = self._find_recommendation_end(cleaned_full_text, start, next_rec_pos)
@@ -509,19 +565,14 @@ class StrictRecommendationExtractor:
             is_rec, confidence, method, verb = self.is_genuine_recommendation(cleaned, is_numbered_rec=True)
             
             if is_rec and confidence >= min_confidence:
-                heading_num = match.group(1)
-                extra_digit = match.group(2)
-                if extra_digit and len(heading_num) == 1:
-                    heading_rec_num = f"{heading_num}{extra_digit}"
-                else:
-                    heading_rec_num = heading_num
-                
-                rec_num = heading_rec_num
+                # Update rec_num from method if available
                 if method.startswith("numbered_recommendation_"):
                     try:
                         rec_num = method.split("_")[-1]
                     except Exception:
-                        rec_num = heading_rec_num
+                        pass
+                
+                seen_rec_numbers.add(rec_num)
                 
                 norm_pattern = r'^(?:Recommendations?\s+)?Recommendation\s+(\d{1,2})(?:\s+(\d))?\b'
                 normalized_text = re.sub(norm_pattern, f"Recommendation {rec_num}", cleaned, count=1, flags=re.IGNORECASE)
@@ -578,15 +629,28 @@ class StrictRecommendationExtractor:
         return recommendations
     
     def _deduplicate(self, recommendations: List[Dict]) -> List[Dict]:
-        """Remove duplicate recommendations"""
-        seen = set()
+        """Remove duplicate recommendations using both text and rec_number."""
+        seen_text = set()
+        seen_numbers = set()
         unique = []
         
         for rec in recommendations:
+            # Check by rec_number first (most reliable for HSIB)
+            rec_num = rec.get('rec_number')
+            if rec_num and rec_num in seen_numbers:
+                logger.debug(f"Deduplicating by rec_number: {rec_num}")
+                continue
+            
+            # Also check by text prefix
             key = re.sub(r'\s+', ' ', rec['text'].lower().strip())[:150]
-            if key not in seen:
-                seen.add(key)
-                unique.append(rec)
+            if key in seen_text:
+                logger.debug(f"Deduplicating by text: {key[:50]}...")
+                continue
+            
+            if rec_num:
+                seen_numbers.add(rec_num)
+            seen_text.add(key)
+            unique.append(rec)
         
         return unique
     
