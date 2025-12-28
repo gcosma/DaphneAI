@@ -1,13 +1,17 @@
 """
-Recommendation Extractor v3.3
+Recommendation Extractor v3.4
 Extracts recommendation blocks from government and health sector documents.
 
-v3.3 Changes:
-- FIXED: Improved section boundary detection for title-case and sentence-case headers
-- FIXED: Added explicit markers for "Our vision" and similar post-recommendations sections
-- FIXED: HSIB deduplication by rec_number (keeps longest version)
-- FIXED: MAX_RECOMMENDATION_LENGTH increased to 2500 for longer government recs
-- FIXED: Removed aggressive boundary detection from v3.2 that was truncating recs
+v3.4 Changes:
+- FIXED: Section markers now require newline prefix to avoid matching within text
+- FIXED: "Data on deaths" pattern no longer truncates Rec 4 mid-sentence
+- FIXED: Patterns like "Methodology", "Findings" only match as headers, not inline
+
+v3.3 Changes (preserved):
+- Improved section boundary detection for title-case and sentence-case headers
+- Added explicit markers for "Our vision" and similar post-recommendations sections
+- HSIB deduplication by rec_number (keeps longest version)
+- MAX_RECOMMENDATION_LENGTH increased to 2500 for longer government recs
 
 v3.1 Changes (preserved):
 - Boundary detection catches inline "Recommendation N" patterns
@@ -337,9 +341,11 @@ class StrictRecommendationExtractor:
                 search_limit = potential_end
         
         # Universal end markers (these work across document types)
-        # v3.3: Added more explicit section markers
+        # v3.4: Section-specific markers now require newline prefix to avoid
+        # matching phrases within recommendation text (e.g., "data on deaths"
+        # in Rec 4 was causing truncation)
         universal_markers = [
-            # Document structure markers
+            # Document structure markers (these are safe without newline prefix)
             r'\bAppendix(?:es)?(?:\s+[A-Z0-9]+)?\b',
             r'\bGlossary\b',
             r'\bReferences\b',
@@ -358,20 +364,27 @@ class StrictRecommendationExtractor:
             r'\bFindings\s+and\s+analysis\b',
             r'\bSummary\s+of\s+(?:findings|recommendations)\b',
             r'\bThe\s+investigation\s+(?:found|makes|identified)\b',
-            # v3.3: Explicit markers for common post-recommendations sections
-            r'\bOur\s+vision\s+for\s+(?:a\s+)?(?:better\s+)?future\b',
-            r'\bKey\s+facts\b',
-            r'\bMethodology\b',
-            r'\bFindings\b',
-            r'\bCase\s+studies\b',
-            r'\bMeasuring\s+what\s+matters\b',
-            r'\bWhat\s+a\s+better\s+system\s+would\s+look\s+like\b',
-            r'\bPrinciples\s+for\s+the\s+collection\b',
-            r'\bThe\s+safety\s+issues\s+framework\b',
-            r'\bData\s+on\s+deaths\b',
-            r'\bPoor\s+safety\s+outcomes\b',
             # Numbered sections (generic)
             r'\n\s*\d+\.?\s+[A-Z][a-z]+(?:\s+[a-z]+){0,3}\s*\n',
+        ]
+        
+        # v3.4: Section headers that could appear as phrases within text
+        # These need special handling because clean_text() normalises newlines to spaces.
+        # We match them when preceded by sentence-ending punctuation + space, which
+        # indicates they're starting a new section, not appearing mid-sentence.
+        header_only_markers = [
+            r'(?:^|[.!?]\s+)Our\s+vision\s+for\s+(?:a\s+)?(?:better\s+)?future\b',
+            r'(?:^|[.!?]\s+)Key\s+facts\b',
+            r'(?:^|[.!?]\s+)Methodology\b',
+            r'(?:^|[.!?]\s+)Findings\b(?!\s+and\s+analysis)',  # Avoid matching "Findings and analysis" which is already in universal
+            r'(?:^|[.!?]\s+)Case\s+studies\b',
+            r'(?:^|[.!?]\s+)Measuring\s+what\s+matters\b',
+            r'(?:^|[.!?]\s+)What\s+a\s+better\s+system\s+would\s+look\s+like\b',
+            r'(?:^|[.!?]\s+)Principles\s+for\s+the\s+collection\b',
+            r'(?:^|[.!?]\s+)The\s+safety\s+issues\s+framework\b',
+            r'(?:^|[.!?]\s+)Data\s+on\s+deaths\b',
+            r'(?:^|[.!?]\s+)Poor\s+safety\s+outcomes\b',
+            r'(?:^|[.!?]\s+)Conclusion(?:s)?(?:\s+and\s+next\s+steps)?\b',
         ]
         
         earliest_boundary = search_limit
@@ -380,6 +393,23 @@ class StrictRecommendationExtractor:
             match = re.search(pattern, text[search_start:search_limit], re.IGNORECASE)
             if match:
                 boundary = search_start + match.start()
+                if boundary < earliest_boundary:
+                    earliest_boundary = boundary
+        
+        # v3.4: Check header-only markers separately (these require sentence-end context)
+        for pattern in header_only_markers:
+            match = re.search(pattern, text[search_start:search_limit], re.IGNORECASE)
+            if match:
+                # The match may include preceding punctuation + space
+                # Find the actual start of the header text
+                matched_text = match.group()
+                # Skip past any leading punctuation/space to get to the header word
+                header_offset = 0
+                for i, c in enumerate(matched_text):
+                    if c.isalpha():
+                        header_offset = i
+                        break
+                boundary = search_start + match.start() + header_offset
                 if boundary < earliest_boundary:
                     earliest_boundary = boundary
         
