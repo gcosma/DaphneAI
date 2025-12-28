@@ -33,18 +33,6 @@ class StrictRecommendationExtractor:
     MAX_SENTENCE_LENGTH = 500
     MAX_NUMBERED_REC_LENGTH = 2500
     
-    HSIB_HARD_BOUNDARIES = [
-        r'\n\s*The\s+investigation\s+makes\s+'
-        r'(?:one|two|three|the\s+following)\s+'
-        r'Safety\s+Observations?',
-        
-        r'\n\s*Safety\s+Observation(?:s)?\s*[:.]',
-        
-        r'\n\s*HSIB\s+has\s+directed\s+safety\s+recommendations',
-        
-        r'\n\s*\d+\s+Background\s+and\s+context',
-    ]
-
     def __init__(self):
         """Initialise with strict patterns"""
         
@@ -230,41 +218,12 @@ class StrictRecommendationExtractor:
                 return verb
         
         return 'unknown'
-
+    
     def _find_recommendation_end(self, text: str, start_pos: int, next_rec_pos: int) -> int:
-        search_start = start_pos + 20
-    
-        # 🔴 STEP 3A: HSIB hard boundaries (always win)
-        for pattern in self.HSIB_HARD_BOUNDARIES:
-            match = re.search(pattern, text[search_start:], re.IGNORECASE)
-            if match:
-                return search_start + match.start()
-    
-        # STEP 3B: fallback to next recommendation or soft section markers
-        earliest_boundary = next_rec_pos
-    
-        section_markers = [
-            r'\bAppendix(?:es)?\b',
-            r'\bGlossary\b',
-            r'\bReferences\b',
-            r'\bEndnotes\b',
-            r'\bConclusion(?:s)?\b',
-        ]
-    
-        for pattern in section_markers:
-            match = re.search(pattern, text[search_start:], re.IGNORECASE)
-            if match:
-                boundary = search_start + match.start()
-                if boundary < earliest_boundary:
-                    earliest_boundary = boundary
-    
-        return earliest_boundary
-
-    def _find_recommendation_end1(self, text: str, start_pos: int, next_rec_pos: int) -> int:
         """Find the proper end position for a recommendation."""
         if next_rec_pos < len(text):
             return next_rec_pos
-
+        
         # Section markers that indicate end of recommendations
         # v2.6: Added HSIB-specific markers
         section_markers = [
@@ -417,9 +376,7 @@ class StrictRecommendationExtractor:
         
         logger.info(f"Extracting recommendations from text of length {len(text)}")
         
-        raw_text = self.fix_encoding(text)          # keeps newlines & structure
-        cleaned_full_text = self.clean_text(text)   # used only for matching logic
-
+        cleaned_full_text = self.clean_text(text)
         
         # =======================================================================
         # PHASE 1: Try HSIB 2023+ format first (Safety recommendation R/YYYY/NNN)
@@ -465,7 +422,6 @@ class StrictRecommendationExtractor:
         # =======================================================================
         # PHASE 2: Try HSIB 2018 format (Recommendation YYYY/NNN)
         # =======================================================================
-
         hsib_2018_pattern = re.compile(
             r'Recommendation\s+(\d{4}/\d{3})[:\s]',
             re.IGNORECASE
@@ -474,42 +430,19 @@ class StrictRecommendationExtractor:
         
         if hsib_2018_matches:
             logger.info(f"Found {len(hsib_2018_matches)} HSIB 2018 recommendations")
-        
             for idx, match in enumerate(hsib_2018_matches):
                 start = match.start()
-                next_rec_pos = (
-                    hsib_2018_matches[idx + 1].start()
-                    if idx + 1 < len(hsib_2018_matches)
-                    else len(raw_text)
-                )
-        
-                #  Slice using RAW TEXT
-                end = self._find_recommendation_end(raw_text, start, next_rec_pos)
-                raw_block = raw_text[start:end]
-        
-                #  Clean text
+                next_rec_pos = hsib_2018_matches[idx + 1].start() if idx + 1 < len(hsib_2018_matches) else len(cleaned_full_text)
+                end = self._find_recommendation_end(cleaned_full_text, start, next_rec_pos)
+                raw_block = cleaned_full_text[start:end]
                 cleaned = self.clean_text(raw_block)
-        
-                #  Defensive trim (HSIB safety observations)
-                if "safety observation" in cleaned.lower():
-                    cleaned = re.split(
-                        r'safety\s+observation',
-                        cleaned,
-                        flags=re.IGNORECASE
-                    )[0].strip()
-        
-                # Garbage check
+                
                 is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=True)
                 if is_garbage:
                     continue
-        
-                # Classification
-                is_rec, confidence, method, verb = self.is_genuine_recommendation(
-                    cleaned,
-                    is_numbered_rec=True
-                )
-        
-                # Store result
+                
+                is_rec, confidence, method, verb = self.is_genuine_recommendation(cleaned, is_numbered_rec=True)
+                
                 if is_rec and confidence >= min_confidence:
                     rec_num = match.group(1)
                     recommendations.append({
@@ -521,12 +454,11 @@ class StrictRecommendationExtractor:
                         'in_section': True,
                         'rec_number': rec_num,
                     })
-        
+            
             if recommendations:
                 recommendations = self._deduplicate(recommendations)
                 logger.info(f"Found {len(recommendations)} recommendations")
                 return recommendations
-
         
         # =======================================================================
         # PHASE 3: Standard "Recommendation N" format
