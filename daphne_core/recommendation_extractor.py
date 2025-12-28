@@ -25,6 +25,9 @@ from collections import Counter
 
 logger = logging.getLogger(__name__)
 
+# Version check - this will appear in logs when module is imported
+logger.info("🔥 recommendation_extractor v3.0 loaded - semantic boundary detection active")
+
 
 class StrictRecommendationExtractor:
     """
