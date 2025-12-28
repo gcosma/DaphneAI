@@ -107,12 +107,27 @@ class StrictRecommendationExtractor:
             r'\bwe\s+will\s+publish',
             r'\bbackground\s+and\s+context',
             
-            # Report structure
+            # Report structure (HSIB-specific)
             r'\bfindings\s+and\s+analysis',
             r'\bsummary\s+of\s+(?:hsib\s+)?findings',
             r'\bmethodology\b',
             r'\breference\s+event',
             r'\binvolvement\s+of\s+hsib',
+            
+            # Report structure (Standard government reports)
+            r'\bour\s+vision\s+for',
+            r'\bkey\s+facts\b',
+            r'\bappendix(?:es)?\b',
+            r'\bglossary\b',
+            r'\breferences\b',
+            r'\bcase\s+studies\b',
+            r'\bconclusion(?:s)?\b',
+            r'\backnowledgements?\b',
+            r'\babout\s+(?:this|the)\s+(?:report|review)',
+            r'\bdata\s+mapping\b',
+            r'\ball\s+content\s+is\s+available\s+under',
+            r'\bcrown\s+copyright',
+            r'\bthroughout\s+the\s+review',
         ]
         
         # Compile for efficiency
