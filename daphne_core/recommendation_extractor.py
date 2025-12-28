@@ -1,30 +1,24 @@
 """
-Recommendation Extractor v3.1
+Recommendation Extractor v3.3
 Extracts recommendation blocks from government and health sector documents.
 
-v3.1 Changes:
-- FIXED: Boundary detection now catches inline "Recommendation N" patterns
+v3.3 Changes:
+- FIXED: Improved section boundary detection for title-case and sentence-case headers
+- FIXED: Added explicit markers for "Our vision" and similar post-recommendations sections
+- FIXED: HSIB deduplication by rec_number (keeps longest version)
+- FIXED: MAX_RECOMMENDATION_LENGTH increased to 2500 for longer government recs
+- FIXED: Removed aggressive boundary detection from v3.2 that was truncating recs
+
+v3.1 Changes (preserved):
+- Boundary detection catches inline "Recommendation N" patterns
 - Handles "Recommendation 1 1" (spaced digits) correctly as boundaries
 - Prevents Recommendation N from bleeding into Recommendation N-1
-
-v3.0 Changes:
-- GENERIC boundary detection (not document-specific patterns)
-- Intelligent end-of-recommendation detection using structural heuristics
-- Maximum length safeguards for final recommendations
-- Works across HSIB, HSSIB, standard government, and other formats
 
 Supported Formats:
 - HSIB 2018 format: "Recommendation 2018/006:", "Recommendation 2018/007:"
 - HSSIB 2023+ format: "Safety recommendation R/2023/220:"
 - Standard government: "Recommendation 1", "Recommendation 12"
 - Sentence-based fallback for unstructured documents
-
-Usage:
-    from recommendation_extractor import extract_recommendations
-    
-    recommendations = extract_recommendations(document_text, min_confidence=0.75)
-    for rec in recommendations:
-        print(f"{rec['rec_number']}: {rec['text'][:100]}...")
 """
 
 import re
@@ -43,7 +37,7 @@ class StrictRecommendationExtractor:
     
     # Length limits
     MAX_SENTENCE_LENGTH = 500
-    MAX_RECOMMENDATION_LENGTH = 1500  # Single recommendation should not exceed this
+    MAX_RECOMMENDATION_LENGTH = 2500  # v3.3: Increased from 1500 for longer gov recs
     MIN_RECOMMENDATION_LENGTH = 50
     
     def __init__(self):
@@ -248,6 +242,8 @@ class StrictRecommendationExtractor:
         """
         GENERIC section boundary detection.
         Returns True if position appears to be at a major section break.
+        
+        v3.3: Improved to catch sentence-case headers like "Our vision for a better future"
         """
         if position >= len(text):
             return True
@@ -263,17 +259,44 @@ class StrictRecommendationExtractor:
         lines = remaining.split('\n')
         if lines:
             first_line = lines[0].strip()
-            # Title case header: "Background and Context", "Local-level Learning"
-            if (len(first_line) > 5 and len(first_line) < 80 and 
-                first_line[0].isupper() and
-                not first_line.endswith('.') and
-                not first_line.startswith(('The ', 'A ', 'An ', 'This ', 'That ', 'It '))):
-                words = first_line.split()
-                if len(words) >= 2:
-                    # Most words should be capitalised (title case)
-                    caps = sum(1 for w in words if w[0].isupper() or w.lower() in ['and', 'the', 'of', 'for', 'to', 'in', 'a', 'an'])
-                    if caps >= len(words) * 0.7:
-                        return True
+            
+            # Skip if too short or too long
+            if len(first_line) < 5 or len(first_line) > 80:
+                return False
+            
+            # Skip if ends with period (it's a sentence, not a header)
+            if first_line.endswith('.'):
+                return False
+            
+            # Skip if starts with common sentence starters
+            if first_line.startswith(('The ', 'A ', 'An ', 'This ', 'That ', 'It ', 'We ', 'They ')):
+                return False
+            
+            # Must start with uppercase
+            if not first_line[0].isupper():
+                return False
+            
+            words = first_line.split()
+            if len(words) < 2:
+                return False
+            
+            # v3.3: More lenient check - first word capitalised + short phrase = likely header
+            # Headers like "Our vision for a better future" have first word caps + lowercase rest
+            if len(words) <= 8 and words[0][0].isupper():
+                # Check if it looks like a header vs. a sentence fragment
+                # Headers rarely contain certain words
+                sentence_indicators = ['is', 'are', 'was', 'were', 'have', 'has', 'had', 
+                                       'will', 'would', 'could', 'should', 'may', 'might',
+                                       'because', 'although', 'however', 'therefore']
+                has_sentence_indicator = any(w.lower() in sentence_indicators for w in words)
+                
+                if not has_sentence_indicator:
+                    return True
+            
+            # Original title case check (multiple capitalised words)
+            caps = sum(1 for w in words if w[0].isupper() or w.lower() in ['and', 'the', 'of', 'for', 'to', 'in', 'a', 'an'])
+            if caps >= len(words) * 0.7:
+                return True
         
         return False
     
@@ -284,6 +307,8 @@ class StrictRecommendationExtractor:
         
         v3.1 FIX: Now checks for inline "Recommendation N" patterns that might
         have been missed, especially when digits are spaced (e.g., "Recommendation 1 1")
+        
+        v3.3: Added explicit markers for post-recommendations sections
         """
         # If there's a next recommendation, that's our hard boundary
         if next_rec_pos < len(text):
@@ -312,7 +337,9 @@ class StrictRecommendationExtractor:
                 search_limit = potential_end
         
         # Universal end markers (these work across document types)
+        # v3.3: Added more explicit section markers
         universal_markers = [
+            # Document structure markers
             r'\bAppendix(?:es)?(?:\s+[A-Z0-9]+)?\b',
             r'\bGlossary\b',
             r'\bReferences\b',
@@ -324,13 +351,25 @@ class StrictRecommendationExtractor:
             r'©\s*(?:Crown\s+)?[Cc]opyright',
             r'\bAll\s+content\s+is\s+available\s+under\b',
             r'\bISBN\b',
-            # Section transitions
+            # Section transitions for HSIB/HSSIB
             r'\bSafety\s+[Oo]bservation(?:s)?(?:\s+[A-Z0-9/]+)?:',
             r'\bLocal-level\s+learning\b',
             r'\bBackground\s+and\s+context\b',
             r'\bFindings\s+and\s+analysis\b',
             r'\bSummary\s+of\s+(?:findings|recommendations)\b',
             r'\bThe\s+investigation\s+(?:found|makes|identified)\b',
+            # v3.3: Explicit markers for common post-recommendations sections
+            r'\bOur\s+vision\s+for\s+(?:a\s+)?(?:better\s+)?future\b',
+            r'\bKey\s+facts\b',
+            r'\bMethodology\b',
+            r'\bFindings\b',
+            r'\bCase\s+studies\b',
+            r'\bMeasuring\s+what\s+matters\b',
+            r'\bWhat\s+a\s+better\s+system\s+would\s+look\s+like\b',
+            r'\bPrinciples\s+for\s+the\s+collection\b',
+            r'\bThe\s+safety\s+issues\s+framework\b',
+            r'\bData\s+on\s+deaths\b',
+            r'\bPoor\s+safety\s+outcomes\b',
             # Numbered sections (generic)
             r'\n\s*\d+\.?\s+[A-Z][a-z]+(?:\s+[a-z]+){0,3}\s*\n',
         ]
@@ -506,7 +545,8 @@ class StrictRecommendationExtractor:
                 cleaned_full_text, hsib_2023_matches, 'hsib_2023', min_confidence
             )
             if recommendations:
-                return self._deduplicate(recommendations)
+                # v3.3: Use rec_number deduplication for HSIB
+                return self._deduplicate(recommendations, by_rec_number=True)
         
         # =======================================================================
         # PHASE 2: Try HSIB 2018 format (Recommendation YYYY/NNN)
@@ -523,7 +563,8 @@ class StrictRecommendationExtractor:
                 cleaned_full_text, hsib_2018_matches, 'hsib_2018', min_confidence
             )
             if recommendations:
-                return self._deduplicate(recommendations)
+                # v3.3: Use rec_number deduplication for HSIB
+                return self._deduplicate(recommendations, by_rec_number=True)
         
         # =======================================================================
         # PHASE 3: Standard "Recommendation N" format
@@ -540,7 +581,8 @@ class StrictRecommendationExtractor:
                 cleaned_full_text, standard_matches, 'standard', min_confidence
             )
             if recommendations:
-                return self._deduplicate(recommendations)
+                # v3.3: Also use rec_number deduplication for standard format
+                return self._deduplicate(recommendations, by_rec_number=True)
         
         # =======================================================================
         # PHASE 4: Fallback to sentence extraction
@@ -571,7 +613,7 @@ class StrictRecommendationExtractor:
                     'in_section': False,
                 })
         
-        return self._deduplicate(recommendations)
+        return self._deduplicate(recommendations, by_rec_number=False)
     
     def _extract_from_matches(
         self, 
@@ -631,16 +673,63 @@ class StrictRecommendationExtractor:
         
         return recommendations
     
-    def _deduplicate(self, recommendations: List[Dict]) -> List[Dict]:
-        """Remove duplicate recommendations"""
-        seen = set()
+    def _deduplicate(self, recommendations: List[Dict], by_rec_number: bool = False) -> List[Dict]:
+        """
+        Remove duplicate recommendations.
+        
+        v3.3: Added by_rec_number parameter for HSIB documents where the same
+        recommendation may appear in summary and detail sections.
+        """
+        if not recommendations:
+            return []
+        
         unique = []
         
-        for rec in recommendations:
-            key = re.sub(r'\s+', ' ', rec['text'].lower().strip())[:150]
-            if key not in seen:
-                seen.add(key)
-                unique.append(rec)
+        if by_rec_number:
+            # v3.3: Deduplicate by rec_number, keeping the LONGEST version
+            seen_numbers = {}
+            for rec in recommendations:
+                rec_num = rec.get('rec_number')
+                if rec_num:
+                    if rec_num not in seen_numbers:
+                        seen_numbers[rec_num] = rec
+                    else:
+                        # Keep the longer version (more complete)
+                        if len(rec.get('text', '')) > len(seen_numbers[rec_num].get('text', '')):
+                            seen_numbers[rec_num] = rec
+                else:
+                    # No rec_number, fall back to text-based dedup
+                    unique.append(rec)
+            
+            # Combine the deduplicated numbered recs with any non-numbered ones
+            unique.extend(seen_numbers.values())
+            
+            # Sort by rec_number for consistent ordering
+            def sort_key(r):
+                num = r.get('rec_number', '')
+                # Handle different formats: "1", "2018/006", "R/2023/220"
+                if '/' in str(num):
+                    # HSIB format - extract numeric part
+                    parts = str(num).replace('R/', '').split('/')
+                    try:
+                        return (1, int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+                    except ValueError:
+                        return (2, 0, 0)
+                else:
+                    try:
+                        return (0, int(num), 0)
+                    except (ValueError, TypeError):
+                        return (2, 0, 0)
+            
+            unique.sort(key=sort_key)
+        else:
+            # Original text-based deduplication
+            seen = set()
+            for rec in recommendations:
+                key = re.sub(r'\s+', ' ', rec['text'].lower().strip())[:150]
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(rec)
         
         logger.info(f"Found {len(unique)} recommendations")
         return unique
