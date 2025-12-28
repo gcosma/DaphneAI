@@ -413,29 +413,41 @@ class StrictRecommendationExtractor:
     
     def _deduplicate(self, recommendations: List[Dict]) -> List[Dict]:
         """
-        Remove duplicates using semantic similarity.
-        Catches duplicates with different footnotes, formatting, etc.
+        Remove duplicates intelligently.
+        For structured docs: use rec_number as primary dedup key
+        For unstructured: use semantic similarity
         """
         if not recommendations:
             return []
         
         unique = []
+        seen_rec_numbers = set()
         
         for rec in recommendations:
-            is_duplicate = False
+            rec_number = rec.get('rec_number')
             
-            for existing in unique:
-                if self.deduplicator.are_similar(
-                    rec['text'],
-                    existing['text'],
-                    threshold=self.SEMANTIC_DEDUP_THRESHOLD
-                ):
-                    is_duplicate = True
-                    logger.debug(f"Duplicate: {rec.get('rec_number', 'N/A')} ≈ {existing.get('rec_number', 'N/A')}")
-                    break
-            
-            if not is_duplicate:
+            # For structured documents with rec_numbers
+            if rec_number:
+                if rec_number in seen_rec_numbers:
+                    logger.debug(f"Duplicate by rec_number: {rec_number}")
+                    continue
+                seen_rec_numbers.add(rec_number)
                 unique.append(rec)
+            else:
+                # For unstructured (sentence extraction) - use semantic similarity
+                is_duplicate = False
+                for existing in unique:
+                    if self.deduplicator.are_similar(
+                        rec['text'],
+                        existing['text'],
+                        threshold=self.SEMANTIC_DEDUP_THRESHOLD
+                    ):
+                        is_duplicate = True
+                        logger.debug(f"Semantic duplicate detected")
+                        break
+                
+                if not is_duplicate:
+                    unique.append(rec)
         
         logger.info(f"Deduplicated: {len(recommendations)} → {len(unique)} recommendations")
         return unique
