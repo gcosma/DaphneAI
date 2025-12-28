@@ -1,19 +1,21 @@
 """
-Strict Recommendation Extractor v2.8
-Based on v2.5 with HSIB boundary detection AND improved deduplication.
+Strict Recommendation Extractor v3.0
+With Semantic Coherence-Based Boundary Detection
 
-v2.8 Changes:
-- FIXED: HSIB boundary detection for last recommendation (2018/011)
-- FIXED: Duplicate extraction when recommendations appear multiple times
-- Added HSIB-specific section markers to stop extraction at correct boundaries
-- Improved deduplication using rec_number tracking
+v3.0 Changes:
+- NEW: Semantic coherence detector to identify when content shifts away from recommendation
+- NEW: Sentence-level analysis to find natural recommendation boundaries
+- NEW: "That [Entity]" pattern detection for HSIB-style recommendations
+- FIXED: Rec 2018/011 now correctly extracts only the CQC recommendation
+- Maintains all previous format support (HSIB 2018, 2023, standard government)
+
+The key insight: HSIB recommendations often start with "That [Entity] should/extends/requires..."
+and end when we hit content that's clearly NOT a recommendation (statistics, background, etc.)
 
 Usage:
     from recommendation_extractor import extract_recommendations
     
     recommendations = extract_recommendations(document_text, min_confidence=0.75)
-    for rec in recommendations:
-        print(f"{rec['method']}: {rec['text'][:100]}...")
 """
 
 import re
@@ -26,12 +28,15 @@ logger = logging.getLogger(__name__)
 
 class StrictRecommendationExtractor:
     """
-    Extract genuine recommendations with aggressive pre-filtering.
-    Handles both government-style numbered recommendations and general documents.
+    Extract genuine recommendations with semantic coherence-based boundary detection.
     """
     
     MAX_SENTENCE_LENGTH = 500
     MAX_NUMBERED_REC_LENGTH = 2500
+    
+    # Maximum reasonable length for a single recommendation (characters)
+    # Most recommendations are 100-500 chars; very long ones might be 1000
+    MAX_SINGLE_REC_LENGTH = 1200
     
     def __init__(self):
         """Initialise with strict patterns"""
@@ -51,11 +56,13 @@ class StrictRecommendationExtractor:
             'consolidate', 'extend', 'limit', 'restrict', 'remove', 'set',
             'define', 'specify', 'determine', 'approve', 'authorise', 'authorize',
             'build', 'design', 'plan', 'prepare', 'bring', 'make', 'take', 'meet',
-            'come', 'form', 'work', 'learn', 'drive',
+            'come', 'form', 'work', 'learn', 'drive', 'require', 'requires',
+            'extends', 'extend',
         }
         
         self.recommending_entities = [
             r'NHS\s+England',
+            r'NHS\s+Improvement',
             r'(?:the\s+)?(?:Home\s+Office|Cabinet\s+Office|Treasury)',
             r'(?:the\s+)?(?:Department|Ministry)\s+(?:of|for)\s+\w+',
             r'(?:the\s+)?(?:Secretary|Minister)\s+of\s+State',
@@ -72,9 +79,47 @@ class StrictRecommendationExtractor:
             r'(?:Local\s+)?(?:authorities|councils)',
             r'DHSC',
             r'Regulators?',
-            r'Inpatient\s+staff',
-            r'Government\s+ministers?',
+            r'Clinical\s+Commissioning\s+Groups?',
+            r'CCGs?',
         ]
+        
+        # Patterns that indicate we've LEFT the recommendation text
+        self.non_recommendation_indicators = [
+            # Statistics and data
+            r'\b\d+\s*(?:per\s*cent|%)\s+(?:of|had|were|have)',
+            r'\bsuicide\s+(?:rate|is|was|accounts)',
+            r'\b(?:an\s+)?average\s+of\s+\d+',
+            r'\bstatistics\s+show',
+            r'\bdata\s+(?:from|suggests?|shows?)',
+            
+            # Background/context language
+            r'\b\d+\.\d+\.?\d*\s+[A-Z]',  # Numbered sections like "1.1.1. The..."
+            r'\bprevalence\s+of',
+            r'\bhistory\s+of',
+            r'\bresearch\s+suggests',
+            r'\bstudies?\s+(?:show|found|indicate)',
+            
+            # Meta-discussion about recommendations
+            r'\bthe\s+investigation\s+makes',
+            r'\bsafety\s+observation',
+            r'\bhsib\s+has\s+directed',
+            r'\bthese\s+organisations\s+are\s+expected',
+            r'\bwe\s+will\s+publish',
+            r'\bbackground\s+and\s+context',
+            
+            # Report structure
+            r'\bfindings\s+and\s+analysis',
+            r'\bsummary\s+of\s+(?:hsib\s+)?findings',
+            r'\bmethodology\b',
+            r'\breference\s+event',
+            r'\binvolvement\s+of\s+hsib',
+        ]
+        
+        # Compile for efficiency
+        self.non_rec_pattern = re.compile(
+            '|'.join(self.non_recommendation_indicators),
+            re.IGNORECASE
+        )
     
     def fix_encoding(self, text: str) -> str:
         """Fix common PDF extraction encoding issues"""
@@ -108,37 +153,234 @@ class StrictRecommendationExtractor:
         # Remove timestamps
         text = re.sub(r'\d{1,2}/\d{1,2}/\d{2,4},?\s*\d{1,2}:\d{2}\s*(?:AM|PM)?[^A-Z]*(?=[A-Z]|$)', ' ', text, flags=re.IGNORECASE)
         
-        # Remove page numbers (but NOT HSIB numbers like 2018/006 or R/2023/220)
-        # Only match short page numbers like 1/84, 12/84
+        # Remove page numbers (but NOT HSIB numbers like 2018/006)
         text = re.sub(r'\b(\d{1,2})/(\d{1,3})\b', '', text)
         text = re.sub(r'\bPage\s+\d+\s+(?:of\s+\d+)?', '', text, flags=re.IGNORECASE)
         
         # Remove GOV.UK footer artifacts
-        text = re.sub(
-            r'11/24/25, 5:39 PM Rapid review into data on mental health inpatient settings: final report and recommendations - GOV\.UK[\s\S]*?\d{1,2}/84',
-            '',
-            text,
-            flags=re.IGNORECASE,
-        )
         text = re.sub(
             r'Rapid review into data on mental health inpatient settings:.*?GOV\.?UK',
             '',
             text,
             flags=re.IGNORECASE,
         )
+        text = re.sub(r'final report and recommendations\s*-?\s*GOV\.?UK?', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'-\s*GOV\.?\s*UK?\s*', '', text, flags=re.IGNORECASE)
+        
+        # Normalise duplicated section headings
         text = re.sub(
             r'\bRecommendations\s+Recommendation\s+(\d+)\b',
             r'Recommendation \1',
             text,
             flags=re.IGNORECASE,
         )
-        text = re.sub(r'final report and recommendations\s*-?\s*GOV\.?UK?', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'-\s*GOV\.?\s*UK?\s*', '', text, flags=re.IGNORECASE)
+        
         text = re.sub(r'^UK\s+', '', text)
         text = re.sub(r'\s+', ' ', text)
         text = text.strip()
         
         return text
+    
+    def _split_into_sentences(self, text: str) -> List[Tuple[str, int, int]]:
+        """
+        Split text into sentences with their start/end positions.
+        Returns list of (sentence_text, start_pos, end_pos)
+        """
+        if not text:
+            return []
+        
+        sentences = []
+        # Match sentence-ending punctuation followed by space and capital letter
+        # or end of string
+        pattern = r'[.!?](?:\s+(?=[A-Z])|$)'
+        
+        last_end = 0
+        for match in re.finditer(pattern, text):
+            end = match.end()
+            sentence = text[last_end:end].strip()
+            if sentence:
+                sentences.append((sentence, last_end, end))
+            last_end = end
+        
+        # Capture any remaining text
+        if last_end < len(text):
+            remaining = text[last_end:].strip()
+            if remaining:
+                sentences.append((remaining, last_end, len(text)))
+        
+        return sentences
+    
+    def _find_semantic_boundary(self, text: str, rec_header_end: int) -> int:
+        """
+        Find where the recommendation content semantically ends.
+        
+        Strategy:
+        1. Look for "That [Entity]" pattern - this is the actual recommendation
+        2. Find where this recommendation sentence ends
+        3. Check if following content is still recommendation-like or has shifted
+        
+        Returns the position where we should cut the text.
+        """
+        search_text = text[rec_header_end:]
+        
+        # HSIB recommendations typically start with "That [Entity]..."
+        that_entity_match = re.search(
+            r'\bThat\s+(?:the\s+)?(?:NHS\s+England|Care\s+Quality\s+Commission|CQC|'
+            r'NHS\s+Improvement|DHSC|Clinical\s+Commissioning\s+Groups?)',
+            search_text,
+            re.IGNORECASE
+        )
+        
+        if that_entity_match:
+            # Found "That [Entity]" - now find where this sentence ends
+            from_that = search_text[that_entity_match.start():]
+            
+            # The recommendation sentence typically ends at the first period
+            # followed by something that's NOT part of the recommendation
+            sentences = self._split_into_sentences(from_that)
+            
+            if sentences:
+                # First sentence is the recommendation
+                first_sentence = sentences[0][0]
+                first_sentence_end = sentences[0][2]
+                
+                # Check if there are more sentences that are ALSO recommendations
+                # (some recs have multiple sentences)
+                cumulative_end = first_sentence_end
+                
+                for i in range(1, len(sentences)):
+                    sent_text = sentences[i][0]
+                    
+                    # Check if this sentence looks like continuation of recommendation
+                    # vs. background/context
+                    if self._is_non_recommendation_content(sent_text):
+                        # Stop here - this is no longer recommendation content
+                        break
+                    
+                    # Check if it's a new recommendation (e.g., Safety Observation)
+                    if re.search(r'\bSafety\s+Observation', sent_text, re.IGNORECASE):
+                        break
+                    if re.search(r'\bThe\s+investigation\s+makes', sent_text, re.IGNORECASE):
+                        break
+                    if re.search(r'\bHSIB\s+has\s+directed', sent_text, re.IGNORECASE):
+                        break
+                    
+                    # Check for numbered sections (background content)
+                    if re.match(r'\d+\s+[A-Z]', sent_text):
+                        break
+                    if re.match(r'\d+\.\d+', sent_text):
+                        break
+                    
+                    # This sentence might still be part of the recommendation
+                    # but let's be conservative - if it's getting long, stop
+                    if cumulative_end > self.MAX_SINGLE_REC_LENGTH:
+                        break
+                    
+                    cumulative_end = sentences[i][2]
+                
+                return rec_header_end + that_entity_match.start() + cumulative_end
+        
+        # No "That [Entity]" found - fall back to finding first non-rec content
+        # or use a maximum length
+        
+        # Look for indicators that we've left the recommendation
+        non_rec_match = self.non_rec_pattern.search(search_text)
+        if non_rec_match:
+            boundary = rec_header_end + non_rec_match.start()
+            # Make sure we have at least some content
+            if boundary - rec_header_end > 50:
+                return boundary
+        
+        # Fall back to maximum length
+        return rec_header_end + min(len(search_text), self.MAX_SINGLE_REC_LENGTH)
+    
+    def _is_non_recommendation_content(self, text: str) -> bool:
+        """Check if text is clearly NOT recommendation content."""
+        if not text:
+            return True
+        
+        text_lower = text.lower()
+        
+        # Statistics patterns
+        if re.search(r'\b\d+\s*(?:per\s*cent|%)', text_lower):
+            # But allow "100 per cent" in context of commitment
+            if not re.search(r'commit|ensure|require', text_lower):
+                return True
+        
+        # Historical/background language
+        if re.search(r'\b(?:in\s+)?(?:19|20)\d{2}[,.]?\s+(?:the|a|an)\b', text_lower):
+            return True
+        
+        # Study/research language
+        if re.search(r'\b(?:study|research|report|review)\s+(?:found|showed|indicates)', text_lower):
+            return True
+        
+        # Numbered sections (like "1.1.1 Prevalence...")
+        if re.match(r'\d+\.\d+\.?\d*\s+[A-Z]', text):
+            return True
+        
+        # Death/suicide statistics
+        if re.search(r'\b(?:suicide|death|died)\s+(?:rate|is|was|by|accounting)', text_lower):
+            return True
+        
+        return False
+    
+    def _extract_that_entity_recommendation(self, text: str, header_match: re.Match) -> Optional[str]:
+        """
+        Extract just the "That [Entity]..." recommendation from HSIB format.
+        
+        HSIB recommendations have format:
+        Recommendation 2018/011: [optional noise/previous content] That the Care Quality Commission extends...
+        
+        We want to extract just the "That..." part and find its natural end.
+        
+        Key insight: Sometimes PDF extraction merges the end of a previous paragraph
+        with the recommendation header, e.g.:
+        "Recommendation 2018/011:that early intervention reduces..." 
+        where "that early intervention..." is actually from the previous section,
+        and the real rec is "That the Care Quality Commission extends..."
+        """
+        # Get text after the header
+        after_header = text[header_match.end():]
+        
+        # Look for "That [Entity]" pattern - the TRUE start of the recommendation
+        # This handles cases where there's noise before the actual recommendation
+        that_entity_patterns = [
+            # Standard patterns
+            r'(That\s+(?:the\s+)?(?:NHS\s+England|Care\s+Quality\s+Commission|CQC|'
+            r'NHS\s+Improvement|DHSC|CCGs?|Clinical\s+Commissioning\s+Groups?)'
+            r'[^.]*\.)',
+            # Also try with just "That the" followed by a capital entity
+            r'(That\s+the\s+[A-Z][a-zA-Z\s]+(?:Commission|England|Improvement|Department|Office)'
+            r'[^.]*\.)',
+        ]
+        
+        for pattern in that_entity_patterns:
+            that_match = re.search(pattern, after_header, re.IGNORECASE | re.DOTALL)
+            if that_match:
+                rec_text = that_match.group(1).strip()
+                # Clean it up
+                rec_text = re.sub(r'\s+', ' ', rec_text)
+                
+                # Verify this looks like a real recommendation (has a verb)
+                if re.search(r'\b(?:extends?|requires?|ensures?|works?|should|must)\b', rec_text, re.IGNORECASE):
+                    return rec_text
+        
+        # If no "That [Entity]" found, check if there's lowercase "that" at the start
+        # which might indicate PDF extraction noise - skip past it
+        noise_match = re.match(r'^that\s+[a-z].*?\.', after_header, re.IGNORECASE | re.DOTALL)
+        if noise_match:
+            # There's likely noise at the start - look for "That [Entity]" after it
+            remaining = after_header[noise_match.end():]
+            for pattern in that_entity_patterns:
+                that_match = re.search(pattern, remaining, re.IGNORECASE | re.DOTALL)
+                if that_match:
+                    rec_text = that_match.group(1).strip()
+                    rec_text = re.sub(r'\s+', ' ', rec_text)
+                    if re.search(r'\b(?:extends?|requires?|ensures?|works?|should|must)\b', rec_text, re.IGNORECASE):
+                        return rec_text
+        
+        return None
     
     def is_garbage(self, text: str, is_numbered_rec: bool = False) -> Tuple[bool, str]:
         """FIRST-PASS filter: reject obvious garbage before any analysis."""
@@ -182,16 +424,6 @@ class StrictRecommendationExtractor:
             r'(?:implement|implementing|implemented)\s+(?:these|the|all|our)?\s*recommendations?',
             r'once\s+implemented.*recommendations?',
             r'recommendations?\s+(?:will|can|should)\s+help',
-            r'i\s+(?:truly\s+)?believe.*recommendations?',
-            r'i\s+hope.*recommendations?',
-            r'^our\s+objectives\s+were\s+to',
-            r'^we\s+(?:were|are)\s+(?:told|informed|advised)',
-            r'^when\s+we\s+(?:first\s+)?established',
-            r'^we\s+found\s+that',
-            r'^they\s+proposed\s+practical',
-            r'^this\s+document\s+outlines',
-            r'^the\s+insights\s+below',
-            r'^the\s+goal\s+is\s+to\s+provide',
         ]
         
         for pattern in meta_patterns:
@@ -213,94 +445,18 @@ class StrictRecommendationExtractor:
             if verb in self.action_verbs:
                 return verb
         
+        # Check for "extends", "requires" etc. directly after entity
+        entity_verb_match = re.search(r'(?:commission|cqc|england|improvement)\s+(\w+)', text_lower)
+        if entity_verb_match:
+            verb = entity_verb_match.group(1)
+            if verb in self.action_verbs:
+                return verb
+        
         for verb in sorted(self.action_verbs, key=len, reverse=True):
             if re.search(rf'\b{verb}\b', text_lower):
                 return verb
         
         return 'unknown'
-    
-    def _find_recommendation_end(self, text: str, start_pos: int, next_rec_pos: int) -> int:
-        """
-        Find the proper end position for a recommendation.
-        v2.8: Enhanced with HSIB-specific section markers.
-        """
-        # If there's a next recommendation, that's our boundary
-        if next_rec_pos < len(text):
-            return next_rec_pos
-        
-        # =====================================================================
-        # HSIB-SPECIFIC SECTION MARKERS - Check these FIRST (more specific)
-        # These patterns appear in HSIB reports after the recommendations
-        # =====================================================================
-        hsib_section_markers = [
-            # Safety Observations section (appears after Safety Recommendations)
-            r'\bThe\s+investigation\s+makes\s+(?:two|three|four|one|the\s+following)\s+Safety\s+Observation',
-            r'\bSafety\s+Observation(?:s)?(?:\s+for|\s+to|\s*:)',
-            # Numbered sections in HSIB reports
-            r'\b\d+\s+Background\s+and\s+context\b',
-            r'\b\d+\s+The\s+reference\s+event\b',
-            r'\b\d+\s+Involvement\s+of\s+HSIB\b',
-            r'\b\d+\s+Findings\s+and\s+analysis\b',
-            r'\b\d+\s+Summary\s+of\s+(?:HSIB\s+)?[Ff]indings\b',
-            # HSIB footer/end markers
-            r'\bHSIB\s+has\s+directed\s+safety\s+recommendations\s+to\b',
-            r'\bThese\s+organisations\s+are\s+expected\s+to\s+respond\b',
-            r'\bWe\s+will\s+publish\s+their\s+responses\b',
-            r'\bProviding\s+feedback\b',
-            r'\bEndnotes\b',
-            # Summary section markers
-            r'\b6\.2\.?\s*Safety\s+Recommendations\b',
-            r'\b6\.3\.?\s*Safety\s+Observations\b',
-        ]
-        
-        earliest_boundary = next_rec_pos
-        search_start = start_pos + 30  # Skip past recommendation header
-        
-        # Check HSIB-specific markers FIRST
-        for pattern in hsib_section_markers:
-            match = re.search(pattern, text[search_start:], re.IGNORECASE)
-            if match:
-                boundary = search_start + match.start()
-                if boundary < earliest_boundary:
-                    earliest_boundary = boundary
-                    logger.debug(f"Found HSIB boundary at {boundary}: {pattern[:40]}")
-        
-        # If we found an HSIB boundary, use it
-        if earliest_boundary < next_rec_pos:
-            return earliest_boundary
-        
-        # =====================================================================
-        # UNIVERSAL SECTION MARKERS - Check these as fallback
-        # =====================================================================
-        section_markers = [
-            r'\bOur vision for (?:a |the )?(?:better )?future\b',
-            r'\bKey facts\b',
-            r'\bMethodology\b',
-            r'\bFindings\b',
-            r'\bAppendix(?:es)?(?:\s+\d+)?\b',
-            r'\bGlossary\b',
-            r'\bReferences\b',
-            r'\bCase studies\b',
-            r'\bConclusion(?:s)?(?:\s+and\s+next\s+steps)?\b',
-            r'\bAcknowledgements?\b',
-            r'\bAbout (?:this|the) (?:report|review)\b',
-            r'\bData mapping\b',
-            r'\bSafety issues framework\b',
-            r'\bMeasuring what matters:\b',
-            r'\bPoor safety outcomes\b',
-            r'\bAll content is available under\b',
-            r'©\s*Crown copyright',
-            r'\bThroughout the review\b',
-        ]
-        
-        for pattern in section_markers:
-            match = re.search(pattern, text[search_start:], re.IGNORECASE)
-            if match:
-                boundary = search_start + match.start()
-                if boundary < earliest_boundary:
-                    earliest_boundary = boundary
-        
-        return earliest_boundary
     
     def is_genuine_recommendation(self, text: str, is_numbered_rec: bool = False) -> Tuple[bool, float, str, str]:
         """Determine if text is a genuine recommendation."""
@@ -317,7 +473,7 @@ class StrictRecommendationExtractor:
             if len(cleaned) > self.MAX_SENTENCE_LENGTH:
                 return False, 0.0, 'too_long', 'none'
         
-        # NEW: HSIB 2023+ format (e.g., "Safety recommendation R/2023/220")
+        # HSIB 2023+ format
         hsib_2023_match = re.match(
             r'^Safety\s+recommendation\s+(R/\d{4}/\d{3})[:\s]+(.+)',
             cleaned,
@@ -329,7 +485,7 @@ class StrictRecommendationExtractor:
             verb = self._extract_verb(rec_text)
             return True, 0.98, f'hsib_recommendation_{rec_num}', verb
         
-        # HSIB 2018 format (e.g., "Recommendation 2018/006")
+        # HSIB 2018 format
         hsib_2018_match = re.match(
             r'^Recommendation\s+(\d{4}/\d{3})[:\s]+(.+)',
             cleaned,
@@ -341,7 +497,7 @@ class StrictRecommendationExtractor:
             verb = self._extract_verb(rec_text)
             return True, 0.98, f'hsib_recommendation_{rec_num}', verb
         
-        # Standard numbered recommendation (e.g., "Recommendation 1")
+        # Standard numbered recommendation
         numbered_match = re.match(
             r'^(?:Recommendations?\s+)?Recommendation\s+(\d{1,2})(?:\s+(\d))?\s+(.+)',
             cleaned,
@@ -358,13 +514,24 @@ class StrictRecommendationExtractor:
             verb = self._extract_verb(rec_text)
             return True, 0.98, f'numbered_recommendation_{rec_num}', verb
         
+        # "That [Entity]" pattern (common in HSIB)
+        that_entity_match = re.match(
+            r'^That\s+(?:the\s+)?(NHS\s+England|Care\s+Quality\s+Commission|CQC|'
+            r'NHS\s+Improvement|DHSC)',
+            cleaned,
+            re.IGNORECASE,
+        )
+        if that_entity_match:
+            verb = self._extract_verb(cleaned)
+            return True, 0.96, 'that_entity', verb
+        
         # Entity + should pattern
         for entity_pattern in self.recommending_entities:
             pattern = rf'{entity_pattern}\s+should\s+(?:also\s+)?(?:urgently\s+)?(?:\w+ly\s+)?(\w+)'
             match = re.search(pattern, cleaned, re.IGNORECASE)
             if match and match.group(1):
                 verb = match.group(1).lower()
-                if verb in self.action_verbs or verb.endswith('e') or verb.endswith('ise') or verb.endswith('ize'):
+                if verb in self.action_verbs:
                     return True, 0.95, 'entity_should', verb
         
         # "We recommend" pattern
@@ -377,7 +544,7 @@ class StrictRecommendationExtractor:
         if should_be_match:
             subject = should_be_match.group(1)
             verb = should_be_match.group(2)
-            if subject not in ['this', 'it', 'that', 'recommendation', 'the recommendation']:
+            if subject not in ['this', 'it', 'that', 'recommendation']:
                 return True, 0.85, 'should_be_passive', verb
         
         # Modal + action verb
@@ -390,37 +557,12 @@ class StrictRecommendationExtractor:
                     if not re.search(r'recommendations?\s+(?:should|must|shall)', text_lower):
                         return True, 0.80, 'modal_verb', verb
         
-        # Imperative starting with action verb
-        first_word = cleaned.split()[0].lower() if cleaned.split() else ''
-        if first_word in self.action_verbs:
-            if len(cleaned.split()) >= 10:
-                return True, 0.75, 'imperative', first_word
-        
         return False, 0.0, 'none', 'unknown'
     
-    def _extract_rec_number_from_text(self, text: str) -> Optional[str]:
-        """Extract recommendation number from text for deduplication."""
-        # HSIB 2018 format: 2018/006
-        hsib_match = re.search(r'Recommendation\s+(\d{4}/\d{3})', text, re.IGNORECASE)
-        if hsib_match:
-            return hsib_match.group(1)
-        
-        # HSIB 2023+ format: R/2023/220
-        hsib_2023_match = re.search(r'Safety\s+recommendation\s+(R/\d{4}/\d{3})', text, re.IGNORECASE)
-        if hsib_2023_match:
-            return hsib_2023_match.group(1)
-        
-        # Standard format: Recommendation 1
-        std_match = re.search(r'Recommendation\s+(\d{1,2})\b', text, re.IGNORECASE)
-        if std_match:
-            return std_match.group(1)
-        
-        return None
-    
     def extract_recommendations(self, text: str, min_confidence: float = 0.75) -> List[Dict]:
-        """Extract genuine recommendations from text."""
+        """Extract genuine recommendations from text with semantic boundary detection."""
         recommendations = []
-        seen_rec_numbers: Set[str] = set()  # Track seen rec numbers for deduplication
+        seen_rec_numbers: Set[str] = set()  # Track to prevent duplicates
         
         if not text or not text.strip():
             logger.warning("Empty text passed to extract_recommendations")
@@ -431,7 +573,7 @@ class StrictRecommendationExtractor:
         cleaned_full_text = self.clean_text(text)
         
         # =======================================================================
-        # PHASE 1: Try HSIB 2023+ format first (Safety recommendation R/YYYY/NNN)
+        # PHASE 1: HSIB 2023+ format (Safety recommendation R/YYYY/NNN)
         # =======================================================================
         hsib_2023_pattern = re.compile(
             r'Safety\s+recommendation\s+(R/\d{4}/\d{3})[:\s]',
@@ -444,15 +586,13 @@ class StrictRecommendationExtractor:
             for idx, match in enumerate(hsib_2023_matches):
                 rec_num = match.group(1)
                 
-                # Skip duplicates
                 if rec_num in seen_rec_numbers:
-                    logger.debug(f"Skipping duplicate HSIB 2023 rec: {rec_num}")
+                    logger.debug(f"Skipping duplicate: {rec_num}")
                     continue
                 
-                start = match.start()
-                next_rec_pos = hsib_2023_matches[idx + 1].start() if idx + 1 < len(hsib_2023_matches) else len(cleaned_full_text)
-                end = self._find_recommendation_end(cleaned_full_text, start, next_rec_pos)
-                raw_block = cleaned_full_text[start:end]
+                # Use semantic boundary detection
+                boundary = self._find_semantic_boundary(cleaned_full_text, match.end())
+                raw_block = cleaned_full_text[match.start():boundary]
                 cleaned = self.clean_text(raw_block)
                 
                 is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=True)
@@ -475,11 +615,11 @@ class StrictRecommendationExtractor:
             
             if recommendations:
                 recommendations = self._deduplicate(recommendations)
-                logger.info(f"Found {len(recommendations)} recommendations")
+                logger.info(f"Found {len(recommendations)} HSIB 2023+ recommendations")
                 return recommendations
         
         # =======================================================================
-        # PHASE 2: Try HSIB 2018 format (Recommendation YYYY/NNN)
+        # PHASE 2: HSIB 2018 format (Recommendation YYYY/NNN)
         # =======================================================================
         hsib_2018_pattern = re.compile(
             r'Recommendation\s+(\d{4}/\d{3})[:\s]',
@@ -492,16 +632,21 @@ class StrictRecommendationExtractor:
             for idx, match in enumerate(hsib_2018_matches):
                 rec_num = match.group(1)
                 
-                # Skip duplicates
                 if rec_num in seen_rec_numbers:
-                    logger.debug(f"Skipping duplicate HSIB 2018 rec: {rec_num}")
+                    logger.debug(f"Skipping duplicate: {rec_num}")
                     continue
                 
-                start = match.start()
-                next_rec_pos = hsib_2018_matches[idx + 1].start() if idx + 1 < len(hsib_2018_matches) else len(cleaned_full_text)
-                end = self._find_recommendation_end(cleaned_full_text, start, next_rec_pos)
-                raw_block = cleaned_full_text[start:end]
-                cleaned = self.clean_text(raw_block)
+                # Try to extract just the "That [Entity]..." part
+                that_rec = self._extract_that_entity_recommendation(cleaned_full_text, match)
+                
+                if that_rec:
+                    # Successfully extracted the core recommendation
+                    cleaned = f"Recommendation {rec_num}: {that_rec}"
+                else:
+                    # Fall back to semantic boundary detection
+                    boundary = self._find_semantic_boundary(cleaned_full_text, match.end())
+                    raw_block = cleaned_full_text[match.start():boundary]
+                    cleaned = self.clean_text(raw_block)
                 
                 is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=True)
                 if is_garbage:
@@ -523,7 +668,7 @@ class StrictRecommendationExtractor:
             
             if recommendations:
                 recommendations = self._deduplicate(recommendations)
-                logger.info(f"Found {len(recommendations)} recommendations")
+                logger.info(f"Found {len(recommendations)} HSIB 2018 recommendations")
                 return recommendations
         
         # =======================================================================
@@ -535,60 +680,52 @@ class StrictRecommendationExtractor:
         )
         heading_matches = list(heading_pattern.finditer(cleaned_full_text))
         
-        logger.info(f"Found {len(heading_matches)} standard recommendation headings")
-        
-        for idx, match in enumerate(heading_matches):
-            # Calculate rec_num first for deduplication
-            heading_num = match.group(1)
-            extra_digit = match.group(2)
-            if extra_digit and len(heading_num) == 1:
-                rec_num = f"{heading_num}{extra_digit}"
-            else:
-                rec_num = heading_num
+        if heading_matches:
+            logger.info(f"Found {len(heading_matches)} standard recommendation headings")
             
-            # Skip duplicates
-            if rec_num in seen_rec_numbers:
-                logger.debug(f"Skipping duplicate standard rec: {rec_num}")
-                continue
-            
-            start = match.start()
-            next_rec_pos = heading_matches[idx + 1].start() if idx + 1 < len(heading_matches) else len(cleaned_full_text)
-            end = self._find_recommendation_end(cleaned_full_text, start, next_rec_pos)
-            raw_block = cleaned_full_text[start:end]
-            cleaned = self.clean_text(raw_block)
-            
-            is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=True)
-            if is_garbage:
-                logger.debug(f"Skipping numbered rec {idx}: {reason}")
-                continue
-            
-            is_rec, confidence, method, verb = self.is_genuine_recommendation(cleaned, is_numbered_rec=True)
-            
-            if is_rec and confidence >= min_confidence:
-                # Update rec_num from method if available
-                if method.startswith("numbered_recommendation_"):
-                    try:
-                        rec_num = method.split("_")[-1]
-                    except Exception:
-                        pass
+            for idx, match in enumerate(heading_matches):
+                heading_num = match.group(1)
+                extra_digit = match.group(2)
+                if extra_digit and len(heading_num) == 1:
+                    rec_num = f"{heading_num}{extra_digit}"
+                else:
+                    rec_num = heading_num
                 
-                seen_rec_numbers.add(rec_num)
+                if rec_num in seen_rec_numbers:
+                    logger.debug(f"Skipping duplicate: {rec_num}")
+                    continue
                 
-                norm_pattern = r'^(?:Recommendations?\s+)?Recommendation\s+(\d{1,2})(?:\s+(\d))?\b'
-                normalized_text = re.sub(norm_pattern, f"Recommendation {rec_num}", cleaned, count=1, flags=re.IGNORECASE)
+                # Find boundary
+                next_rec_pos = heading_matches[idx + 1].start() if idx + 1 < len(heading_matches) else len(cleaned_full_text)
+                boundary = min(next_rec_pos, self._find_semantic_boundary(cleaned_full_text, match.end()))
                 
-                recommendations.append({
-                    'text': normalized_text,
-                    'verb': verb,
-                    'method': method,
-                    'confidence': round(confidence, 3),
-                    'position': idx,
-                    'in_section': True,
-                    'rec_number': rec_num,
-                })
+                raw_block = cleaned_full_text[match.start():boundary]
+                cleaned = self.clean_text(raw_block)
+                
+                is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=True)
+                if is_garbage:
+                    continue
+                
+                is_rec, confidence, method, verb = self.is_genuine_recommendation(cleaned, is_numbered_rec=True)
+                
+                if is_rec and confidence >= min_confidence:
+                    # Normalise the heading
+                    norm_pattern = r'^(?:Recommendations?\s+)?Recommendation\s+(\d{1,2})(?:\s+(\d))?\b'
+                    cleaned = re.sub(norm_pattern, f"Recommendation {rec_num}", cleaned, count=1, flags=re.IGNORECASE)
+                    
+                    seen_rec_numbers.add(rec_num)
+                    recommendations.append({
+                        'text': cleaned,
+                        'verb': verb,
+                        'method': method,
+                        'confidence': round(confidence, 3),
+                        'position': idx,
+                        'in_section': True,
+                        'rec_number': rec_num,
+                    })
         
         # =======================================================================
-        # PHASE 4: Fallback to sentence extraction
+        # PHASE 4: Validate and fall back to sentence extraction if needed
         # =======================================================================
         if len(recommendations) == 1:
             only_rec = recommendations[0]
@@ -597,7 +734,7 @@ class StrictRecommendationExtractor:
                 recommendations = []
         
         if len(recommendations) == 0:
-            logger.info("No numbered recommendations found, falling back to sentence extraction")
+            logger.info("No structured recommendations found, falling back to sentence extraction")
             
             sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
             
@@ -629,28 +766,15 @@ class StrictRecommendationExtractor:
         return recommendations
     
     def _deduplicate(self, recommendations: List[Dict]) -> List[Dict]:
-        """Remove duplicate recommendations using both text and rec_number."""
-        seen_text = set()
-        seen_numbers = set()
+        """Remove duplicate recommendations"""
+        seen = set()
         unique = []
         
         for rec in recommendations:
-            # Check by rec_number first (most reliable for HSIB)
-            rec_num = rec.get('rec_number')
-            if rec_num and rec_num in seen_numbers:
-                logger.debug(f"Deduplicating by rec_number: {rec_num}")
-                continue
-            
-            # Also check by text prefix
             key = re.sub(r'\s+', ' ', rec['text'].lower().strip())[:150]
-            if key in seen_text:
-                logger.debug(f"Deduplicating by text: {key[:50]}...")
-                continue
-            
-            if rec_num:
-                seen_numbers.add(rec_num)
-            seen_text.add(key)
-            unique.append(rec)
+            if key not in seen:
+                seen.add(key)
+                unique.append(rec)
         
         return unique
     
@@ -684,6 +808,7 @@ class StrictRecommendationExtractor:
         }
 
 
+# Backward compatibility
 AdvancedRecommendationExtractor = StrictRecommendationExtractor
 
 
