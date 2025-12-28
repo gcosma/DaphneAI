@@ -1,19 +1,17 @@
 """
-Strict Recommendation Extractor v2.6
-Based on v2.5 with fixes for HSIB 2018 format deduplication and boundary detection.
+Strict Recommendation Extractor v2.7
+Based on v2.5 with fixed HSIB boundary detection for final recommendations.
 
-v2.6 Changes:
-- Fixed deduplication to prioritise rec_number (prevents duplicate 2018/006, 2018/011)
-- Added HSIB-specific section boundary markers (Safety Observations, etc.)
-- Improved boundary detection for final recommendation in HSIB documents
-- Fixed text corruption issue where findings section bled into recommendations
+v2.7 Changes:
+- Fixed boundary detection for LAST recommendation in HSIB documents
+- Added more section markers specific to HSIB report structure
+- Better handling of "Safety observation" as boundary marker
+- Fixed detection of section numbers like "1 Background and context"
 
 Usage:
     from recommendation_extractor import extract_recommendations
     
     recommendations = extract_recommendations(document_text, min_confidence=0.75)
-    for rec in recommendations:
-        print(f"{rec['method']}: {rec['text'][:100]}...")
 """
 
 import re
@@ -220,14 +218,39 @@ class StrictRecommendationExtractor:
         return 'unknown'
     
     def _find_recommendation_end(self, text: str, start_pos: int, next_rec_pos: int) -> int:
-        """Find the proper end position for a recommendation."""
+        """
+        Find the proper end position for a recommendation.
+        v2.7: Enhanced for HSIB documents with better section detection.
+        """
         if next_rec_pos < len(text):
             return next_rec_pos
         
-        # Section markers that indicate end of recommendations
-        # v2.6: Added HSIB-specific markers
-        section_markers = [
-            # Universal markers
+        # =====================================================================
+        # HSIB-SPECIFIC SECTION MARKERS (checked first for HSIB documents)
+        # These mark the END of the recommendations section
+        # =====================================================================
+        hsib_section_markers = [
+            # Safety Observations section (appears after Safety Recommendations)
+            r'\bThe\s+investigation\s+makes\s+(?:two|three|four|one)\s+Safety\s+Observation',
+            r'\bSafety\s+Observation(?:s)?(?:\s+for|\s+to|\s*:)',
+            # Numbered sections in HSIB reports
+            r'\b\d+\s+Background\s+and\s+context\b',
+            r'\b\d+\s+The\s+reference\s+event\b',
+            r'\b\d+\s+Involvement\s+of\s+HSIB\b',
+            r'\b\d+\s+Findings\s+and\s+analysis\b',
+            r'\b\d+\s+Summary\s+of\s+(?:HSIB\s+)?[Ff]indings\b',
+            # HSIB footer/end markers
+            r'\bHSIB\s+has\s+directed\s+safety\s+recommendations\s+to\b',
+            r'\bThese\s+organisations\s+are\s+expected\s+to\s+respond\b',
+            r'\bWe\s+will\s+publish\s+their\s+responses\b',
+            r'\bProviding\s+feedback\b',
+            r'\bEndnotes\b',
+        ]
+        
+        # =====================================================================
+        # UNIVERSAL SECTION MARKERS
+        # =====================================================================
+        universal_markers = [
             r'\bOur vision for (?:a |the )?(?:better )?future\b',
             r'\bKey facts\b',
             r'\bMethodology\b',
@@ -246,22 +269,22 @@ class StrictRecommendationExtractor:
             r'\bAll content is available under\b',
             r'©\s*Crown copyright',
             r'\bThroughout the review\b',
-            # HSIB-specific markers (v2.6)
-            r'\bThe\s+investigation\s+makes\s+(?:two\s+|the\s+following\s+)?[Ss]afety\s+[Oo]bservations?',
-            r'\bSafety\s+[Oo]bservation(?:s)?\s*[:.]',
-            r'\bIt\s+would\s+be\s+beneficial\b',  # Safety observation starter
-            r'\bLocal-level\s+learning\b',
-            r'\bProviding\s+feedback\b',
-            r'\bEndnotes\b',
-            r'\b\d+\s+Background\s+and\s+context\b',
-            # Section number patterns (e.g., "6 Summary" after recommendations)
-            r'\n\s*\d+\s+(?:Summary|Background|Context|Introduction|Methodology)\b',
         ]
         
         earliest_boundary = next_rec_pos
-        search_start = start_pos + 20
+        search_start = start_pos + 30  # Skip past recommendation header
         
-        for pattern in section_markers:
+        # Check HSIB markers first (they're more specific)
+        for pattern in hsib_section_markers:
+            match = re.search(pattern, text[search_start:], re.IGNORECASE)
+            if match:
+                boundary = search_start + match.start()
+                if boundary < earliest_boundary:
+                    earliest_boundary = boundary
+                    logger.debug(f"HSIB boundary found at {boundary}: {pattern}")
+        
+        # Then check universal markers
+        for pattern in universal_markers:
             match = re.search(pattern, text[search_start:], re.IGNORECASE)
             if match:
                 boundary = search_start + match.start()
@@ -555,32 +578,15 @@ class StrictRecommendationExtractor:
         return recommendations
     
     def _deduplicate(self, recommendations: List[Dict]) -> List[Dict]:
-        """
-        Remove duplicate recommendations.
-        v2.6: Prioritise rec_number deduplication to prevent duplicates like 2018/006 appearing twice.
-        """
-        seen_numbers = set()
-        seen_text = set()
+        """Remove duplicate recommendations"""
+        seen = set()
         unique = []
         
         for rec in recommendations:
-            rec_num = rec.get('rec_number')
-            
-            # First check: deduplicate by rec_number (highest priority)
-            if rec_num:
-                if rec_num in seen_numbers:
-                    logger.debug(f"Skipping duplicate rec_number: {rec_num}")
-                    continue
-                seen_numbers.add(rec_num)
-            
-            # Second check: deduplicate by text content (fallback)
             key = re.sub(r'\s+', ' ', rec['text'].lower().strip())[:150]
-            if key in seen_text:
-                logger.debug(f"Skipping duplicate text: {key[:50]}...")
-                continue
-            seen_text.add(key)
-            
-            unique.append(rec)
+            if key not in seen:
+                seen.add(key)
+                unique.append(rec)
         
         return unique
     
