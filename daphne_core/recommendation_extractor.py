@@ -1,17 +1,17 @@
 """
-Recommendation Extractor v5.0 - Semantic-First with First-Occurrence Architecture
-Combines semantic intelligence with efficient duplicate prevention.
+Recommendation Extractor v3.0
+Extracts recommendation blocks from government and health sector documents.
 
-v5.0 Features:
-- SEMANTIC analysis using sentence transformers (from v4.0)
-- FIRST-OCCURRENCE extraction - only processes first instance of each rec ID (from v4.2)
-- Semantic deduplication as backup (catches near-duplicates)
-- Intelligent content boundary detection
-- Minimal regex (only for initial heading detection)
+v3.0 Changes:
+- GENERIC boundary detection (not document-specific patterns)
+- Removed "genuine" wording throughout
+- Intelligent end-of-recommendation detection using structural heuristics
+- Maximum length safeguards for final recommendations
+- Works across HSIB, HSSIB, standard government, and other formats
 
 Supported Formats:
+- HSIB 2018 format: "Recommendation 2018/006:", "Recommendation 2018/007:"
 - HSSIB 2023+ format: "Safety recommendation R/2023/220:"
-- HSIB 2018 format: "Recommendation 2018/006:"
 - Standard government: "Recommendation 1", "Recommendation 12"
 - Sentence-based fallback for unstructured documents
 
@@ -25,311 +25,25 @@ Usage:
 
 import re
 import logging
-from typing import List, Dict, Tuple, Optional, Set
+from typing import List, Dict, Tuple, Optional
 from collections import Counter
-import numpy as np
 
 logger = logging.getLogger(__name__)
-
-# Try to import sentence transformers
-try:
-    from sentence_transformers import SentenceTransformer
-    import torch
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
-    logger.warning("sentence-transformers not available, falling back to keyword-based methods")
-
-
-class SemanticAnalyser:
-    """
-    Semantic analysis using sentence transformers.
-    Provides embeddings, similarity, and content classification.
-    """
-    
-    # Reference sentences for semantic comparison
-    RECOMMENDATION_EXEMPLARS = [
-        "That NHS England should implement new guidance.",
-        "The Department should review current policies.",
-        "Providers must ensure compliance with standards.",
-        "We recommend establishing a new framework.",
-        "The Trust should develop improved procedures.",
-        "Clinical teams should adopt best practices.",
-        "The Government should consider legislative changes.",
-        "HSIB recommends that the Care Quality Commission evaluates the process.",
-        "The Royal College should form a working group.",
-    ]
-    
-    NON_RECOMMENDATION_EXEMPLARS = [
-        "This section describes the background.",
-        "The following observations were noted.",
-        "Local-level learning from this case.",
-        "Background and context for the investigation.",
-        "Safety observations from our review.",
-        "Appendix containing supporting documents.",
-        "References and endnotes section.",
-        "Acknowledgements to contributors.",
-        "The care of the patient demonstrates the potential benefit.",
-        "Another expert told the investigation that.",
-    ]
-    
-    def __init__(self, model_name: str = 'BAAI/bge-small-en-v1.5'):
-        """Initialise with a sentence transformer model."""
-        self.model = None
-        self.rec_embeddings = None
-        self.non_rec_embeddings = None
-        self._available = False
-        
-        if TRANSFORMERS_AVAILABLE:
-            try:
-                device = 'cuda' if torch.cuda.is_available() else 'cpu'
-                self.model = SentenceTransformer(model_name, device=device)
-                # Pre-compute exemplar embeddings
-                self.rec_embeddings = self.model.encode(
-                    self.RECOMMENDATION_EXEMPLARS, 
-                    convert_to_numpy=True
-                )
-                self.non_rec_embeddings = self.model.encode(
-                    self.NON_RECOMMENDATION_EXEMPLARS,
-                    convert_to_numpy=True
-                )
-                self._available = True
-                logger.info(f"SemanticAnalyser initialised with {model_name}")
-            except Exception as e:
-                logger.warning(f"Could not load transformer model: {e}")
-                self.model = None
-    
-    @property
-    def available(self) -> bool:
-        return self._available and self.model is not None
-    
-    def encode(self, texts: List[str]) -> Optional[np.ndarray]:
-        """Encode texts to embeddings."""
-        if not self.model or not texts:
-            return None
-        try:
-            return self.model.encode(texts, convert_to_numpy=True)
-        except Exception as e:
-            logger.warning(f"Encoding failed: {e}")
-            return None
-    
-    def cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
-        """Calculate cosine similarity between two vectors."""
-        if a is None or b is None:
-            return 0.0
-        norm_a = np.linalg.norm(a)
-        norm_b = np.linalg.norm(b)
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
-        return float(np.dot(a, b) / (norm_a * norm_b))
-    
-    def is_recommendation_like(self, text: str) -> Tuple[bool, float]:
-        """
-        Determine if text is semantically similar to recommendation language.
-        Returns (is_recommendation, confidence).
-        """
-        if not self.available or not text:
-            return self._keyword_fallback_is_recommendation(text)
-        
-        try:
-            text_embedding = self.model.encode([text], convert_to_numpy=True)[0]
-            
-            # Average similarity to recommendation exemplars
-            rec_similarities = [
-                self.cosine_similarity(text_embedding, emb) 
-                for emb in self.rec_embeddings
-            ]
-            avg_rec_sim = np.mean(rec_similarities)
-            max_rec_sim = np.max(rec_similarities)
-            
-            # Average similarity to non-recommendation exemplars
-            non_rec_similarities = [
-                self.cosine_similarity(text_embedding, emb)
-                for emb in self.non_rec_embeddings
-            ]
-            avg_non_rec_sim = np.mean(non_rec_similarities)
-            max_non_rec_sim = np.max(non_rec_similarities)
-            
-            # Decision based on relative similarity
-            # Text is a recommendation if it's more similar to rec exemplars
-            is_rec = max_rec_sim > 0.5 and avg_rec_sim > avg_non_rec_sim
-            
-            # Also reject if very similar to non-recommendation content
-            if max_non_rec_sim > 0.7 and max_non_rec_sim > max_rec_sim:
-                is_rec = False
-            
-            confidence = max_rec_sim if is_rec else 1.0 - max_non_rec_sim
-            
-            return is_rec, float(confidence)
-            
-        except Exception as e:
-            logger.warning(f"Semantic analysis failed: {e}")
-            return self._keyword_fallback_is_recommendation(text)
-    
-    def _keyword_fallback_is_recommendation(self, text: str) -> Tuple[bool, float]:
-        """Keyword-based fallback when transformers unavailable."""
-        if not text:
-            return False, 0.0
-        
-        text_lower = text.lower()
-        
-        # "That [Entity]" pattern is a very strong indicator (HSIB style)
-        if re.match(r'^that\s+(?:the\s+)?(?:nhs|cqc|care|department|trust|government|national|royal)', text_lower):
-            return True, 0.95
-        
-        # "HSIB recommends" pattern
-        if 'hsib recommends' in text_lower:
-            return True, 0.95
-        
-        # Strong recommendation indicators
-        strong_patterns = [
-            'should', 'must', 'shall', 'recommend', 'require', 
-            'needs to', 'ought to', 'is required to'
-        ]
-        
-        # Weak/context indicators
-        weak_patterns = [
-            'consider', 'review', 'ensure', 'develop', 'implement',
-            'evaluate', 'assess', 'establish', 'form', 'create'
-        ]
-        
-        # Negative indicators (non-recommendation content)
-        negative_patterns = [
-            'demonstrates the potential', 'told the investigation',
-            'another expert', 'background', 'observation',
-            'appendix', 'reference', 'endnote', 'acknowledgement'
-        ]
-        
-        # Check for negative patterns first
-        for pattern in negative_patterns:
-            if pattern in text_lower:
-                return False, 0.3
-        
-        strong_count = sum(1 for p in strong_patterns if p in text_lower)
-        weak_count = sum(1 for p in weak_patterns if p in text_lower)
-        
-        if strong_count >= 1:
-            return True, min(0.7 + (strong_count * 0.1), 0.95)
-        elif weak_count >= 2:
-            return True, 0.7
-        elif weak_count >= 1:
-            # Single weak pattern - still likely a recommendation
-            return True, 0.6
-        
-        return False, 0.3
-    
-    def are_semantically_similar(self, text1: str, text2: str, threshold: float = 0.85) -> bool:
-        """
-        Check if two texts are semantically similar (for deduplication).
-        Uses higher threshold (0.85) to catch duplicates with minor variations.
-        """
-        if not self.available:
-            return self._keyword_fallback_similarity(text1, text2) > threshold
-        
-        try:
-            embeddings = self.model.encode([text1, text2], convert_to_numpy=True)
-            similarity = self.cosine_similarity(embeddings[0], embeddings[1])
-            return similarity >= threshold
-        except Exception:
-            return self._keyword_fallback_similarity(text1, text2) > threshold
-    
-    def _keyword_fallback_similarity(self, text1: str, text2: str) -> float:
-        """Keyword-based similarity fallback."""
-        words1 = set(text1.lower().split())
-        words2 = set(text2.lower().split())
-        
-        if not words1 or not words2:
-            return 0.0
-        
-        intersection = len(words1 & words2)
-        union = len(words1 | words2)
-        
-        return intersection / union if union > 0 else 0.0
-    
-    def find_content_boundary(self, text: str, start_pos: int = 0) -> int:
-        """
-        Find where the recommendation content ends using semantic shift detection.
-        Returns position where non-recommendation content begins.
-        """
-        if not text or start_pos >= len(text):
-            return len(text)
-        
-        working_text = text[start_pos:]
-        
-        # Split into sentences
-        sentences = re.split(r'(?<=[.!?])\s+', working_text)
-        
-        if len(sentences) <= 1:
-            return len(text)
-        
-        cumulative_length = start_pos
-        
-        for i, sentence in enumerate(sentences):
-            sentence = sentence.strip()
-            if not sentence:
-                cumulative_length += 1
-                continue
-            
-            # Check if this sentence looks like a section header
-            if self._is_section_boundary(sentence):
-                return cumulative_length
-            
-            # Use semantic analysis to detect content shift
-            is_rec, confidence = self.is_recommendation_like(sentence)
-            
-            # If we're past the first 2 sentences and hit clear non-recommendation content
-            if i > 1 and not is_rec and confidence < 0.4:
-                return cumulative_length
-            
-            cumulative_length += len(sentence) + 1
-        
-        return len(text)
-    
-    def _is_section_boundary(self, text: str) -> bool:
-        """Check if text represents a section boundary."""
-        if not text:
-            return False
-        
-        text_stripped = text.strip()
-        
-        # Numbered section headers (e.g., "6.3 Safety Observations")
-        if re.match(r'^\d+\.[\d.]*\s+[A-Z]', text_stripped):
-            return True
-        
-        # Known boundary markers
-        boundary_patterns = [
-            r'^Safety\s+observations?\b',
-            r'^Safety\s+actions?\b',
-            r'^Local.level\s+learning\b',
-            r'^Background\s+and\s+context\b',
-            r'^Appendix',
-            r'^References?\b',
-            r'^Endnotes?\b',
-            r'^Acknowledgements?\b',
-            r'^Glossary\b',
-            r'^Methodology\b',
-        ]
-        
-        for pattern in boundary_patterns:
-            if re.match(pattern, text_stripped, re.IGNORECASE):
-                return True
-        
-        return False
 
 
 class StrictRecommendationExtractor:
     """
-    Extract recommendations using semantic analysis and first-occurrence architecture.
+    Extract recommendations with aggressive pre-filtering.
+    Handles government-style numbered recommendations and general documents.
     """
     
+    # Length limits
     MAX_SENTENCE_LENGTH = 500
-    MAX_RECOMMENDATION_LENGTH = 1500
+    MAX_RECOMMENDATION_LENGTH = 1500  # Single recommendation should not exceed this
     MIN_RECOMMENDATION_LENGTH = 50
-    SEMANTIC_DEDUP_THRESHOLD = 0.85
     
     def __init__(self):
-        """Initialise with semantic analyser and patterns."""
-        self.analyser = SemanticAnalyser()
+        """Initialise with patterns and action verbs"""
         
         self.action_verbs = {
             'establish', 'implement', 'develop', 'create', 'improve', 'enhance',
@@ -349,25 +63,36 @@ class StrictRecommendationExtractor:
             'come', 'form', 'work', 'learn', 'drive', 'produce', 'require',
         }
         
-        # Section boundary markers for content extraction
-        self.section_markers = [
-            r'\bSafety\s+observations?\b',
-            r'\bSafety\s+actions?\b',
-            r'\bLocal.level\s+learning\b',
-            r'\bBackground\s+and\s+context\b',
-            r'\bAppendix(?:es)?(?:\s+\d+)?\b',
-            r'\bGlossary\b',
-            r'\bReferences\b',
-            r'\bEndnotes\b',
-            r'\bAcknowledgements?\b',
-            r'\bMethodology\b',
-            r'\bConclusion(?:s)?\b',
-            r'\bOur vision for\b',
-            r'\bHSIB\s+makes\s+the\s+following\b',  # End of recommendations section
+        self.recommending_entities = [
+            r'NHS\s+England',
+            r'NHS\s+Improvement',
+            r'HSSIB',
+            r'HSIB',
+            r'(?:the\s+)?(?:Home\s+Office|Cabinet\s+Office|Treasury)',
+            r'(?:the\s+)?(?:Department|Ministry)\s+(?:of|for)\s+[\w\s]+',
+            r'(?:the\s+)?(?:Secretary|Minister)\s+of\s+State',
+            r'(?:the\s+)?CQC|Care\s+Quality\s+Commission',
+            r'(?:the\s+)?IOPC',
+            r'(?:the\s+)?College\s+of\s+Policing',
+            r'(?:the\s+)?(?:ICS|ICB)s?',
+            r'(?:the\s+)?(?:Trust|Provider|Board)s?',
+            r'(?:the\s+)?Government',
+            r'(?:the\s+)?(?:Review|Committee|Panel|Commission|Inquiry)',
+            r'(?:All|Every)\s+(?:providers?|commissioners?|trusts?|boards?)',
+            r'Every\s+(?:provider\s+)?board',
+            r'(?:Professional\s+)?bodies',
+            r'(?:Local\s+)?(?:authorities|councils)',
+            r'DHSC',
+            r'NIHR',
+            r'Regulators?',
+            r'Inpatient\s+staff',
+            r'Government\s+ministers?',
+            r'Clinical\s+Commissioning\s+Groups?',
+            r'CCGs?',
         ]
     
     def fix_encoding(self, text: str) -> str:
-        """Fix common PDF extraction encoding issues."""
+        """Fix common PDF extraction encoding issues"""
         if not text:
             return ""
         
@@ -382,27 +107,47 @@ class StrictRecommendationExtractor:
         return text
     
     def clean_text(self, text: str) -> str:
-        """Clean text of noise and artifacts."""
+        """Clean text of noise and artifacts"""
         if not text:
             return ""
         
         text = self.fix_encoding(text)
         
         # Remove URLs
-        text = re.sub(r'https?://\S+', '', text)
-        text = re.sub(r'www\.\S+', '', text)
+        text = re.sub(r'https?://[^\s<>"\']+', '', text)
+        text = re.sub(r'www\.[^\s<>"\']+', '', text)
+        text = re.sub(r'[a-zA-Z0-9.-]+\.gov\.uk[^\s]*', '', text)
+        text = re.sub(r'[a-zA-Z0-9.-]+\.org\.uk[^\s]*', '', text)
+        text = re.sub(r'[a-zA-Z0-9.-]+\.nhs\.uk[^\s]*', '', text)
         
         # Remove timestamps
         text = re.sub(
-            r'\d{1,2}/\d{1,2}/\d{2,4},?\s*\d{1,2}:\d{2}\s*(?:AM|PM)?',
-            '', text, flags=re.IGNORECASE
+            r'\d{1,2}/\d{1,2}/\d{2,4},?\s*\d{1,2}:\d{2}\s*(?:AM|PM)?[^A-Z]*(?=[A-Z]|$)',
+            ' ', text, flags=re.IGNORECASE
         )
         
-        # Remove page numbers (short format only)
-        text = re.sub(r'\b(\d{1,2})/(\d{1,3})\b(?!\d)', '', text)
+        # Remove page numbers (but NOT recommendation IDs like 2018/006 or R/2023/220)
+        text = re.sub(r'\b(\d{1,2})/(\d{1,3})\b', '', text)
+        text = re.sub(r'\bPage\s+\d+\s+(?:of\s+\d+)?', '', text, flags=re.IGNORECASE)
         
-        # Remove footnote references
-        text = re.sub(r'\[\d+\]', '', text)
+        # Remove GOV.UK footer artifacts
+        text = re.sub(
+            r'Rapid review into data on mental health inpatient settings:.*?GOV\.?UK',
+            '', text, flags=re.IGNORECASE
+        )
+        text = re.sub(r'final report and recommendations\s*-?\s*GOV\.?UK?', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'-\s*GOV\.?\s*UK?\s*', '', text, flags=re.IGNORECASE)
+        
+        # Normalise duplicated section headings
+        text = re.sub(
+            r'\bRecommendations\s+Recommendation\s+(\d+)\b',
+            r'Recommendation \1',
+            text,
+            flags=re.IGNORECASE,
+        )
+        
+        # Remove "UK " prefix
+        text = re.sub(r'^UK\s+', '', text)
         
         # Clean up whitespace
         text = re.sub(r'\s+', ' ', text)
@@ -410,84 +155,8 @@ class StrictRecommendationExtractor:
         
         return text
     
-    def _find_recommendation_end(self, text: str, start_pos: int, next_rec_pos: int) -> int:
-        """
-        Find the proper end position for a recommendation.
-        Uses both structural markers and semantic analysis.
-        """
-        # If there's a next recommendation, that's our hard boundary
-        if next_rec_pos < len(text):
-            search_end = next_rec_pos
-        else:
-            search_end = len(text)
-        
-        # Look for section markers within the block
-        search_text = text[start_pos:search_end]
-        earliest_boundary = search_end
-        
-        for pattern in self.section_markers:
-            match = re.search(pattern, search_text[50:], re.IGNORECASE)  # Skip first 50 chars
-            if match:
-                boundary = start_pos + 50 + match.start()
-                if boundary < earliest_boundary:
-                    earliest_boundary = boundary
-        
-        # Also use semantic boundary detection if available
-        if self.analyser.available:
-            semantic_boundary = self.analyser.find_content_boundary(text, start_pos)
-            if semantic_boundary < earliest_boundary:
-                earliest_boundary = semantic_boundary
-        
-        return earliest_boundary
-    
-    def _extract_recommendation_content(self, raw_block: str, rec_id: str) -> str:
-        """
-        Extract the actual recommendation content from a raw block.
-        Finds "That [Entity]" pattern or directive content.
-        """
-        if not raw_block:
-            return ""
-        
-        cleaned = self.clean_text(raw_block)
-        
-        # Look for "That [Entity]" pattern (common in HSIB)
-        that_match = re.search(
-            r'\bThat\s+(?:the\s+)?(?:NHS|CQC|Care|Department|Trust|Government|DHSC|NIHR|Royal|National)',
-            cleaned,
-            re.IGNORECASE
-        )
-        if that_match:
-            start_pos = that_match.start()
-            return cleaned[start_pos:].strip()
-        
-        # Look for entity + "should/must" pattern
-        entity_match = re.search(
-            r'(?:NHS\s+England|CQC|Care\s+Quality|Department|Trust|Government|DHSC)\s+(?:should|must|requires?)',
-            cleaned,
-            re.IGNORECASE
-        )
-        if entity_match:
-            start_pos = entity_match.start()
-            return cleaned[start_pos:].strip()
-        
-        # Look for "HSIB recommends" pattern
-        hsib_match = re.search(r'HSIB\s+recommends\s+that', cleaned, re.IGNORECASE)
-        if hsib_match:
-            start_pos = hsib_match.start()
-            return cleaned[start_pos:].strip()
-        
-        # If text starts with recommendation header, skip the header
-        header_match = re.match(
-            r'^(?:Safety\s+)?[Rr]ecommendation\s+(?:R/)?[\d/]+[:\s]+',
-            cleaned
-        )
-        if header_match:
-            return cleaned[header_match.end():].strip()
-        
-        return cleaned
-    
     def is_garbage(self, text: str, is_numbered_rec: bool = False) -> Tuple[bool, str]:
-        """First-pass filter: reject obvious garbage."""
+        """First-pass filter: reject obvious garbage before analysis."""
         if not text:
             return True, "empty"
         
@@ -496,83 +165,58 @@ class StrictRecommendationExtractor:
         if len(cleaned) < self.MIN_RECOMMENDATION_LENGTH:
             return True, "too_short"
         
-        if not is_numbered_rec and len(cleaned) > self.MAX_SENTENCE_LENGTH:
-            return True, "too_long"
+        if not is_numbered_rec:
+            if len(cleaned) > self.MAX_SENTENCE_LENGTH:
+                return True, "too_long"
         
-        # Check for corrupted text
+        if re.match(r'^(?:Appendix|Section|Chapter|Table|Figure|Footnote)\s+\d+', cleaned, re.IGNORECASE):
+            return True, "header"
+        
         special_chars = sum(1 for c in cleaned if not c.isalnum() and not c.isspace() and c not in '.,;:!?\'"-()[]')
         if len(cleaned) > 0 and special_chars / len(cleaned) > 0.12:
             return True, "corrupted"
         
+        if not is_numbered_rec:
+            digits = sum(1 for c in cleaned if c.isdigit())
+            if len(cleaned) > 0 and digits / len(cleaned) > 0.15:
+                return True, "too_many_numbers"
+        
         return False, ""
     
-    def is_valid_recommendation(self, text: str, is_numbered_rec: bool = False) -> Tuple[bool, float, str, str]:
-        """
-        Determine if text is a valid recommendation using semantic analysis.
-        Returns (is_valid, confidence, method, verb).
-        """
+    def is_meta_recommendation(self, text: str) -> bool:
+        """Check if text is talking ABOUT recommendations rather than being one."""
         if not text:
-            return False, 0.0, 'empty', 'unknown'
-        
-        cleaned = self.clean_text(text)
-        if not cleaned:
-            return False, 0.0, 'empty', 'unknown'
-        
-        # Use semantic analysis
-        is_rec, semantic_confidence = self.analyser.is_recommendation_like(cleaned)
-        
-        # If semantic analysis says it's NOT a recommendation, trust it
-        if not is_rec and semantic_confidence < 0.4:
-            return False, semantic_confidence, 'rejected_semantic', 'none'
-        
-        # Extract verb
-        verb = self._extract_verb(cleaned)
-        
-        # Determine method
-        method = self._determine_method(cleaned)
-        
-        # Adjust confidence based on method
-        if 'hsib' in method or 'numbered' in method:
-            confidence = max(semantic_confidence, 0.95)
-        elif method in ('entity_should', 'we_recommend', 'that_entity'):
-            confidence = max(semantic_confidence, 0.90)
-        else:
-            confidence = semantic_confidence
-        
-        return True, confidence, method, verb
-    
-    def _determine_method(self, text: str) -> str:
-        """Determine the extraction method based on text patterns."""
+            return False
         text_lower = text.lower()
         
-        if re.match(r'^safety\s+recommendation\s+r/\d{4}/\d{3}', text_lower):
-            match = re.search(r'r/\d{4}/\d{3}', text_lower)
-            return f"hsib_2023_{match.group().upper()}" if match else "hsib_2023"
+        meta_patterns = [
+            r'^the\s+recommendations?\s+(?:have|has|are|were|will|can|may|should|from)',
+            r'^these\s+recommendations?\s+(?:will|can|should|may|have|are)',
+            r'^(?:our|their|its|his|her)\s+recommendations?',
+            r'recommendations?\s+(?:from|of|in)\s+(?:this|the)\s+(?:review|report)',
+            r'(?:implement|implementing|implemented)\s+(?:these|the|all|our)?\s*recommendations?',
+            r'once\s+implemented.*recommendations?',
+            r'recommendations?\s+(?:will|can|should)\s+help',
+            r'i\s+(?:truly\s+)?believe.*recommendations?',
+            r'i\s+hope.*recommendations?',
+            r'^our\s+objectives\s+were\s+to',
+            r'^we\s+(?:were|are)\s+(?:told|informed|advised)',
+            r'^when\s+we\s+(?:first\s+)?established',
+            r'^we\s+found\s+that',
+            r'^they\s+proposed\s+practical',
+            r'^this\s+document\s+outlines',
+            r'^the\s+insights\s+below',
+            r'^the\s+goal\s+is\s+to\s+provide',
+        ]
         
-        if re.match(r'^recommendation\s+\d{4}/\d{3}', text_lower):
-            match = re.search(r'\d{4}/\d{3}', text_lower)
-            return f"hsib_2018_{match.group()}" if match else "hsib_2018"
+        for pattern in meta_patterns:
+            if re.search(pattern, text_lower):
+                return True
         
-        if re.match(r'^recommendation\s+\d{1,2}\b', text_lower):
-            match = re.search(r'\d{1,2}', text_lower)
-            return f"numbered_recommendation_{match.group()}" if match else "numbered"
-        
-        if re.match(r'^that\s+(?:the\s+)?(?:nhs|cqc|care|department|trust|government)', text_lower):
-            return "that_entity"
-        
-        if re.search(r'(?:nhs|cqc|trust|department|government)\s+(?:england\s+)?should', text_lower):
-            return "entity_should"
-        
-        if 'we recommend' in text_lower or 'hsib recommends' in text_lower:
-            return "we_recommend"
-        
-        if re.search(r'\b(should|must|shall)\s+\w+', text_lower):
-            return "modal_verb"
-        
-        return "semantic_match"
+        return False
     
     def _extract_verb(self, text: str) -> str:
-        """Extract the main action verb from recommendation text."""
+        """Extract the main action verb from recommendation text"""
         if not text:
             return 'unknown'
         
@@ -584,16 +228,235 @@ class StrictRecommendationExtractor:
             if verb in self.action_verbs:
                 return verb
         
+        recommends_match = re.search(r'\brecommends?\s+that\s+[\w\s]+\s+(\w+)', text_lower)
+        if recommends_match:
+            verb = recommends_match.group(1)
+            if verb in self.action_verbs:
+                return verb
+        
         for verb in sorted(self.action_verbs, key=len, reverse=True):
             if re.search(rf'\b{verb}s?\b', text_lower):
                 return verb
         
         return 'unknown'
     
+    def _is_section_boundary(self, text: str, position: int) -> bool:
+        """
+        GENERIC section boundary detection.
+        Returns True if position appears to be at a major section break.
+        """
+        if position >= len(text):
+            return True
+        
+        # Look at text from this position
+        remaining = text[position:position + 200]
+        
+        # Check for numbered section headers: "1 Background", "2. Analysis", "1.1 Introduction"
+        if re.match(r'^\s*\d+\.?\d*\.?\s+[A-Z][a-z]+', remaining):
+            return True
+        
+        # Check for title case headers on their own line
+        lines = remaining.split('\n')
+        if lines:
+            first_line = lines[0].strip()
+            # Title case header: "Background and Context", "Local-level Learning"
+            if (len(first_line) > 5 and len(first_line) < 80 and 
+                first_line[0].isupper() and
+                not first_line.endswith('.') and
+                not first_line.startswith(('The ', 'A ', 'An ', 'This ', 'That ', 'It '))):
+                words = first_line.split()
+                if len(words) >= 2:
+                    # Most words should be capitalised (title case)
+                    caps = sum(1 for w in words if w[0].isupper() or w.lower() in ['and', 'the', 'of', 'for', 'to', 'in', 'a', 'an'])
+                    if caps >= len(words) * 0.7:
+                        return True
+        
+        return False
+    
+    def _find_recommendation_end_generic(self, text: str, start_pos: int, next_rec_pos: int) -> int:
+        """
+        GENERIC end-of-recommendation detection.
+        Uses structural heuristics rather than document-specific patterns.
+        """
+        # If there's a next recommendation, that's our hard boundary
+        if next_rec_pos < len(text):
+            search_limit = next_rec_pos
+        else:
+            search_limit = len(text)
+        
+        # Start searching after the recommendation header
+        search_start = start_pos + 50
+        
+        # Universal end markers (these work across document types)
+        universal_markers = [
+            r'\bAppendix(?:es)?(?:\s+[A-Z0-9]+)?\b',
+            r'\bGlossary\b',
+            r'\bReferences\b',
+            r'\bEndnotes?\b',
+            r'\bAcknowledgements?\b',
+            r'\bBibliography\b',
+            r'\bFurther\s+(?:reading|information)\b',
+            r'\bAbout\s+(?:this|the)\s+(?:report|review|investigation|document)\b',
+            r'©\s*(?:Crown\s+)?[Cc]opyright',
+            r'\bAll\s+content\s+is\s+available\s+under\b',
+            r'\bISBN\b',
+            # Section transitions
+            r'\bSafety\s+[Oo]bservation(?:s)?(?:\s+[A-Z0-9/]+)?:',
+            r'\bLocal-level\s+learning\b',
+            r'\bBackground\s+and\s+context\b',
+            r'\bFindings\s+and\s+analysis\b',
+            r'\bSummary\s+of\s+(?:findings|recommendations)\b',
+            r'\bThe\s+investigation\s+(?:found|makes|identified)\b',
+            # Numbered sections (generic)
+            r'\n\s*\d+\.?\s+[A-Z][a-z]+(?:\s+[a-z]+){0,3}\s*\n',
+        ]
+        
+        earliest_boundary = search_limit
+        
+        for pattern in universal_markers:
+            match = re.search(pattern, text[search_start:search_limit], re.IGNORECASE)
+            if match:
+                boundary = search_start + match.start()
+                if boundary < earliest_boundary:
+                    earliest_boundary = boundary
+        
+        # Also check for structural boundaries (title case headers, etc.)
+        # Scan through looking for section breaks
+        check_positions = range(search_start, min(earliest_boundary, search_start + 3000), 100)
+        for pos in check_positions:
+            if self._is_section_boundary(text, pos):
+                # Found a structural boundary
+                if pos < earliest_boundary:
+                    earliest_boundary = pos
+                break
+        
+        # Apply maximum length safeguard
+        max_end = start_pos + self.MAX_RECOMMENDATION_LENGTH
+        if earliest_boundary > max_end:
+            # Try to find a sentence boundary near the max length
+            text_chunk = text[start_pos:max_end]
+            last_period = text_chunk.rfind('. ')
+            if last_period > self.MIN_RECOMMENDATION_LENGTH:
+                earliest_boundary = start_pos + last_period + 1
+            else:
+                earliest_boundary = max_end
+        
+        return earliest_boundary
+    
+    def is_valid_recommendation(self, text: str, is_numbered_rec: bool = False) -> Tuple[bool, float, str, str]:
+        """Determine if text is a valid recommendation."""
+        if not text:
+            return False, 0.0, 'empty', 'unknown'
+        
+        cleaned = self.clean_text(text)
+        if not cleaned:
+            return False, 0.0, 'empty', 'unknown'
+        
+        text_lower = cleaned.lower()
+        
+        if not is_numbered_rec:
+            if len(cleaned) > self.MAX_SENTENCE_LENGTH:
+                return False, 0.0, 'too_long', 'none'
+        
+        # HSSIB 2023+ format: "Safety recommendation R/2023/220:"
+        hsib_2023_match = re.match(
+            r'^Safety\s+recommendation\s+(R/\d{4}/\d{3})[:\s]+(.+)',
+            cleaned,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if hsib_2023_match:
+            rec_num = hsib_2023_match.group(1)
+            rec_text = hsib_2023_match.group(2)
+            verb = self._extract_verb(rec_text)
+            return True, 0.98, f'hsib_recommendation_{rec_num}', verb
+        
+        # HSIB 2018 format: "Recommendation 2018/006:"
+        hsib_2018_match = re.match(
+            r'^Recommendation\s+(\d{4}/\d{3})[:\s]+(.+)',
+            cleaned,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if hsib_2018_match:
+            rec_num = hsib_2018_match.group(1)
+            rec_text = hsib_2018_match.group(2)
+            verb = self._extract_verb(rec_text)
+            return True, 0.98, f'hsib_recommendation_{rec_num}', verb
+        
+        # Standard numbered recommendation: "Recommendation 1"
+        numbered_match = re.match(
+            r'^(?:Recommendations?\s+)?Recommendation\s+(\d{1,2})(?:\s+(\d))?\s+(.+)',
+            cleaned,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if numbered_match:
+            num_part = numbered_match.group(1)
+            extra_digit = numbered_match.group(2)
+            if extra_digit and len(num_part) == 1:
+                rec_num = f"{num_part}{extra_digit}"
+            else:
+                rec_num = num_part
+            rec_text = numbered_match.group(3)
+            verb = self._extract_verb(rec_text)
+            return True, 0.98, f'numbered_recommendation_{rec_num}', verb
+        
+        # "HSSIB recommends that" pattern
+        hssib_recommends = re.match(
+            r'^HSSIB\s+recommends\s+that\s+(.+)',
+            cleaned,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if hssib_recommends:
+            rec_text = hssib_recommends.group(1)
+            verb = self._extract_verb(rec_text)
+            return True, 0.96, 'hssib_recommends', verb
+        
+        # Entity + should pattern
+        for entity_pattern in self.recommending_entities:
+            pattern = rf'{entity_pattern}\s+should\s+(?:also\s+)?(?:urgently\s+)?(?:\w+ly\s+)?(\w+)'
+            match = re.search(pattern, cleaned, re.IGNORECASE)
+            if match and match.group(1):
+                verb = match.group(1).lower()
+                if verb in self.action_verbs or verb.endswith('e') or verb.endswith('ise') or verb.endswith('ize'):
+                    return True, 0.95, 'entity_should', verb
+        
+        # "We recommend" pattern
+        if re.search(r'\bwe\s+recommend\b', text_lower):
+            verb = self._extract_verb(cleaned)
+            return True, 0.90, 'we_recommend', verb
+        
+        # "It is recommended that" pattern
+        if re.search(r'\bit\s+is\s+recommended\s+that\b', text_lower):
+            verb = self._extract_verb(cleaned)
+            return True, 0.90, 'it_is_recommended', verb
+        
+        # "should be" + action (passive)
+        should_be_match = re.search(r'(\w+(?:\s+\w+)?)\s+should\s+be\s+(\w+ed)\b', text_lower)
+        if should_be_match:
+            subject = should_be_match.group(1)
+            verb = should_be_match.group(2)
+            if subject not in ['this', 'it', 'that', 'recommendation', 'the recommendation']:
+                return True, 0.85, 'should_be_passive', verb
+        
+        # Modal + action verb
+        modal_match = re.search(r'\b(should|must|shall)\s+(\w+)\b', text_lower)
+        if modal_match:
+            verb = modal_match.group(2)
+            if verb in self.action_verbs:
+                words = cleaned.split()
+                if len(words) >= 10:
+                    if not re.search(r'recommendations?\s+(?:should|must|shall)', text_lower):
+                        return True, 0.80, 'modal_verb', verb
+        
+        # Imperative starting with action verb
+        first_word = cleaned.split()[0].lower() if cleaned.split() else ''
+        if first_word in self.action_verbs:
+            if len(cleaned.split()) >= 10:
+                return True, 0.75, 'imperative', first_word
+        
+        return False, 0.0, 'none', 'unknown'
+    
     def extract_recommendations(self, text: str, min_confidence: float = 0.75) -> List[Dict]:
-        """
-        Extract recommendations using semantic analysis and first-occurrence architecture.
-        """
+        """Extract recommendations from text."""
         recommendations = []
         
         if not text or not text.strip():
@@ -605,7 +468,7 @@ class StrictRecommendationExtractor:
         cleaned_full_text = self.clean_text(text)
         
         # =======================================================================
-        # PHASE 1: HSSIB 2023+ format (Safety recommendation R/YYYY/NNN)
+        # PHASE 1: Try HSSIB 2023+ format first (Safety recommendation R/YYYY/NNN)
         # =======================================================================
         hsib_2023_pattern = re.compile(
             r'Safety\s+recommendation\s+(R/\d{4}/\d{3})[:\s]',
@@ -614,15 +477,15 @@ class StrictRecommendationExtractor:
         hsib_2023_matches = list(hsib_2023_pattern.finditer(cleaned_full_text))
         
         if hsib_2023_matches:
-            logger.info(f"Found {len(hsib_2023_matches)} HSSIB 2023+ recommendation headers")
-            recommendations = self._extract_first_occurrences(
+            logger.info(f"Found {len(hsib_2023_matches)} HSSIB 2023+ recommendations")
+            recommendations = self._extract_from_matches(
                 cleaned_full_text, hsib_2023_matches, 'hsib_2023', min_confidence
             )
             if recommendations:
-                return self._semantic_deduplicate(recommendations)
+                return self._deduplicate(recommendations)
         
         # =======================================================================
-        # PHASE 2: HSIB 2018 format (Recommendation YYYY/NNN)
+        # PHASE 2: Try HSIB 2018 format (Recommendation YYYY/NNN)
         # =======================================================================
         hsib_2018_pattern = re.compile(
             r'Recommendation\s+(\d{4}/\d{3})[:\s]',
@@ -631,12 +494,12 @@ class StrictRecommendationExtractor:
         hsib_2018_matches = list(hsib_2018_pattern.finditer(cleaned_full_text))
         
         if hsib_2018_matches:
-            logger.info(f"Found {len(hsib_2018_matches)} HSIB 2018 recommendation headers")
-            recommendations = self._extract_first_occurrences(
+            logger.info(f"Found {len(hsib_2018_matches)} HSIB 2018 recommendations")
+            recommendations = self._extract_from_matches(
                 cleaned_full_text, hsib_2018_matches, 'hsib_2018', min_confidence
             )
             if recommendations:
-                return self._semantic_deduplicate(recommendations)
+                return self._deduplicate(recommendations)
         
         # =======================================================================
         # PHASE 3: Standard "Recommendation N" format
@@ -648,17 +511,17 @@ class StrictRecommendationExtractor:
         standard_matches = list(standard_pattern.finditer(cleaned_full_text))
         
         if standard_matches:
-            logger.info(f"Found {len(standard_matches)} standard recommendation headers")
-            recommendations = self._extract_first_occurrences(
+            logger.info(f"Found {len(standard_matches)} standard recommendation headings")
+            recommendations = self._extract_from_matches(
                 cleaned_full_text, standard_matches, 'standard', min_confidence
             )
             if recommendations:
-                return self._semantic_deduplicate(recommendations)
+                return self._deduplicate(recommendations)
         
         # =======================================================================
-        # PHASE 4: Sentence-based fallback with semantic filtering
+        # PHASE 4: Fallback to sentence extraction
         # =======================================================================
-        logger.info("No numbered recommendations found, using sentence extraction")
+        logger.info("No numbered recommendations found, falling back to sentence extraction")
         
         sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
         
@@ -667,6 +530,9 @@ class StrictRecommendationExtractor:
             
             is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=False)
             if is_garbage:
+                continue
+            
+            if self.is_meta_recommendation(cleaned):
                 continue
             
             is_rec, confidence, method, verb = self.is_valid_recommendation(cleaned, is_numbered_rec=False)
@@ -681,112 +547,78 @@ class StrictRecommendationExtractor:
                     'in_section': False,
                 })
         
-        return self._semantic_deduplicate(recommendations)
+        return self._deduplicate(recommendations)
     
-    def _extract_first_occurrences(
-        self,
-        text: str,
-        matches: List,
-        pattern_type: str,
+    def _extract_from_matches(
+        self, 
+        text: str, 
+        matches: List, 
+        pattern_type: str, 
         min_confidence: float
     ) -> List[Dict]:
-        """
-        Extract recommendations from FIRST occurrence of each unique ID only.
-        This prevents duplicate extraction when recommendations appear multiple times.
-        """
+        """Extract recommendations from regex matches with generic boundary detection."""
         recommendations = []
-        seen_ids: Set[str] = set()
         
         for idx, match in enumerate(matches):
-            # Get recommendation ID
-            if pattern_type == 'hsib_2023':
-                rec_id = match.group(1)  # e.g., "R/2023/220"
-            elif pattern_type == 'hsib_2018':
-                rec_id = match.group(1)  # e.g., "2018/006"
-            elif pattern_type == 'standard':
-                heading_num = match.group(1)
-                extra_digit = match.group(2) if match.lastindex and match.lastindex >= 2 else None
-                rec_id = f"{heading_num}{extra_digit}" if extra_digit and len(heading_num) == 1 else heading_num
-            else:
-                rec_id = f"rec_{idx + 1}"
-            
-            # FIRST-OCCURRENCE CHECK: Skip if we've already seen this ID
-            if rec_id in seen_ids:
-                logger.debug(f"Skipping duplicate occurrence of {rec_id}")
-                continue
-            
-            seen_ids.add(rec_id)
-            
-            # Find boundaries
             start = match.start()
             next_rec_pos = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
-            end = self._find_recommendation_end(text, start, next_rec_pos)
             
-            # Extract raw block
+            # Use generic boundary detection
+            end = self._find_recommendation_end_generic(text, start, next_rec_pos)
+            
             raw_block = text[start:end]
+            cleaned = self.clean_text(raw_block)
             
-            # Get clean recommendation content
-            content = self._extract_recommendation_content(raw_block, rec_id)
-            
-            if not content:
-                continue
-            
-            is_garbage, reason = self.is_garbage(content, is_numbered_rec=True)
+            is_garbage, reason = self.is_garbage(cleaned, is_numbered_rec=True)
             if is_garbage:
-                logger.debug(f"Skipping {rec_id}: {reason}")
+                logger.debug(f"Skipping {pattern_type} rec {idx}: {reason}")
                 continue
             
-            is_rec, confidence, method, verb = self.is_valid_recommendation(content, is_numbered_rec=True)
+            is_rec, confidence, method, verb = self.is_valid_recommendation(cleaned, is_numbered_rec=True)
             
             if is_rec and confidence >= min_confidence:
-                # Reconstruct with header if needed
-                if not content.lower().startswith(('recommendation', 'safety recommendation', 'that ')):
-                    if pattern_type == 'hsib_2023':
-                        content = f"Safety recommendation {rec_id}: {content}"
+                # Extract recommendation number based on pattern type
+                if pattern_type == 'hsib_2023':
+                    rec_num = match.group(1)  # e.g., "R/2023/220"
+                elif pattern_type == 'hsib_2018':
+                    rec_num = match.group(1)  # e.g., "2018/006"
+                elif pattern_type == 'standard':
+                    heading_num = match.group(1)
+                    extra_digit = match.group(2) if match.lastindex >= 2 else None
+                    if extra_digit and len(heading_num) == 1:
+                        rec_num = f"{heading_num}{extra_digit}"
                     else:
-                        content = f"Recommendation {rec_id}: {content}"
+                        rec_num = heading_num
+                    # Normalise text
+                    norm_pattern = r'^(?:Recommendations?\s+)?Recommendation\s+(\d{1,2})(?:\s+(\d))?\b'
+                    cleaned = re.sub(norm_pattern, f"Recommendation {rec_num}", cleaned, count=1, flags=re.IGNORECASE)
+                else:
+                    rec_num = f"rec_{idx + 1}"
                 
                 recommendations.append({
-                    'text': content,
+                    'text': cleaned,
                     'verb': verb,
                     'method': method,
                     'confidence': round(confidence, 3),
-                    'position': len(recommendations),
+                    'position': idx,
                     'in_section': True,
-                    'rec_number': rec_id,
+                    'rec_number': rec_num,
                 })
         
         return recommendations
     
-    def _semantic_deduplicate(self, recommendations: List[Dict]) -> List[Dict]:
-        """
-        Remove duplicate recommendations using semantic similarity.
-        Catches near-duplicates that first-occurrence might miss.
-        """
-        if not recommendations:
-            return []
-        
+    def _deduplicate(self, recommendations: List[Dict]) -> List[Dict]:
+        """Remove duplicate recommendations"""
+        seen = set()
         unique = []
         
         for rec in recommendations:
-            is_duplicate = False
-            
-            for existing in unique:
-                if self.analyser.are_semantically_similar(
-                    rec['text'], 
-                    existing['text'],
-                    threshold=self.SEMANTIC_DEDUP_THRESHOLD
-                ):
-                    is_duplicate = True
-                    logger.debug(f"Semantic duplicate: {rec.get('rec_number', 'N/A')}")
-                    break
-            
-            if not is_duplicate:
+            key = re.sub(r'\s+', ' ', rec['text'].lower().strip())[:150]
+            if key not in seen:
+                seen.add(key)
                 unique.append(rec)
         
-        if len(recommendations) != len(unique):
-            logger.info(f"Semantic dedup: {len(recommendations)} → {len(unique)}")
-        
+        logger.info(f"Found {len(unique)} recommendations")
         return unique
     
     def get_statistics(self, recommendations: List[Dict]) -> Dict:
@@ -801,7 +633,6 @@ class StrictRecommendationExtractor:
                 'top_verbs': {},
                 'high_confidence': 0,
                 'medium_confidence': 0,
-                'semantic_available': self.analyser.available,
             }
         
         verb_counts = Counter(r['verb'] for r in recommendations)
@@ -817,11 +648,10 @@ class StrictRecommendationExtractor:
             'in_section_count': in_section,
             'high_confidence': sum(1 for r in recommendations if r['confidence'] >= 0.9),
             'medium_confidence': sum(1 for r in recommendations if 0.75 <= r['confidence'] < 0.9),
-            'semantic_available': self.analyser.available,
         }
 
 
-# Backward compatibility
+# Backward compatibility alias
 AdvancedRecommendationExtractor = StrictRecommendationExtractor
 
 
