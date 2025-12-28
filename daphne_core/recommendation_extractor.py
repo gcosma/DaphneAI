@@ -1,10 +1,14 @@
 """
-Recommendation Extractor v3.0
+Recommendation Extractor v3.1
 Extracts recommendation blocks from government and health sector documents.
+
+v3.1 Changes:
+- FIXED: Boundary detection now catches inline "Recommendation N" patterns
+- Handles "Recommendation 1 1" (spaced digits) correctly as boundaries
+- Prevents Recommendation N from bleeding into Recommendation N-1
 
 v3.0 Changes:
 - GENERIC boundary detection (not document-specific patterns)
-- Removed "genuine" wording throughout
 - Intelligent end-of-recommendation detection using structural heuristics
 - Maximum length safeguards for final recommendations
 - Works across HSIB, HSSIB, standard government, and other formats
@@ -277,6 +281,9 @@ class StrictRecommendationExtractor:
         """
         GENERIC end-of-recommendation detection.
         Uses structural heuristics rather than document-specific patterns.
+        
+        v3.1 FIX: Now checks for inline "Recommendation N" patterns that might
+        have been missed, especially when digits are spaced (e.g., "Recommendation 1 1")
         """
         # If there's a next recommendation, that's our hard boundary
         if next_rec_pos < len(text):
@@ -286,6 +293,23 @@ class StrictRecommendationExtractor:
         
         # Start searching after the recommendation header
         search_start = start_pos + 50
+        
+        # =====================================================================
+        # v3.1 FIX: Check for inline "Recommendation N" patterns that might have
+        # been missed. This catches cases where "Recommendation 1 1" (for 11) or
+        # similar patterns appear inline and weren't detected as a heading boundary.
+        # =====================================================================
+        inline_rec_pattern = re.compile(
+            r'\bRecommendation\s+\d{1,2}(?:\s+\d)?\s+(?:All|The|NHS|Every|Provider|Trust|Board|ICS|CQC|DHSC|Ward|More|Professional|Except)',
+            re.IGNORECASE
+        )
+        inline_match = inline_rec_pattern.search(text[search_start:search_limit])
+        if inline_match:
+            # Found another recommendation start inline - use that as boundary
+            potential_end = search_start + inline_match.start()
+            if potential_end < search_limit:
+                logger.debug(f"Found inline recommendation boundary at position {potential_end}")
+                search_limit = potential_end
         
         # Universal end markers (these work across document types)
         universal_markers = [
