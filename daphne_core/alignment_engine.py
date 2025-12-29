@@ -549,41 +549,33 @@ def is_hsib_response_document(text: str) -> bool:
     """
     Detect if a document is an HSIB/HSSIB-style response document.
     
-    v2.4 FIX: More sensitive detection for HSIB format
+    v2.5 FIX: Ultra-forgiving detection for PyPDF2 mangled text
     """
     if not text:
         return False
     
-    hsib_indicators = [
-        r'\bHSIB\s+recommends\b',
-        r'\bHSSIB\s+recommends\b',
-        r'\bSafety\s+recommendation\s+R/\d{4}/\d{3}\b',
-        r'\bRecommendation\s+\d{4}/\d{3}\b',
-        r'(?:^|\n)\s*Response\s*(?:\n|[A-Z])',  # More flexible Response pattern
-    ]
+    # Very forgiving HSIB recommendation patterns
+    # Handles: "R/2024/025", "2018/006", "R / 2024 / 025", "2018 / 006"
+    has_hsib_rec = bool(re.search(r'[Rr]ecommendation\s*[R/]?\s*\d{4}\s*/\s*\d{3}', text))
     
-    # Count distinct indicator types found
-    indicator_types_found = 0
-    for pattern in hsib_indicators:
-        if re.search(pattern, text, re.IGNORECASE | re.MULTILINE):
-            indicator_types_found += 1
+    # Very forgiving Response header pattern
+    # Handles: "Response", "Response\n", "ResponseNHS", etc.
+    has_response_header = bool(re.search(r'\bResponse\b', text, re.IGNORECASE))
     
-    # HSIB format needs: recommendation pattern + response pattern
-    # More lenient: just 1 indicator is enough if it's the right one
-    has_hsib_rec = bool(re.search(r'(?:Safety\s+)?[Rr]ecommendation\s+(?:R/)?\d{4}/\d{3}', text))
-    has_response_header = bool(re.search(r'(?:^|\n)\s*Response\s*(?:\n|[A-Z])', text, re.MULTILINE))
+    # HSIB/HSSIB mentions
+    has_hsib_mention = bool(re.search(r'\bH[SS]I?B\b', text, re.IGNORECASE))
     
     # If we have HSIB-style recommendation IDs, it's definitely HSIB format
     if has_hsib_rec:
         logger.info("✅ HSIB format detected: Found HSIB-style recommendation IDs")
         return True
     
-    # Fallback: if we have Response headers and at least one other indicator
-    if has_response_header and indicator_types_found >= 2:
-        logger.info("✅ HSIB format detected: Found Response headers + indicators")
+    # Or if we have HSIB mentions + Response headers (probably HSIB)
+    if has_hsib_mention and has_response_header:
+        logger.info("✅ HSIB format detected: Found HSIB mentions + Response headers")
         return True
     
-    logger.info(f"❌ HSIB format NOT detected (indicators: {indicator_types_found}, has_rec: {has_hsib_rec}, has_resp: {has_response_header})")
+    logger.info(f"❌ HSIB format NOT detected (has_rec: {has_hsib_rec}, has_resp: {has_response_header}, has_hsib: {has_hsib_mention})")
     return False
      
 def extract_target_org_from_text(text: str) -> Optional[str]:
