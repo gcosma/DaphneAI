@@ -748,8 +748,10 @@ def is_hsib_response_document(text: str) -> bool:
         return False
     
     # Count standalone "Response" headers
+    # NOTE: PyPDF2 sometimes merges "Response" with following text (no newline),
+    # so we also match Response followed by uppercase letter
     response_header_pattern = re.compile(
-        r'(?:^|\n)\s*Response\s*\n',
+        r'(?:^|\n)\s*Response\s*(?:\n|(?=[A-Z]))(?! ?received)',
         re.IGNORECASE | re.MULTILINE
     )
     response_count = len(list(response_header_pattern.finditer(text)))
