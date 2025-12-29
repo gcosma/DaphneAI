@@ -756,8 +756,11 @@ def is_hsib_response_document(text: str) -> bool:
     )
     response_count = len(list(response_header_pattern.finditer(text)))
     
+    logger.info(f"HSIB detection: found {response_count} Response headers")
+    
     # If 3+ standalone Response headers, it's likely HSIB format
     if response_count >= 3:
+        logger.info("Detected HSIB format: 3+ Response headers")
         return True
     
     # Check for other HSIB indicators
@@ -767,13 +770,34 @@ def is_hsib_response_document(text: str) -> bool:
         r'\bSafety\s+recommendation\s+R/\d{4}/\d{3}\b',
         r'\bRecommendation\s+\d{4}/\d{3}\b',
         r'\bIt\s+is\s+recommended\s+that\b',  # HSIB style recommendation text
+        r'\bSafety\s+recommendations\b',  # Section header in HSIB docs
+        r'\bResponse\s+received\s+on\b',  # HSIB response metadata
+        r'\bTimescale:\s*(?:completed|already|Spring|January|December)\b',  # HSIB timescale format
     ]
     
     indicator_matches = sum(1 for pattern in hsib_indicators 
                            if re.search(pattern, text, re.IGNORECASE | re.MULTILINE))
     
-    # If we have Response headers + other indicators, it's HSIB
-    return response_count >= 1 and indicator_matches >= 1
+    logger.info(f"HSIB detection: found {indicator_matches} HSIB indicators")
+    
+    # If we have ANY Response headers + HSIB indicators, it's HSIB
+    # Also trigger if we have multiple strong HSIB indicators even without Response headers
+    if response_count >= 1 and indicator_matches >= 1:
+        logger.info("Detected HSIB format: Response headers + indicators")
+        return True
+    
+    if indicator_matches >= 3:
+        logger.info("Detected HSIB format: 3+ indicators")
+        return True
+    
+    # Final check: count simple "Response" followed by newline anywhere
+    # This catches cases where the regex is too strict
+    simple_response_count = len(re.findall(r'\nResponse\n', text, re.IGNORECASE))
+    if simple_response_count >= 3:
+        logger.info(f"Detected HSIB format: {simple_response_count} simple Response headers")
+        return True
+    
+    return False
 
 
 def extract_hsib_responses(text: str) -> List[Dict]:
