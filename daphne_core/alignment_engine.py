@@ -548,21 +548,44 @@ def clean_pdf_artifacts(text: str) -> str:
 def is_hsib_response_document(text: str) -> bool:
     """
     Detect if a document is an HSIB/HSSIB-style response document.
+    
+    v2.4 FIX: More sensitive detection for HSIB format
     """
+    if not text:
+        return False
+    
     hsib_indicators = [
         r'\bHSIB\s+recommends\b',
         r'\bHSSIB\s+recommends\b',
         r'\bSafety\s+recommendation\s+R/\d{4}/\d{3}\b',
         r'\bRecommendation\s+\d{4}/\d{3}\b',
-        r'(?:^|\n)\s*Response\s*\n',  # Standalone "Response" header
+        r'(?:^|\n)\s*Response\s*(?:\n|[A-Z])',  # More flexible Response pattern
     ]
     
-    matches = sum(1 for pattern in hsib_indicators 
-                  if re.search(pattern, text, re.IGNORECASE | re.MULTILINE))
+    # Count distinct indicator types found
+    indicator_types_found = 0
+    for pattern in hsib_indicators:
+        if re.search(pattern, text, re.IGNORECASE | re.MULTILINE):
+            indicator_types_found += 1
     
-    return matches >= 2
-
-
+    # HSIB format needs: recommendation pattern + response pattern
+    # More lenient: just 1 indicator is enough if it's the right one
+    has_hsib_rec = bool(re.search(r'(?:Safety\s+)?[Rr]ecommendation\s+(?:R/)?\d{4}/\d{3}', text))
+    has_response_header = bool(re.search(r'(?:^|\n)\s*Response\s*(?:\n|[A-Z])', text, re.MULTILINE))
+    
+    # If we have HSIB-style recommendation IDs, it's definitely HSIB format
+    if has_hsib_rec:
+        logger.info("✅ HSIB format detected: Found HSIB-style recommendation IDs")
+        return True
+    
+    # Fallback: if we have Response headers and at least one other indicator
+    if has_response_header and indicator_types_found >= 2:
+        logger.info("✅ HSIB format detected: Found Response headers + indicators")
+        return True
+    
+    logger.info(f"❌ HSIB format NOT detected (indicators: {indicator_types_found}, has_rec: {has_hsib_rec}, has_resp: {has_response_header})")
+    return False
+     
 def extract_target_org_from_text(text: str) -> Optional[str]:
     """Extract target organisation from recommendation or response text."""
     if not text:
