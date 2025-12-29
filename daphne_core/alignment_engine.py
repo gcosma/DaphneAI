@@ -827,15 +827,41 @@ def extract_hsib_responses(text: str) -> List[Dict]:
     rec_matches.sort(key=lambda m: m.start())
     
     # Pattern to find "Response" headers
-    # NOTE: PyPDF2 sometimes merges "Response" with following text (no newline),
-    # e.g. "ResponseNHS England..." or "Responsesafe transition..."
-    # So we match: Response followed by newline OR followed by uppercase letter
-    # But exclude "Response received on..." which is metadata, not a response header
-    response_header_pattern = re.compile(
-        r'(?:^|\n)\s*Response\s*(?:\n|(?=[A-Z]))(?! ?received)',
-        re.IGNORECASE | re.MULTILINE
-    )
-    response_matches = list(response_header_pattern.finditer(text))
+    # NOTE: PyPDF2 text extraction is inconsistent - sometimes:
+    # - "Response\n" (proper newline)
+    # - "ResponseNHS England..." (merged with next text)
+    # - "Response Timescale:" (space then next word)
+    # We try multiple patterns from strict to lenient
+    
+    response_patterns = [
+        # Strict: Response on its own line
+        re.compile(r'(?:^|\n)\s*Response\s*\n', re.IGNORECASE | re.MULTILINE),
+        # Medium: Response followed by uppercase (merged text)
+        re.compile(r'(?:^|\n)\s*Response\s*(?=[A-Z])(?!.*received)', re.IGNORECASE | re.MULTILINE),
+        # Lenient: Response followed by Timescale (common in HSIB)
+        re.compile(r'(?:^|\n)\s*Response\s*(?=Timescale)', re.IGNORECASE | re.MULTILINE),
+        # Very lenient: Just "Response" as a word boundary, not followed by "received" or "to"
+        re.compile(r'\bResponse\b(?!\s+(?:received|to\s+recommendation))', re.IGNORECASE),
+    ]
+    
+    response_matches = []
+    for pattern in response_patterns:
+        matches = list(pattern.finditer(text))
+        logger.info(f"HSIB: Pattern {pattern.pattern[:40]}... found {len(matches)} matches")
+        response_matches.extend(matches)
+    
+    # Deduplicate by position (keep first match at each position)
+    seen_positions = set()
+    unique_matches = []
+    for match in sorted(response_matches, key=lambda m: m.start()):
+        # Consider matches within 10 chars as duplicates
+        pos_key = match.start() // 10
+        if pos_key not in seen_positions:
+            seen_positions.add(pos_key)
+            unique_matches.append(match)
+    response_matches = unique_matches
+    
+    logger.info(f"HSIB: Total unique Response headers: {len(response_matches)}")
     
     # Organisation headers that act as section boundaries
     org_header_pattern = re.compile(
