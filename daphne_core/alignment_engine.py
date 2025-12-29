@@ -2,7 +2,9 @@
 Core alignment engine: recommendation/response matching + response extraction.
 Moved out of the Streamlit UI to keep logic reusable and testable.
 
-v2.1 - Fixed HSIB/HSSIB response format support with PyPDF2 compatibility
+v2.3 - Added partial rejection detection ("do not support mandating" = Partial)
+     - Fixed HSIB/HSSIB response format support with PyPDF2 compatibility
+     - 3-tier matching: number_match → org_match → semantic
 """
 
 import logging
@@ -360,30 +362,51 @@ class RecommendationResponseMatcher:
     def _classify_response_status(self, text: str) -> Tuple[str, float]:
         """
         Classify government response status with context-aware detection.
+        v2.3 - Added partial rejection patterns for "do not support mandating"
         """
         text_lower = text.lower()
         
-        # PRIORITY 1: Check for full rejection
+        # PRIORITY 1: Check for full rejection (recommendation itself rejected)
         full_rejection_patterns = [
             r"\breject(?:s|ed)?\s+(?:this\s+|the\s+)?recommendation",
             r"\bdoes?\s+not\s+accept\s+(?:this\s+|the\s+)?recommendation",
             r"\bcannot\s+accept\s+(?:this\s+|the\s+)?recommendation",
+            r"\bwill\s+not\s+(?:be\s+)?implement(?:ing)?\s+(?:this\s+|the\s+)?recommendation",
+            r"\bdisagree(?:s|d)?\s+with\s+(?:this\s+|the\s+)?recommendation",
         ]
         for pattern in full_rejection_patterns:
             if re.search(pattern, text_lower):
                 return "Rejected", 0.9
         
-        # PRIORITY 2: Check for partial acceptance
+        # PRIORITY 2: Check for partial acceptance / partial rejection
+        # This catches "do not support mandating" + "however we expect" patterns
         partial_patterns = [
             r"\baccept(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation\s+)?in\s+(?:part|principle)",
             r"\bpartially\s+accept",
             r"\bsupport(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation\s+)?in\s+principle",
-            r"\bbroadly\s+support",
-            r"\bwill\s+consider\s+(?:the\s+|this\s+)?(?:recommendation|proposal)",
+            r"\bin\s+principle[,.]?\s+(?:we\s+)?(?:support|accept|agree)",
+            r"\bbroadly\s+support(?:s|ed)?(?!\s+(?:the|this)\s+recommendation)",
+            r"\baccept(?:s|ed)?\s+(?:the\s+)?(?:intent|spirit)",
+            r"\bunder\s+consideration",
+            r"\bwill\s+consider\s+(?:the\s+|this\s+)?(?:recommendation|proposal|request)",
+            r"\brequires?\s+further\s+consideration",
         ]
         for pattern in partial_patterns:
             if re.search(pattern, text_lower):
                 return "Partial", 0.85
+        
+        # Check for partial rejection of approach (not full rejection)
+        # e.g., "do not support mandating how systems review" = Partial
+        partial_rejection_patterns = [
+            r"\bdo(?:es)?\s+not\s+support\s+(?:mandating|requiring|prescribing)\b",
+            r"\bwill\s+not\s+(?:be\s+)?mandat(?:ing|e)\b",
+            r"\bcannot\s+(?:mandate|require|prescribe)\b",
+        ]
+        for pattern in partial_rejection_patterns:
+            if re.search(pattern, text_lower):
+                # Only mark as Partial if there's also positive language
+                if re.search(r"\b(?:recognis|support|expect|however|important)", text_lower):
+                    return "Partial", 0.8
         
         # PRIORITY 3: Check for explicit acceptance
         accepted_patterns = [
