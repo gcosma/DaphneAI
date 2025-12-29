@@ -100,6 +100,7 @@ def extract_source_organisation(resp_text: str) -> Optional[str]:
     - "CQC welcomes the recommendation..."
     - "NICE is currently reviewing..."
     - "We are happy to confirm..." + mentions RCPsych/Expert Working Group
+    - "Our current approach to inspection..." (CQC)
     """
     if not resp_text:
         return None
@@ -116,6 +117,9 @@ def extract_source_organisation(resp_text: str) -> Optional[str]:
         (r'^(?:The\s+)?DHSC', 'dhsc'),
         (r'^(?:The\s+)?NIHR', 'nihr'),
         (r'^(?:The\s+)?National\s+Institute\s+for\s+Health(?:\s+and\s+Care)?\s+Research', 'nihr'),
+        (r'^NHSE\b', 'nhs_england'),
+        (r'^Our\s+current\s+approach\s+to\s+inspection', 'cqc'),  # CQC inspection response
+        (r'^Funding\s+for\s+Children\s+and\s+Young\s+People', 'nhs_england'),  # NHS context
     ]
     
     for pattern, org in resp_starters:
@@ -124,7 +128,7 @@ def extract_source_organisation(resp_text: str) -> Optional[str]:
     
     # Check for characteristic response language
     response_indicators = [
-        (r'\bNHS\s+England\s+(?:has|will|is)\b', 'nhs_england'),
+        (r'\bNHS\s+England\s+(?:has|will|is|continues)\b', 'nhs_england'),
         (r'\bNHSE\s+(?:gathered|will|has)\b', 'nhs_england'),
         (r'\bCQC\s+(?:welcomes?|is|has|will)\b', 'cqc'),
         (r'\bCare\s+Quality\s+Commission\s+is\b', 'cqc'),
@@ -136,6 +140,7 @@ def extract_source_organisation(resp_text: str) -> Optional[str]:
         (r'\bwe\s+are\s+happy\s+to\s+confirm\b.*?(?:menopause|mental\s+health)', 'royal_college'),
         (r'\bNIHR\s+(?:funds?|will)\b', 'nihr'),
         (r'\bfunding\s+for\s+Children\s+and\s+Young\s+People', 'nhs_england'),
+        (r'\binspection\s+is\s+determined\s+by\s+the\s+Health\s+and\s+Social\s+Care\s+Act', 'cqc'),  # CQC
     ]
     
     for pattern, org in response_indicators:
@@ -804,7 +809,7 @@ def extract_hsib_responses(text: str) -> List[Dict]:
     
     # Organisation headers that act as section boundaries
     org_header_pattern = re.compile(
-        r'(?:^|\n)\s*(Department\s+of\s+Health\s+and\s+Social\s+Care|NHS\s+England(?:\s+and\s+NHS\s+Improvement)?|Care\s+Quality\s+Commission|National\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence|National\s+Institute|Royal\s+College\s+of\s+Psychiatrists|Royal\s+College|DHSC|NICE)\s*\n',
+        r'(?:^|\n)\s*(Department\s+of\s+Health\s+and\s+Social\s+Care|NHS\s+England(?:\s+and\s+NHS\s+Improvement)?|Care\s+Quality\s+Commission|National\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence|National\s+Institute|Royal\s+College\s+of\s+Psychiatrists|Royal\s+College|DHSC|NICE|CQC)\s*\n',
         re.IGNORECASE | re.MULTILINE
     )
     org_headers = list(org_header_pattern.finditer(text))
