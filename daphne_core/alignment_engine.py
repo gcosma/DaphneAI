@@ -85,6 +85,8 @@ class RecommendationResponseMatcher:
 
     def _semantic_matching(self, recommendations: List[Dict], responses: List[Dict], top_k: int) -> List[Dict]:
         responses_by_number: Dict[str, List[Dict]] = {}
+        responses_by_org: Dict[str, List[Dict]] = {}
+        
         for resp in responses:
             rec_num = resp.get("rec_number") or resp.get("rec_id")
             if rec_num:
@@ -92,6 +94,11 @@ class RecommendationResponseMatcher:
                 normalized = str(rec_num).replace("R/", "").strip()
                 responses_by_number.setdefault(rec_num, []).append(resp)
                 responses_by_number.setdefault(normalized, []).append(resp)
+            
+            # Index by organisation
+            source_org = resp.get("source_org") or extract_target_org_from_text(resp.get("text", ""))
+            if source_org:
+                responses_by_org.setdefault(source_org, []).append(resp)
 
         rec_texts = [r["text"] for r in recommendations]
         resp_texts = [r["cleaned_text"] for r in responses]
@@ -114,6 +121,9 @@ class RecommendationResponseMatcher:
                 best_score = 0.0
 
                 rec_num = self._extract_rec_number(rec["text"]) or rec.get("rec_number")
+                
+                # Extract target org from recommendation
+                target_org = extract_target_org_from_text(rec["text"])
                 
                 # Try ID-based matching first
                 if rec_num:
@@ -139,6 +149,28 @@ class RecommendationResponseMatcher:
                                 "match_method": "number_match",
                             }
 
+                # TIER 2: Try organisation-based matching
+                if best_match is None and target_org and target_org in responses_by_org:
+                    for resp in responses_by_org[target_org]:
+                        resp_text = resp["cleaned_text"]
+                        if self._is_self_match(rec["text"], resp_text):
+                            continue
+                        resp_idx = next((i for i, r in enumerate(responses) if r is resp), None)
+                        score = similarity_matrix[rec_idx][resp_idx] if resp_idx is not None else 0.6
+                        score = min(score + 0.3, 1.0)  # Boost for org match
+                        if score > best_score:
+                            best_score = score
+                            status, status_conf = self._classify_response_status(resp_text)
+                            best_match = {
+                                "response_text": resp_text,
+                                "similarity": score,
+                                "status": status,
+                                "status_confidence": status_conf,
+                                "source_document": resp.get("source_document", "unknown"),
+                                "match_method": "org_match",
+                            }
+
+                # TIER 3: Semantic matching fallback
                 if best_match is None:
                     similarities = similarity_matrix[rec_idx]
                     top_indices = np.argsort(similarities)[::-1][: top_k * 2]
@@ -508,6 +540,30 @@ def is_hsib_response_document(text: str) -> bool:
     return matches >= 2
 
 
+def extract_target_org_from_text(text: str) -> Optional[str]:
+    """Extract target organisation from recommendation or response text."""
+    if not text:
+        return None
+    
+    text_lower = text.lower()
+    
+    # Check for specific organisations (order matters - more specific first)
+    if 'national institute for health and care research' in text_lower or 'nihr' in text_lower:
+        return 'nihr'
+    if 'department of health and social care' in text_lower or 'dhsc' in text_lower:
+        return 'dhsc'
+    if 'nhs england' in text_lower:
+        return 'nhs_england'
+    if 'care quality commission' in text_lower or 'cqc' in text_lower:
+        return 'cqc'
+    if 'national institute for health and care excellence' in text_lower or 'nice' in text_lower:
+        return 'nice'
+    if 'royal college' in text_lower:
+        return 'royal_college'
+    
+    return None
+
+
 def extract_hsib_responses(text: str) -> List[Dict]:
     """
     Extract responses from HSIB-format response documents.
@@ -518,6 +574,7 @@ def extract_hsib_responses(text: str) -> List[Dict]:
     - Responses follow immediately after the recommendation they address
     
     v2.1 FIX: Uses multiple patterns for PyPDF2 compatibility
+    v2.2 FIX: Adds organisation extraction for better matching
     """
     if not text:
         return []
@@ -617,6 +674,9 @@ def extract_hsib_responses(text: str) -> List[Dict]:
             if prev_org_pos <= rec_match.start() < resp_match.start():
                 rec_id = rec_match.group(1)
         
+        # Extract organisation from response text
+        source_org = extract_target_org_from_text(response_text)
+        
         responses.append({
             'text': response_text,
             'position': start,
@@ -624,6 +684,7 @@ def extract_hsib_responses(text: str) -> List[Dict]:
             'confidence': 0.95,
             'rec_number': rec_id,
             'rec_id': rec_id,
+            'source_org': source_org,
         })
     
     logger.info(f"Extracted {len(responses)} HSIB responses")
