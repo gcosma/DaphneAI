@@ -801,8 +801,12 @@ def extract_hsib_responses(text: str) -> List[Dict]:
     rec_matches.sort(key=lambda m: m.start())
     
     # Pattern to find "Response" headers
+    # NOTE: PyPDF2 sometimes merges "Response" with following text (no newline),
+    # e.g. "ResponseNHS England..." or "Responsesafe transition..."
+    # So we match: Response followed by newline OR followed by uppercase letter
+    # But exclude "Response received on..." which is metadata, not a response header
     response_header_pattern = re.compile(
-        r'(?:^|\n)\s*Response\s*\n',
+        r'(?:^|\n)\s*Response\s*(?:\n|(?=[A-Z]))(?! ?received)',
         re.IGNORECASE | re.MULTILINE
     )
     response_matches = list(response_header_pattern.finditer(text))
