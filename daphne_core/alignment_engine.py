@@ -2,10 +2,7 @@
 Core alignment engine: recommendation/response matching + response extraction.
 Moved out of the Streamlit UI to keep logic reusable and testable.
 
-v2.4 Changes:
-- FIXED: Response extraction now properly detects "Recommendation N" boundaries
-- Handles "Recommendation 1 1" (spaced digits) as a boundary marker
-- Prevents recommendation text from bleeding into response blocks
+v2.0 - Added HSIB/HSSIB response format support
 """
 
 import logging
@@ -89,9 +86,12 @@ class RecommendationResponseMatcher:
     def _semantic_matching(self, recommendations: List[Dict], responses: List[Dict], top_k: int) -> List[Dict]:
         responses_by_number: Dict[str, List[Dict]] = {}
         for resp in responses:
-            if resp.get("rec_number"):
-                num = resp["rec_number"]
-                responses_by_number.setdefault(num, []).append(resp)
+            rec_num = resp.get("rec_number") or resp.get("rec_id")
+            if rec_num:
+                # Normalize ID for matching
+                normalized = str(rec_num).replace("R/", "").strip()
+                responses_by_number.setdefault(rec_num, []).append(resp)
+                responses_by_number.setdefault(normalized, []).append(resp)
 
         rec_texts = [r["text"] for r in recommendations]
         resp_texts = [r["cleaned_text"] for r in responses]
@@ -113,15 +113,20 @@ class RecommendationResponseMatcher:
                 best_match = None
                 best_score = 0.0
 
-                rec_num = self._extract_rec_number(rec["text"])
-                if rec_num and rec_num in responses_by_number:
-                    for resp in responses_by_number[rec_num]:
+                rec_num = self._extract_rec_number(rec["text"]) or rec.get("rec_number")
+                
+                # Try ID-based matching first
+                if rec_num:
+                    normalized_rec_num = str(rec_num).replace("R/", "").strip()
+                    candidates = responses_by_number.get(rec_num, []) + responses_by_number.get(normalized_rec_num, [])
+                    
+                    for resp in candidates:
                         resp_text = resp["cleaned_text"]
                         if self._is_self_match(rec["text"], resp_text):
                             continue
                         resp_idx = next((i for i, r in enumerate(responses) if r is resp), None)
                         score = similarity_matrix[rec_idx][resp_idx] if resp_idx is not None else 0.7
-                        score = min(score + 0.4, 1.0)
+                        score = min(score + 0.4, 1.0)  # Boost for ID match
                         if score > best_score:
                             best_score = score
                             status, status_conf = self._classify_response_status(resp_text)
@@ -183,10 +188,14 @@ class RecommendationResponseMatcher:
                 if self._is_self_match(rec["text"], resp_text):
                     continue
                 score = self._keyword_similarity(rec["text"], resp_text)
-                rec_num = self._extract_rec_number(rec["text"])
-                resp_num = self._extract_rec_number(resp_text)
-                if rec_num and resp_num and rec_num == resp_num:
-                    score += 0.4
+                rec_num = self._extract_rec_number(rec["text"]) or rec.get("rec_number")
+                resp_num = resp.get("rec_number") or resp.get("rec_id")
+                if rec_num and resp_num:
+                    # Normalize for comparison
+                    rec_norm = str(rec_num).replace("R/", "").strip()
+                    resp_norm = str(resp_num).replace("R/", "").strip()
+                    if rec_norm == resp_norm:
+                        score += 0.4
                 if self._has_government_response_language(resp_text):
                     score += 0.2
                 if score > best_score and score >= 0.25:
@@ -287,174 +296,107 @@ class RecommendationResponseMatcher:
             "we accept",
             "we support",
             "we agree",
+            "we welcome",
             "accept the recommendation",
             "support the recommendation",
             "accept this recommendation",
+            "nhs england has",
+            "nhs england will",
+            "nhs england is",
+            "care quality commission",
+            "nice is",
+            "we have convened",
+            "we are happy to confirm",
         ]
         return any(ind in text_lower for ind in indicators)
 
     def _extract_rec_number(self, text: str) -> Optional[str]:
+        # Try HSIB 2023 format: R/2023/220
+        match = re.search(r"R/\d{4}/\d{3}", text)
+        if match:
+            return match.group(0)
+        # Try HSIB 2018 format: 2018/006
+        match = re.search(r"\b(\d{4}/\d{3})\b", text)
+        if match:
+            return match.group(1)
+        # Try standard format: recommendation 1
         match = re.search(r"recommendation\s+(\d+)", text.lower())
-        return match.group(1) if match else None
+        if match:
+            return match.group(1)
+        return None
 
     def _classify_response_status(self, text: str) -> Tuple[str, float]:
         """
         Classify government response status with context-aware detection.
-        v2.4 - Added HSIB implicit acceptance patterns for NHS England responses
         """
         text_lower = text.lower()
         
-        # =========================================================================
-        # PRIORITY 1: Check for full rejection (recommendation itself rejected)
-        # =========================================================================
+        # PRIORITY 1: Check for full rejection
         full_rejection_patterns = [
             r"\breject(?:s|ed)?\s+(?:this\s+|the\s+)?recommendation",
             r"\bdoes?\s+not\s+accept\s+(?:this\s+|the\s+)?recommendation",
             r"\bcannot\s+accept\s+(?:this\s+|the\s+)?recommendation",
-            r"\bwill\s+not\s+(?:be\s+)?implement(?:ing)?\s+(?:this\s+|the\s+)?recommendation",
-            r"\bdisagree(?:s|d)?\s+with\s+(?:this\s+|the\s+)?recommendation",
-            r"\bdo(?:es)?\s+not\s+(?:support|accept)\s+(?:this\s+|the\s+)?recommendation",
         ]
         for pattern in full_rejection_patterns:
             if re.search(pattern, text_lower):
                 return "Rejected", 0.9
         
-        # =========================================================================
         # PRIORITY 2: Check for partial acceptance
-        # =========================================================================
         partial_patterns = [
             r"\baccept(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation\s+)?in\s+(?:part|principle)",
             r"\bpartially\s+accept",
             r"\bsupport(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation\s+)?in\s+principle",
-            r"\bin\s+principle[,.]?\s+(?:we\s+)?(?:support|accept|agree)",
-            r"\bbroadly\s+support(?:s|ed)?(?!\s+(?:the|this)\s+recommendation)",
-            r"\baccept(?:s|ed)?\s+(?:the\s+)?(?:intent|spirit)",
-            r"\bunder\s+consideration",
-            r"\bwill\s+consider\s+(?:the\s+|this\s+)?(?:recommendation|proposal|request)",
-            r"\brequires?\s+further\s+consideration",
+            r"\bbroadly\s+support",
+            r"\bwill\s+consider\s+(?:the\s+|this\s+)?(?:recommendation|proposal)",
         ]
         for pattern in partial_patterns:
             if re.search(pattern, text_lower):
                 return "Partial", 0.85
         
-        # CQC-specific partial acceptance
-        cqc_partial_patterns = [
-            r"\bcannot\s+routinely\s+inspect",
-            r"\bwithout\s+legislative\s+change",
-            r"\bcurrent\s+(?:legislative\s+)?(?:approach|framework)\s+(?:is\s+)?determined\s+by\s+legislation",
-        ]
-        for pattern in cqc_partial_patterns:
-            if re.search(pattern, text_lower):
-                return "Partial", 0.85
-        
-        # Partial rejection of approach (not full rejection)
-        partial_rejection_patterns = [
-            r"\bdo(?:es)?\s+not\s+support\s+(?:mandating|requiring|prescribing)\b",
-            r"\bwill\s+not\s+(?:be\s+)?mandat(?:ing|e)\b",
-            r"\bcannot\s+(?:mandate|require|prescribe)\b",
-        ]
-        for pattern in partial_rejection_patterns:
-            if re.search(pattern, text_lower):
-                if re.search(r"\b(?:recognis|support|expect|however|important)", text_lower):
-                    return "Partial", 0.8
-        
-        # =========================================================================
         # PRIORITY 3: Check for explicit acceptance
-        # =========================================================================
         accepted_patterns = [
             r"\baccept(?:s|ed)?\s+(?:this\s+|the\s+)?recommendation",
             r"\bsupport(?:s|ed)?\s+(?:this\s+|the\s+)?recommendation",
             r"\bagree(?:s|d)?\s+(?:with\s+)?(?:this\s+|the\s+)?recommendation",
-            r"\bthe\s+government\s+support(?:s|ed)?\s+(?:this|the)\b",
+            r"\bwelcome(?:s|d)?\s+(?:this\s+|the\s+)?recommendation",
+            r"\bthe\s+government\s+support(?:s|ed)?\b",
             r"\bthe\s+government\s+accept(?:s|ed)?\b",
             r"\bwill\s+implement\b",
             r"\bfully\s+accept",
-            r"\baccept(?:s|ed)?\s+in\s+full",
-            r"\bwill\s+be\s+(?:implementing|taking\s+forward)",
-            r"\bhas\s+already\s+(?:begun|started|commenced)",
+            r"\bhas\s+(?:begun|started|commenced)",
         ]
         for pattern in accepted_patterns:
             if re.search(pattern, text_lower):
                 return "Accepted", 0.9
         
-        # =========================================================================
-        # PRIORITY 4: Check for implicit acceptance (government taking action)
-        # =========================================================================
+        # PRIORITY 4: Check for implicit acceptance (taking action)
         implicit_acceptance_patterns = [
             r"\bcommitted\s+to\s+(?:working|improving|delivering|ensuring)",
-            r"\bconvened\s+(?:a\s+)?(?:ministerial|steering|working)[\s-]+(?:led\s+)?(?:group|committee)",
+            r"\bconvened\s+(?:a\s+)?(?:working|expert)\s+group",
+            r"\bwe\s+have\s+convened",
             r"\bintends?\s+to\s+(?:provide|publish|deliver|implement)",
             r"\bwill\s+(?:provide|publish|deliver|work\s+with)",
-            r"\bprogramme\s+of\s+work",
-            r"\bsteering\s+group",
-            r"\bworking\s+(?:closely\s+)?with\s+(?:partners|stakeholders|nhs)",
-            r"\balready\s+(?:taking|undertaking|progressing)",
-            r"\baction\s+(?:is\s+)?underway",
-            r"\bwill\s+be\s+(?:taking|addressing|responding)",
-            r"\bis\s+(?:taking|addressing)\s+(?:steps|action|forward)",
-            r"\bby\s+(?:early\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}",
-            r"\bupdate\s+(?:on\s+progress\s+)?(?:by|in|within)",
-            r"\bministerial[\s-]+led",
+            r"\bhas\s+begun\s+work",
+            r"\bwe\s+(?:are|have)\s+(?:developing|establishing|reviewing|currently)",
+            r"\bnhs\s+england\s+has\s+(?:begun|written|started)",
+            r"\bwe\s+are\s+happy\s+to\s+confirm",
         ]
         for pattern in implicit_acceptance_patterns:
             if re.search(pattern, text_lower):
                 return "Accepted", 0.8
         
-        # =========================================================================
-        # HSIB-specific implicit acceptance patterns
-        # =========================================================================
-        hsib_implicit_patterns = [
-            r"\bnhs\s+england\s+will\s+(?:work|ensure|use|require|promote|continue)",
-            r"\bnhs\s+england\s+and\s+nhs\s+improvement\s+(?:will|are|have)",
-            r"\bnhs\s+england\s+continues\s+to\s+require",
-            r"\bnhs\s+england\s+has\s+(?:committed|established|published)",
-            r"\blong\s+term\s+plan\s+(?:was\s+published|published|commits|recognises|sets\s+out)",
-            r"\bthe\s+(?:nhs\s+)?long\s+term\s+plan\b",
-            r"\bltp\s+(?:was\s+published|commits|published)",
-            r"\b(?:transitions?\s+)?collaborative\s+(?:has\s+been\s+)?established",
-            r"\bestablished\s+(?:a\s+|the\s+)?(?:collaborative|programme|working\s+group)",
-            r"\btimescale:\s*completed",
-            r"\bcompleted\s+(?:december|january|february|march|april|may|june|july|august|september|october|november)\s+\d{4}",
-            r"\balready\s+underway",
-            r"\bclinically[\s-]+led\s+review",
-            r"\bnccmh\s+(?:has\s+been\s+)?commissioned",
-            r"\bclinical\s+review\s+(?:was\s+)?published",
-        ]
-        for pattern in hsib_implicit_patterns:
-            if re.search(pattern, text_lower):
-                return "Accepted", 0.8
-        
-        # =========================================================================
         # PRIORITY 5: Check for "noted" patterns
-        # =========================================================================
         noted_patterns = [
             r"\bnote(?:s|d)?\s+(?:this\s+|the\s+)?recommendation",
             r"\backnowledge(?:s|d)?\s+(?:this\s+|the\s+)?recommendation",
-            r"\btake(?:s|n)?\s+note",
-            r"\bthe\s+government\s+recognis(?:es|ed)",
         ]
         for pattern in noted_patterns:
             if re.search(pattern, text_lower):
                 return "Noted", 0.75
         
-        # =========================================================================
-        # PRIORITY 6: Keyword fallback
-        # =========================================================================
-        if re.search(r"^the\s+government\s+support", text_lower):
-            return "Accepted", 0.85
-        
-        if re.search(r"\b(?:supports?|accepts?|agreed?)\b", text_lower):
-            if "recommendation" in text_lower:
-                return "Accepted", 0.7
-        
-        action_keywords = ["committed", "programme", "steering", "ministerial", "convened"]
-        action_count = sum(1 for kw in action_keywords if kw in text_lower)
-        if action_count >= 2:
-            return "Accepted", 0.65
-        
-        if re.search(r"\bwill\s+(?:work|ensure|provide|deliver)\b", text_lower):
-            if re.search(r"\b(?:expect|importance|recognis)", text_lower):
-                return "Accepted", 0.6
+        # Fallback - check for positive language
+        if any(word in text_lower for word in ["support", "accept", "welcome", "agree", "committed", "happy to confirm"]):
+            return "Accepted", 0.6
         
         return "Unclear", 0.5
 
@@ -465,7 +407,6 @@ class RecommendationResponseMatcher:
 
 
 def is_recommendation_text(text: str) -> bool:
-    """Check if text looks like a recommendation rather than a response."""
     text_lower = text.lower().strip()
     recommendation_starters = [
         r"^nhs\s+england\s+should",
@@ -486,6 +427,7 @@ def is_recommendation_text(text: str) -> bool:
         r"^regulators?\s+should",
         r"^recommendation\s+\d+\s+[a-z]",
         r"^we\s+recommend",
+        r"^hsib\s+recommends",
         r"^it\s+should\s+also",
         r"^they\s+should",
         r"^this\s+forum\s+should",
@@ -500,7 +442,6 @@ def is_recommendation_text(text: str) -> bool:
 
 
 def is_genuine_response(text: str) -> bool:
-    """Check if text looks like a genuine government response."""
     text_lower = text.lower().strip()
     strong_starters = [
         r"^government\s+response",
@@ -515,14 +456,18 @@ def is_genuine_response(text: str) -> bool:
         r"^we\s+support",
         r"^we\s+accept",
         r"^we\s+agree",
+        r"^we\s+welcome",
+        r"^we\s+are\s+happy\s+to\s+confirm",
         r"^dhsc\s+and\s+nhs\s+england\s+support",
-        r"^nhs\s+england\s+will",
+        r"^nhs\s+england\s+(?:has|will|is)",
+        r"^care\s+quality\s+commission\s+(?:is|has|will)",
+        r"^the\s+national\s+institute\s+for\s+health",
+        r"^nice\s+(?:is|has|will)",
     ]
     return any(re.search(pattern, text_lower) for pattern in strong_starters)
 
 
 def has_pdf_artifacts(text: str) -> bool:
-    """Check if text contains common PDF extraction artifacts."""
     artifacts = [
         r"\d{1,2}/\d{1,2}/\d{2,4},?\s+\d{1,2}:\d{2}\s*(AM|PM)?",
         r"GOV\.UK",
@@ -534,7 +479,6 @@ def has_pdf_artifacts(text: str) -> bool:
 
 
 def clean_pdf_artifacts(text: str) -> str:
-    """Remove common PDF extraction artifacts from text."""
     text = re.sub(r"\d{1,2}/\d{1,2}/\d{2,4},?\s+\d{1,2}:\d{2}\s*(AM|PM)?\s*", "", text)
     text = re.sub(r"https?://[^\s]+", "", text)
     text = re.sub(r"Government response to the rapid review.*?GOV\.UK[^\n]*", "", text, flags=re.IGNORECASE)
@@ -542,44 +486,164 @@ def clean_pdf_artifacts(text: str) -> str:
     return text
 
 
+# --------------------------------------------------------------------------- #
+# HSIB Response Extraction (NEW)
+# --------------------------------------------------------------------------- #
+
+def is_hsib_response_document(text: str) -> bool:
+    """
+    Detect if a document is an HSIB/HSSIB-style response document.
+    """
+    hsib_indicators = [
+        r'\bHSIB\s+recommends\b',
+        r'\bHSSIB\s+recommends\b',
+        r'\bSafety\s+recommendation\s+R/\d{4}/\d{3}\b',
+        r'\bRecommendation\s+\d{4}/\d{3}\b',
+        r'(?:^|\n)\s*Response\s*\n',  # Standalone "Response" header
+    ]
+    
+    matches = sum(1 for pattern in hsib_indicators 
+                  if re.search(pattern, text, re.IGNORECASE | re.MULTILINE))
+    
+    return matches >= 2
+
+
+def extract_hsib_responses(text: str) -> List[Dict]:
+    """
+    Extract responses from HSIB-format response documents.
+    
+    HSIB format uses:
+    - Organisation name as section header
+    - "Response" as standalone header
+    - Responses follow immediately after the recommendation they address
+    """
+    if not text:
+        return []
+    
+    responses = []
+    
+    # Pattern to find HSIB recommendation markers
+    hsib_rec_patterns = [
+        re.compile(r'Safety\s+recommendation\s+(R/\d{4}/\d{3})[:\s]', re.IGNORECASE),
+        re.compile(r'Recommendation\s+(\d{4}/\d{3})[:\s]', re.IGNORECASE),
+    ]
+    
+    # Find all recommendation positions
+    rec_matches = []
+    for pattern in hsib_rec_patterns:
+        rec_matches.extend(list(pattern.finditer(text)))
+    rec_matches.sort(key=lambda m: m.start())
+    
+    # Pattern to find "Response" headers
+    response_header_pattern = re.compile(
+        r'(?:^|\n)\s*Response\s*\n',
+        re.IGNORECASE | re.MULTILINE
+    )
+    response_matches = list(response_header_pattern.finditer(text))
+    
+    # Organisation headers that act as section boundaries
+    org_header_pattern = re.compile(
+        r'(?:^|\n)\s*(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence|National\s+Institute|Royal\s+College\s+of\s+Psychiatrists|Royal\s+College)\s*\n',
+        re.IGNORECASE | re.MULTILINE
+    )
+    org_headers = list(org_header_pattern.finditer(text))
+    
+    # Other boundary markers
+    boundary_markers = [
+        r'\n\s*Actions\s+planned\s+to\s+deliver',
+        r'\n\s*Safety\s+(?:observation|action)',
+        r'\n\s*Response\s+received\s+on',
+    ]
+    
+    logger.info(f"HSIB: Found {len(rec_matches)} recommendations and {len(response_matches)} response headers")
+    
+    # Extract response text for each "Response" header
+    for idx, resp_match in enumerate(response_matches):
+        start = resp_match.end()
+        end = len(text)
+        
+        # Check for next "Response" header
+        if idx + 1 < len(response_matches):
+            end = min(end, response_matches[idx + 1].start())
+        
+        # Check for organisation headers
+        for org_match in org_headers:
+            if org_match.start() > start and org_match.start() < end:
+                end = org_match.start()
+                break
+        
+        # Check for other boundary markers
+        for boundary in boundary_markers:
+            boundary_match = re.search(boundary, text[start:end], re.IGNORECASE)
+            if boundary_match:
+                potential_end = start + boundary_match.start()
+                if potential_end > start + 50:
+                    end = min(end, potential_end)
+        
+        response_text = text[start:end].strip()
+        response_text = re.sub(r'\s+', ' ', response_text)
+        
+        if len(response_text) < 30:
+            continue
+        
+        # Find the org header that precedes this response
+        prev_org_pos = 0
+        for org_match in org_headers:
+            if org_match.start() < resp_match.start():
+                prev_org_pos = org_match.start()
+            else:
+                break
+        
+        # Find recommendation between prev_org_pos and this response
+        rec_id = None
+        for rec_match in rec_matches:
+            if prev_org_pos <= rec_match.start() < resp_match.start():
+                rec_id = rec_match.group(1)
+        
+        responses.append({
+            'text': response_text,
+            'position': start,
+            'response_type': 'hsib_structured',
+            'confidence': 0.95,
+            'rec_number': rec_id,
+            'rec_id': rec_id,
+        })
+    
+    logger.info(f"Extracted {len(responses)} HSIB responses")
+    return responses
+
+
+# --------------------------------------------------------------------------- #
+# Main Response Extraction Function
+# --------------------------------------------------------------------------- #
+
 def extract_response_sentences(text: str) -> List[Dict]:
     """
     Extract sentences that are government responses.
-    Uses strict filtering to exclude recommendation text.
-    
-    v2.4 FIX: Now properly detects "Recommendation N" boundaries including
-    spaced digits like "Recommendation 1 1" for "11".
+    Auto-detects HSIB vs standard government format.
     """
     if not text:
         return []
 
+    # Check for HSIB format first
+    if is_hsib_response_document(text):
+        logger.info("Detected HSIB response document format")
+        return extract_hsib_responses(text)
+
+    # Standard government format extraction
+    logger.info("Using standard government response extraction")
+    
     text = clean_pdf_artifacts(text)
     responses: List[Dict] = []
     seen_responses = set()
 
-    # Find "Government response to recommendation N" headers
     gov_resp_starts = []
     for match in re.finditer(r"Government\s+response\s+to\s+recommendation\s+(\d+)", text, re.IGNORECASE):
         gov_resp_starts.append({"pos": match.start(), "end": match.end(), "rec_num": match.group(1)})
 
-    # ==========================================================================
-    # v2.4 FIX: Improved recommendation marker detection
-    # Now handles spaced digits like "Recommendation 1 1" for "Recommendation 11"
-    # ==========================================================================
     rec_positions = []
-    
-    # Pattern 1: Standard "Recommendation N [A-Z]" (e.g., "Recommendation 5 Provider")
     for match in re.finditer(r"Recommendation\s+(\d+)\s+([A-Z])", text):
         rec_positions.append({"pos": match.start(), "rec_num": match.group(1)})
-    
-    # Pattern 2: Spaced digits "Recommendation N N [A-Z]" (e.g., "Recommendation 1 1 All")
-    # This catches cases where "11" is extracted as "1 1"
-    for match in re.finditer(r"Recommendation\s+(\d)\s+(\d)\s+([A-Z])", text):
-        combined_num = match.group(1) + match.group(2)
-        rec_positions.append({"pos": match.start(), "rec_num": combined_num})
-    
-    # Sort by position to ensure correct ordering
-    rec_positions.sort(key=lambda x: x["pos"])
 
     logger.info(f"Found {len(gov_resp_starts)} government response headers")
     logger.info(f"Found {len(rec_positions)} recommendation markers")
@@ -592,17 +656,14 @@ def extract_response_sentences(text: str) -> List[Dict]:
         rec_num = gov_resp["rec_num"]
         end_pos = len(text)
 
-        # Check for next government response header
         if i + 1 < len(gov_resp_starts):
             next_gov = gov_resp_starts[i + 1]["pos"]
             if next_gov < end_pos:
                 end_pos = next_gov
 
-        # Check for recommendation markers (these indicate response has ended)
         for rec_pos in rec_positions:
             if rec_pos["pos"] > start_pos and rec_pos["pos"] < end_pos:
                 end_pos = rec_pos["pos"]
-                logger.debug(f"Truncated response {rec_num} at recommendation {rec_pos['rec_num']} marker")
                 break
 
         resp_content = text[start_pos:end_pos].strip()
@@ -610,9 +671,6 @@ def extract_response_sentences(text: str) -> List[Dict]:
             continue
         resp_content = clean_pdf_artifacts(resp_content)
 
-        # For structured responses we trust the header
-        # "Government response to recommendation N" as the primary source of
-        # rec_number. Body cross-references should not override this.
         responses.append(
             {
                 "text": resp_content,
@@ -625,7 +683,7 @@ def extract_response_sentences(text: str) -> List[Dict]:
         structured_spans.append((start_pos, end_pos))
         structured_texts.append(resp_content)
 
-    # Sentence-level responses with explicit span tracking
+    # Sentence-level responses
     sentence_spans = []
     start_idx = 0
     for match in re.finditer(r"(?<=[.!?])\s+", text):
@@ -644,11 +702,9 @@ def extract_response_sentences(text: str) -> List[Dict]:
             continue
         if not is_genuine_response(sentence_clean):
             continue
-        # Skip sentences that fall within any structured response span
         if any(start <= start_idx < end for start, end in structured_spans):
             continue
 
-        # Skip sentences that substantially duplicate structured responses
         sent_norm = re.sub(r"\s+", " ", sentence_clean.lower()).strip()
         is_struct_dup = False
         for struct_text in structured_texts:
@@ -683,7 +739,7 @@ def extract_response_sentences(text: str) -> List[Dict]:
             }
         )
 
-    logger.info(f"Extracted {len(responses)} responses (with improved boundary detection)")
+    logger.info(f"Extracted {len(responses)} genuine responses")
     return responses
 
 
@@ -694,6 +750,8 @@ __all__ = [
     "has_pdf_artifacts",
     "clean_pdf_artifacts",
     "extract_response_sentences",
+    "is_hsib_response_document",
+    "extract_hsib_responses",
     "find_pattern_matches",
     "align_recommendations_with_responses",
     "determine_alignment_status",
