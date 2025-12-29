@@ -2,6 +2,7 @@
 Core alignment engine: recommendation/response matching + response extraction.
 Moved out of the Streamlit UI to keep logic reusable and testable.
 
+v2.1 - Added organisation-based matching for HSIB documents
 v2.0 - Added HSIB/HSSIB response format support
 """
 
@@ -14,6 +15,163 @@ import numpy as np
 from .search_utils import STOP_WORDS, get_meaningful_words
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# ORGANISATION EXTRACTION FOR HSIB MATCHING
+# =============================================================================
+
+# Canonical organisation names and their variants
+ORGANISATION_MAPPINGS = {
+    'nhs_england': [
+        r'NHS\s+England',
+        r'NHS\s+England\s+and\s+NHS\s+Improvement',
+        r'NHSE',
+        r'NHS\s+Improvement',
+    ],
+    'cqc': [
+        r'Care\s+Quality\s+Commission',
+        r'CQC',
+    ],
+    'nice': [
+        r'National\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence',
+        r'NICE',
+        r'National\s+Institute',
+    ],
+    'royal_college': [
+        r'Royal\s+College\s+of\s+Psychiatrists',
+        r'Royal\s+College',
+        r'RCPsych',
+    ],
+    'dhsc': [
+        r'Department\s+of\s+Health\s+and\s+Social\s+Care',
+        r'DHSC',
+        r'Department\s+of\s+Health',
+    ],
+    'nihr': [
+        r'National\s+Institute\s+for\s+Health(?:\s+and\s+Care)?\s+Research',
+        r'NIHR',
+    ],
+}
+
+
+def extract_target_organisation(rec_text: str) -> Optional[str]:
+    """
+    Extract the target organisation from a recommendation.
+    
+    HSIB recommendations typically use patterns like:
+    - "HSIB recommends that NHS England..."
+    - "HSSIB recommends that the Care Quality Commission..."
+    - "It is recommended that NHS England..."
+    """
+    if not rec_text:
+        return None
+    
+    # Patterns for extracting target org from recommendations
+    rec_patterns = [
+        r'(?:HSIB|HSSIB)\s+recommends\s+that\s+(?:the\s+)?([^,\.]+?)(?:\s+(?:should|works?|produces?|evaluates?|reviews?|assesses?))',
+        r'It\s+is\s+recommended\s+that\s+(?:the\s+)?([^,\.]+?)(?:\s+(?:should|works?|requires?|ensures?))',
+        r'(?:Safety\s+)?[Rr]ecommendation[^:]*:\s*(?:HSIB|HSSIB)\s+recommends\s+that\s+(?:the\s+)?([^,\.]+?)(?:\s+(?:should|works?|working))',
+        r'recommends\s+that\s+(?:the\s+)?([^,\.]+?)(?:,|\s+(?:should|works?|produces?|evaluates?|reviews?|assesses?|working))',
+    ]
+    
+    for pattern in rec_patterns:
+        match = re.search(pattern, rec_text, re.IGNORECASE)
+        if match:
+            org_text = match.group(1).strip()
+            # Map to canonical name
+            return _map_to_canonical_org(org_text)
+    
+    # Fallback: look for organisation names anywhere in text
+    for canonical, variants in ORGANISATION_MAPPINGS.items():
+        for variant in variants:
+            if re.search(variant, rec_text, re.IGNORECASE):
+                return canonical
+    
+    return None
+
+
+def extract_source_organisation(resp_text: str) -> Optional[str]:
+    """
+    Extract the source organisation from a response.
+    
+    Responses typically start with org-specific language like:
+    - "NHS England has begun work..."
+    - "CQC welcomes the recommendation..."
+    - "NICE is currently reviewing..."
+    - "We are happy to confirm..." + mentions RCPsych/Expert Working Group
+    """
+    if not resp_text:
+        return None
+    
+    # Check for explicit org mentions at start of response
+    resp_starters = [
+        (r'^(?:The\s+)?NHS\s+England', 'nhs_england'),
+        (r'^(?:The\s+)?Care\s+Quality\s+Commission', 'cqc'),
+        (r'^(?:The\s+)?CQC', 'cqc'),
+        (r'^(?:The\s+)?National\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence', 'nice'),
+        (r'^(?:The\s+)?NICE\s+is', 'nice'),
+        (r'^(?:The\s+)?Royal\s+College', 'royal_college'),
+        (r'^(?:The\s+)?Department\s+of\s+Health', 'dhsc'),
+        (r'^(?:The\s+)?DHSC', 'dhsc'),
+        (r'^(?:The\s+)?NIHR', 'nihr'),
+        (r'^(?:The\s+)?National\s+Institute\s+for\s+Health(?:\s+and\s+Care)?\s+Research', 'nihr'),
+    ]
+    
+    for pattern, org in resp_starters:
+        if re.match(pattern, resp_text, re.IGNORECASE):
+            return org
+    
+    # Check for characteristic response language
+    response_indicators = [
+        (r'\bNHS\s+England\s+(?:has|will|is)\b', 'nhs_england'),
+        (r'\bNHSE\s+(?:gathered|will|has)\b', 'nhs_england'),
+        (r'\bCQC\s+(?:welcomes?|is|has|will)\b', 'cqc'),
+        (r'\bCare\s+Quality\s+Commission\s+is\b', 'cqc'),
+        (r'\bNICE\s+is\s+currently\b', 'nice'),
+        (r'\bNational\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence\s+\(NICE\)\s+is', 'nice'),
+        # Royal College indicators - check for Expert Working Group or RCPsych
+        (r'\b(?:Expert\s+Working\s+Group|RCPsych)\b', 'royal_college'),
+        (r'\bwe\s+have\s+convened\b', 'royal_college'),  # Royal College style
+        (r'\bwe\s+are\s+happy\s+to\s+confirm\b.*?(?:menopause|mental\s+health)', 'royal_college'),
+        (r'\bNIHR\s+(?:funds?|will)\b', 'nihr'),
+        (r'\bfunding\s+for\s+Children\s+and\s+Young\s+People', 'nhs_england'),
+    ]
+    
+    for pattern, org in response_indicators:
+        if re.search(pattern, resp_text, re.IGNORECASE):
+            return org
+    
+    return None
+
+
+def _map_to_canonical_org(org_text: str) -> Optional[str]:
+    """Map organisation text to canonical name."""
+    if not org_text:
+        return None
+    
+    org_lower = org_text.lower().strip()
+    
+    for canonical, variants in ORGANISATION_MAPPINGS.items():
+        for variant in variants:
+            if re.search(variant, org_text, re.IGNORECASE):
+                return canonical
+    
+    # Partial matches
+    if 'nhs england' in org_lower or 'nhse' in org_lower:
+        return 'nhs_england'
+    if 'care quality' in org_lower or 'cqc' in org_lower:
+        return 'cqc'
+    if 'nice' in org_lower or 'national institute for health and care excellence' in org_lower:
+        return 'nice'
+    if 'royal college' in org_lower or 'rcpsych' in org_lower:
+        return 'royal_college'
+    if 'dhsc' in org_lower or 'department of health' in org_lower:
+        return 'dhsc'
+    if 'nihr' in org_lower or 'national institute for health' in org_lower:
+        return 'nihr'
+    
+    return None
 
 
 class RecommendationResponseMatcher:
@@ -84,14 +242,29 @@ class RecommendationResponseMatcher:
         return self._keyword_matching(recommendations, cleaned_responses, top_k)
 
     def _semantic_matching(self, recommendations: List[Dict], responses: List[Dict], top_k: int) -> List[Dict]:
+        # Build indexes for different matching strategies
         responses_by_number: Dict[str, List[Dict]] = {}
+        responses_by_org: Dict[str, List[Dict]] = {}
+        
         for resp in responses:
+            # Index by rec_number/rec_id
             rec_num = resp.get("rec_number") or resp.get("rec_id")
             if rec_num:
-                # Normalize ID for matching
                 normalized = str(rec_num).replace("R/", "").strip()
                 responses_by_number.setdefault(rec_num, []).append(resp)
                 responses_by_number.setdefault(normalized, []).append(resp)
+            
+            # Index by source organisation (for HSIB matching)
+            source_org = extract_source_organisation(resp.get("cleaned_text", resp.get("text", "")))
+            if source_org:
+                responses_by_org.setdefault(source_org, []).append(resp)
+                resp["source_org"] = source_org  # Store for later use
+        
+        # Check if this looks like an HSIB document (has org-indexed responses)
+        is_hsib_style = len(responses_by_org) > 0 and len(responses_by_number) == 0
+        
+        if is_hsib_style:
+            logger.info(f"Using organisation-based matching. Orgs found: {list(responses_by_org.keys())}")
 
         rec_texts = [r["text"] for r in recommendations]
         resp_texts = [r["cleaned_text"] for r in responses]
@@ -115,7 +288,7 @@ class RecommendationResponseMatcher:
 
                 rec_num = self._extract_rec_number(rec["text"]) or rec.get("rec_number")
                 
-                # Try ID-based matching first
+                # PRIORITY 1: Try ID-based matching (exact rec number)
                 if rec_num:
                     normalized_rec_num = str(rec_num).replace("R/", "").strip()
                     candidates = responses_by_number.get(rec_num, []) + responses_by_number.get(normalized_rec_num, [])
@@ -139,6 +312,34 @@ class RecommendationResponseMatcher:
                                 "match_method": "number_match",
                             }
 
+                # PRIORITY 2: Try organisation-based matching (for HSIB documents)
+                if best_match is None and is_hsib_style:
+                    target_org = extract_target_organisation(rec["text"])
+                    if target_org and target_org in responses_by_org:
+                        candidates = responses_by_org[target_org]
+                        logger.debug(f"Rec targets '{target_org}', found {len(candidates)} candidate responses")
+                        
+                        for resp in candidates:
+                            resp_text = resp["cleaned_text"]
+                            if self._is_self_match(rec["text"], resp_text):
+                                continue
+                            resp_idx = next((i for i, r in enumerate(responses) if r is resp), None)
+                            score = similarity_matrix[rec_idx][resp_idx] if resp_idx is not None else 0.6
+                            score = min(score + 0.3, 1.0)  # Boost for org match
+                            if score > best_score:
+                                best_score = score
+                                status, status_conf = self._classify_response_status(resp_text)
+                                best_match = {
+                                    "response_text": resp_text,
+                                    "similarity": score,
+                                    "status": status,
+                                    "status_confidence": status_conf,
+                                    "source_document": resp.get("source_document", "unknown"),
+                                    "match_method": "org_match",
+                                    "matched_org": target_org,
+                                }
+
+                # PRIORITY 3: Fallback to pure semantic matching
                 if best_match is None:
                     similarities = similarity_matrix[rec_idx]
                     top_indices = np.argsort(similarities)[::-1][: top_k * 2]
@@ -179,36 +380,72 @@ class RecommendationResponseMatcher:
             return self._keyword_matching(recommendations, responses, top_k)
 
     def _keyword_matching(self, recommendations: List[Dict], responses: List[Dict], top_k: int) -> List[Dict]:
+        # Build org index for HSIB matching
+        responses_by_org: Dict[str, List[Dict]] = {}
+        for resp in responses:
+            source_org = extract_source_organisation(resp.get("cleaned_text", resp.get("text", "")))
+            if source_org:
+                responses_by_org.setdefault(source_org, []).append(resp)
+        
+        is_hsib_style = len(responses_by_org) > 0
+        
         alignments = []
         for rec in recommendations:
             best_match = None
             best_score = 0.0
-            for resp in responses:
-                resp_text = resp.get("cleaned_text", resp["text"])
-                if self._is_self_match(rec["text"], resp_text):
-                    continue
-                score = self._keyword_similarity(rec["text"], resp_text)
-                rec_num = self._extract_rec_number(rec["text"]) or rec.get("rec_number")
-                resp_num = resp.get("rec_number") or resp.get("rec_id")
-                if rec_num and resp_num:
-                    # Normalize for comparison
-                    rec_norm = str(rec_num).replace("R/", "").strip()
-                    resp_norm = str(resp_num).replace("R/", "").strip()
-                    if rec_norm == resp_norm:
-                        score += 0.4
-                if self._has_government_response_language(resp_text):
-                    score += 0.2
-                if score > best_score and score >= 0.25:
-                    best_score = score
-                    status, status_conf = self._classify_response_status(resp_text)
-                    best_match = {
-                        "response_text": resp_text,
-                        "similarity": min(score, 1.0),
-                        "status": status,
-                        "status_confidence": status_conf,
-                        "source_document": resp.get("source_document", "unknown"),
-                        "match_method": "keyword",
-                    }
+            
+            # Try organisation-based matching first for HSIB
+            if is_hsib_style:
+                target_org = extract_target_organisation(rec["text"])
+                if target_org and target_org in responses_by_org:
+                    for resp in responses_by_org[target_org]:
+                        resp_text = resp.get("cleaned_text", resp["text"])
+                        if self._is_self_match(rec["text"], resp_text):
+                            continue
+                        score = self._keyword_similarity(rec["text"], resp_text)
+                        score += 0.3  # Boost for org match
+                        if self._has_government_response_language(resp_text):
+                            score += 0.1
+                        if score > best_score and score >= 0.25:
+                            best_score = min(score, 1.0)
+                            status, status_conf = self._classify_response_status(resp_text)
+                            best_match = {
+                                "response_text": resp_text,
+                                "similarity": best_score,
+                                "status": status,
+                                "status_confidence": status_conf,
+                                "source_document": resp.get("source_document", "unknown"),
+                                "match_method": "org_keyword",
+                            }
+            
+            # Fallback to all responses
+            if best_match is None:
+                for resp in responses:
+                    resp_text = resp.get("cleaned_text", resp["text"])
+                    if self._is_self_match(rec["text"], resp_text):
+                        continue
+                    score = self._keyword_similarity(rec["text"], resp_text)
+                    rec_num = self._extract_rec_number(rec["text"]) or rec.get("rec_number")
+                    resp_num = resp.get("rec_number") or resp.get("rec_id")
+                    if rec_num and resp_num:
+                        rec_norm = str(rec_num).replace("R/", "").strip()
+                        resp_norm = str(resp_num).replace("R/", "").strip()
+                        if rec_norm == resp_norm:
+                            score += 0.4
+                    if self._has_government_response_language(resp_text):
+                        score += 0.2
+                    if score > best_score and score >= 0.25:
+                        best_score = min(score, 1.0)
+                        status, status_conf = self._classify_response_status(resp_text)
+                        best_match = {
+                            "response_text": resp_text,
+                            "similarity": best_score,
+                            "status": status,
+                            "status_confidence": status_conf,
+                            "source_document": resp.get("source_document", "unknown"),
+                            "match_method": "keyword",
+                        }
+            
             alignments.append(
                 {
                     "recommendation": rec,
@@ -493,19 +730,43 @@ def clean_pdf_artifacts(text: str) -> str:
 def is_hsib_response_document(text: str) -> bool:
     """
     Detect if a document is an HSIB/HSSIB-style response document.
+    
+    HSIB response documents use standalone "Response" headers rather than
+    "Government response to recommendation N" format.
     """
+    # Check for standard government format first - if present, not HSIB
+    gov_response_pattern = re.compile(
+        r'Government\s+response\s+to\s+recommendation\s+\d+',
+        re.IGNORECASE
+    )
+    if len(list(gov_response_pattern.finditer(text))) >= 2:
+        return False
+    
+    # Count standalone "Response" headers
+    response_header_pattern = re.compile(
+        r'(?:^|\n)\s*Response\s*\n',
+        re.IGNORECASE | re.MULTILINE
+    )
+    response_count = len(list(response_header_pattern.finditer(text)))
+    
+    # If 3+ standalone Response headers, it's likely HSIB format
+    if response_count >= 3:
+        return True
+    
+    # Check for other HSIB indicators
     hsib_indicators = [
         r'\bHSIB\s+recommends\b',
         r'\bHSSIB\s+recommends\b',
         r'\bSafety\s+recommendation\s+R/\d{4}/\d{3}\b',
         r'\bRecommendation\s+\d{4}/\d{3}\b',
-        r'(?:^|\n)\s*Response\s*\n',  # Standalone "Response" header
+        r'\bIt\s+is\s+recommended\s+that\b',  # HSIB style recommendation text
     ]
     
-    matches = sum(1 for pattern in hsib_indicators 
-                  if re.search(pattern, text, re.IGNORECASE | re.MULTILINE))
+    indicator_matches = sum(1 for pattern in hsib_indicators 
+                           if re.search(pattern, text, re.IGNORECASE | re.MULTILINE))
     
-    return matches >= 2
+    # If we have Response headers + other indicators, it's HSIB
+    return response_count >= 1 and indicator_matches >= 1
 
 
 def extract_hsib_responses(text: str) -> List[Dict]:
@@ -543,7 +804,7 @@ def extract_hsib_responses(text: str) -> List[Dict]:
     
     # Organisation headers that act as section boundaries
     org_header_pattern = re.compile(
-        r'(?:^|\n)\s*(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence|National\s+Institute|Royal\s+College\s+of\s+Psychiatrists|Royal\s+College)\s*\n',
+        r'(?:^|\n)\s*(Department\s+of\s+Health\s+and\s+Social\s+Care|NHS\s+England(?:\s+and\s+NHS\s+Improvement)?|Care\s+Quality\s+Commission|National\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence|National\s+Institute|Royal\s+College\s+of\s+Psychiatrists|Royal\s+College|DHSC|NICE)\s*\n',
         re.IGNORECASE | re.MULTILINE
     )
     org_headers = list(org_header_pattern.finditer(text))
@@ -752,6 +1013,8 @@ __all__ = [
     "extract_response_sentences",
     "is_hsib_response_document",
     "extract_hsib_responses",
+    "extract_target_organisation",
+    "extract_source_organisation",
     "find_pattern_matches",
     "align_recommendations_with_responses",
     "determine_alignment_status",
