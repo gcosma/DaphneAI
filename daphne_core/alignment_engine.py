@@ -831,31 +831,32 @@ def extract_hsib_responses(text: str) -> List[Dict]:
     # - "Response\n" (proper newline)
     # - "ResponseNHS England..." (merged with next text)
     # - "Response Timescale:" (space then next word)
-    # We try multiple patterns from strict to lenient
+    # We try multiple patterns, all requiring Response to look like a header
     
     response_patterns = [
-        # Strict: Response on its own line
+        # Response on its own line
         re.compile(r'(?:^|\n)\s*Response\s*\n', re.IGNORECASE | re.MULTILINE),
-        # Medium: Response followed by uppercase (merged text)
-        re.compile(r'(?:^|\n)\s*Response\s*(?=[A-Z])(?!.*received)', re.IGNORECASE | re.MULTILINE),
-        # Lenient: Response followed by Timescale (common in HSIB)
-        re.compile(r'(?:^|\n)\s*Response\s*(?=Timescale)', re.IGNORECASE | re.MULTILINE),
-        # Very lenient: Just "Response" as a word boundary, not followed by "received" or "to"
-        re.compile(r'\bResponse\b(?!\s+(?:received|to\s+recommendation))', re.IGNORECASE),
+        # Response followed by uppercase (merged text) - but not "Response received" or "Response to"
+        re.compile(r'(?:^|\n)\s*Response(?=[A-Z][a-z])', re.IGNORECASE | re.MULTILINE),
+        # Response followed by Timescale (common in HSIB)
+        re.compile(r'(?:^|\n)\s*Response\s*\n?\s*Timescale', re.IGNORECASE | re.MULTILINE),
+        # Response at line start followed by typical response content words
+        re.compile(r'(?:^|\n)\s*Response\s*\n?\s*(?:NHS|The|Our|We|This|As|Funding|safe)', re.IGNORECASE | re.MULTILINE),
     ]
     
     response_matches = []
     for pattern in response_patterns:
         matches = list(pattern.finditer(text))
-        logger.info(f"HSIB: Pattern {pattern.pattern[:40]}... found {len(matches)} matches")
+        if matches:
+            logger.info(f"HSIB: Pattern found {len(matches)} matches")
         response_matches.extend(matches)
     
     # Deduplicate by position (keep first match at each position)
     seen_positions = set()
     unique_matches = []
     for match in sorted(response_matches, key=lambda m: m.start()):
-        # Consider matches within 10 chars as duplicates
-        pos_key = match.start() // 10
+        # Consider matches within 20 chars as duplicates
+        pos_key = match.start() // 20
         if pos_key not in seen_positions:
             seen_positions.add(pos_key)
             unique_matches.append(match)
