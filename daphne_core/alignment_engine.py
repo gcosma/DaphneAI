@@ -1,10 +1,25 @@
 """
-Core alignment engine: recommendation/response matching + response extraction.
-Moved out of the Streamlit UI to keep logic reusable and testable.
+Core alignment engine: recommendation/response matching.
 
-v2.3 - Added partial rejection detection ("do not support mandating" = Partial)
-     - Fixed HSIB/HSSIB response format support with PyPDF2 compatibility
-     - 3-tier matching: number_match → org_match → semantic
+This module handles:
+- Semantic and keyword-based matching of recommendations to responses
+- Response status classification (Accepted/Rejected/Partial)
+- Alignment scoring and ranking
+
+Response extraction has been moved to response_extractor.py but is
+re-exported here for backwards compatibility.
+
+v2.5 Changes:
+- FIXED: org_match no longer gives false positives - requires BOTH org match AND semantic relevance >= 0.55
+- FIXED: number_match now properly validates rec_id format matching (R/2024/025 vs 2018/006)
+- ADDED: _normalize_rec_id() for cross-format ID matching
+- ADDED: Stricter semantic threshold for org_match
+- SPLIT: Response extraction moved to response_extractor.py
+
+v2.3 Changes (preserved):
+- Added partial rejection detection ("do not support mandating" = Partial)
+- Fixed HSIB/HSSIB response format support with PyPDF2 compatibility
+- 3-tier matching: number_match → org_match → semantic
 """
 
 import logging
@@ -14,6 +29,18 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from .search_utils import STOP_WORDS, get_meaningful_words
+
+# Import from response_extractor and re-export for backwards compatibility
+from .response_extractor import (
+    is_recommendation_text,
+    is_genuine_response,
+    has_pdf_artifacts,
+    clean_pdf_artifacts,
+    is_hsib_response_document,
+    extract_target_org_from_text,
+    extract_hsib_responses,
+    extract_response_sentences,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +69,7 @@ class RecommendationResponseMatcher:
         except ImportError:
             logger.warning("sentence-transformers not installed, using keyword matching")
             self.use_transformer = False
-        except Exception as e:  # pragma: no cover - defensive
+        except Exception as e:
             logger.warning(f"Could not load transformer model: {e}")
             self.use_transformer = False
 
@@ -55,7 +82,7 @@ class RecommendationResponseMatcher:
             with torch.no_grad():
                 embeddings = self.model.encode(texts, convert_to_tensor=False, batch_size=16)
             return np.array(embeddings)
-        except Exception as e:  # pragma: no cover - defensive
+        except Exception as e:
             logger.error(f"Encoding failed: {e}")
             return None
 
@@ -85,6 +112,29 @@ class RecommendationResponseMatcher:
             return self._semantic_matching(recommendations, cleaned_responses, top_k)
         return self._keyword_matching(recommendations, cleaned_responses, top_k)
 
+    # =========================================================================
+    # v2.5: Normalize rec IDs for cross-format matching
+    # =========================================================================
+    def _normalize_rec_id(self, rec_id: Optional[str]) -> Optional[str]:
+        """
+        Normalize recommendation IDs for matching across formats.
+        
+        Examples:
+        - "R/2024/025" -> "2024/025"
+        - "2018/006" -> "2018/006"
+        - "1" -> "1"
+        """
+        if not rec_id:
+            return None
+        
+        rec_id_str = str(rec_id).strip()
+        
+        # Remove R/ prefix if present
+        if rec_id_str.startswith("R/"):
+            rec_id_str = rec_id_str[2:]
+        
+        return rec_id_str
+
     def _semantic_matching(self, recommendations: List[Dict], responses: List[Dict], top_k: int) -> List[Dict]:
         responses_by_number: Dict[str, List[Dict]] = {}
         responses_by_org: Dict[str, List[Dict]] = {}
@@ -92,10 +142,11 @@ class RecommendationResponseMatcher:
         for resp in responses:
             rec_num = resp.get("rec_number") or resp.get("rec_id")
             if rec_num:
-                # Normalize ID for matching
-                normalized = str(rec_num).replace("R/", "").strip()
+                # v2.5: Normalize ID for matching
+                normalized = self._normalize_rec_id(rec_num)
                 responses_by_number.setdefault(rec_num, []).append(resp)
-                responses_by_number.setdefault(normalized, []).append(resp)
+                if normalized and normalized != rec_num:
+                    responses_by_number.setdefault(normalized, []).append(resp)
             
             # Index by organisation
             source_org = resp.get("source_org") or extract_target_org_from_text(resp.get("text", ""))
@@ -123,56 +174,78 @@ class RecommendationResponseMatcher:
                 best_score = 0.0
 
                 rec_num = self._extract_rec_number(rec["text"]) or rec.get("rec_number")
-                
-                # Extract target org from recommendation
+                normalized_rec_num = self._normalize_rec_id(rec_num) if rec_num else None
                 target_org = extract_target_org_from_text(rec["text"])
                 
-                # Try ID-based matching first
+                # =============================================================
+                # TIER 1: ID-based matching (highest priority)
+                # =============================================================
                 if rec_num:
-                    normalized_rec_num = str(rec_num).replace("R/", "").strip()
-                    candidates = responses_by_number.get(rec_num, []) + responses_by_number.get(normalized_rec_num, [])
+                    candidates = responses_by_number.get(rec_num, [])
+                    if normalized_rec_num and normalized_rec_num != rec_num:
+                        candidates = candidates + responses_by_number.get(normalized_rec_num, [])
                     
-                    for resp in candidates:
+                    # Deduplicate candidates
+                    seen_texts = set()
+                    unique_candidates = []
+                    for c in candidates:
+                        text_key = c.get("cleaned_text", c.get("text", ""))[:100]
+                        if text_key not in seen_texts:
+                            seen_texts.add(text_key)
+                            unique_candidates.append(c)
+                    
+                    for resp in unique_candidates:
                         resp_text = resp["cleaned_text"]
                         if self._is_self_match(rec["text"], resp_text):
                             continue
                         resp_idx = next((i for i, r in enumerate(responses) if r is resp), None)
-                        score = similarity_matrix[rec_idx][resp_idx] if resp_idx is not None else 0.7
-                        score = min(score + 0.4, 1.0)  # Boost for ID match
-                        if score > best_score:
-                            best_score = score
-                            status, status_conf = self._classify_response_status(resp_text)
-                            best_match = {
-                                "response_text": resp_text,
-                                "similarity": score,
-                                "status": status,
-                                "status_confidence": status_conf,
-                                "source_document": resp.get("source_document", "unknown"),
-                                "match_method": "number_match",
-                            }
+                        semantic_score = similarity_matrix[rec_idx][resp_idx] if resp_idx is not None else 0.7
+                        
+                        # v2.5: ID match requires minimal semantic relevance
+                        if semantic_score >= 0.3:
+                            score = min(semantic_score + 0.5, 1.0)
+                            if score > best_score:
+                                best_score = score
+                                status, status_conf = self._classify_response_status(resp_text)
+                                best_match = {
+                                    "response_text": resp_text,
+                                    "similarity": round(score, 3),
+                                    "status": status,
+                                    "status_confidence": status_conf,
+                                    "source_document": resp.get("source_document", "unknown"),
+                                    "match_method": "number_match",
+                                }
 
-                # TIER 2: Try organisation-based matching
+                # =============================================================
+                # TIER 2: Organisation-based matching
+                # v2.5 FIX: Requires BOTH org match AND semantic relevance >= 0.55
+                # =============================================================
                 if best_match is None and target_org and target_org in responses_by_org:
                     for resp in responses_by_org[target_org]:
                         resp_text = resp["cleaned_text"]
                         if self._is_self_match(rec["text"], resp_text):
                             continue
                         resp_idx = next((i for i, r in enumerate(responses) if r is resp), None)
-                        score = similarity_matrix[rec_idx][resp_idx] if resp_idx is not None else 0.6
-                        score = min(score + 0.3, 1.0)  # Boost for org match
-                        if score > best_score:
-                            best_score = score
-                            status, status_conf = self._classify_response_status(resp_text)
-                            best_match = {
-                                "response_text": resp_text,
-                                "similarity": score,
-                                "status": status,
-                                "status_confidence": status_conf,
-                                "source_document": resp.get("source_document", "unknown"),
-                                "match_method": "org_match",
-                            }
+                        semantic_score = similarity_matrix[rec_idx][resp_idx] if resp_idx is not None else 0.0
+                        
+                        # v2.5 FIX: Require minimum semantic relevance
+                        if semantic_score >= 0.55:
+                            score = min(semantic_score + 0.15, 0.95)
+                            if score > best_score:
+                                best_score = score
+                                status, status_conf = self._classify_response_status(resp_text)
+                                best_match = {
+                                    "response_text": resp_text,
+                                    "similarity": round(score, 3),
+                                    "status": status,
+                                    "status_confidence": status_conf,
+                                    "source_document": resp.get("source_document", "unknown"),
+                                    "match_method": "org_match",
+                                }
 
+                # =============================================================
                 # TIER 3: Semantic matching fallback
+                # =============================================================
                 if best_match is None:
                     similarities = similarity_matrix[rec_idx]
                     top_indices = np.argsort(similarities)[::-1][: top_k * 2]
@@ -192,23 +265,21 @@ class RecommendationResponseMatcher:
                             status, status_conf = self._classify_response_status(resp["cleaned_text"])
                             best_match = {
                                 "response_text": resp["cleaned_text"],
-                                "similarity": best_score,
+                                "similarity": round(best_score, 3),
                                 "status": status,
                                 "status_confidence": status_conf,
                                 "source_document": resp.get("source_document", "unknown"),
                                 "match_method": "semantic",
                             }
 
-                alignments.append(
-                    {
-                        "recommendation": rec,
-                        "response": best_match,
-                        "has_response": best_match is not None,
-                    }
-                )
+                alignments.append({
+                    "recommendation": rec,
+                    "response": best_match,
+                    "has_response": best_match is not None,
+                })
 
             return alignments
-        except Exception as e:  # pragma: no cover - defensive
+        except Exception as e:
             logger.error(f"Semantic matching failed: {e}")
             return self._keyword_matching(recommendations, responses, top_k)
 
@@ -225,9 +296,8 @@ class RecommendationResponseMatcher:
                 rec_num = self._extract_rec_number(rec["text"]) or rec.get("rec_number")
                 resp_num = resp.get("rec_number") or resp.get("rec_id")
                 if rec_num and resp_num:
-                    # Normalize for comparison
-                    rec_norm = str(rec_num).replace("R/", "").strip()
-                    resp_norm = str(resp_num).replace("R/", "").strip()
+                    rec_norm = self._normalize_rec_id(rec_num)
+                    resp_norm = self._normalize_rec_id(resp_num)
                     if rec_norm == resp_norm:
                         score += 0.4
                 if self._has_government_response_language(resp_text):
@@ -243,13 +313,11 @@ class RecommendationResponseMatcher:
                         "source_document": resp.get("source_document", "unknown"),
                         "match_method": "keyword",
                     }
-            alignments.append(
-                {
-                    "recommendation": rec,
-                    "response": best_match,
-                    "has_response": best_match is not None,
-                }
-            )
+            alignments.append({
+                "recommendation": rec,
+                "response": best_match,
+                "has_response": best_match is not None,
+            })
         return alignments
 
     def _keyword_similarity(self, text1: str, text2: str) -> float:
@@ -262,22 +330,9 @@ class RecommendationResponseMatcher:
         base_score = intersection / union if union > 0 else 0.0
 
         gov_terms = {
-            "government",
-            "recommendation",
-            "accept",
-            "support",
-            "implement",
-            "policy",
-            "department",
-            "nhs",
-            "england",
-            "health",
-            "care",
-            "provider",
-            "commissioner",
-            "trust",
-            "board",
-            "cqc",
+            "government", "recommendation", "accept", "support", "implement",
+            "policy", "department", "nhs", "england", "health", "care",
+            "provider", "commissioner", "trust", "board", "cqc",
         }
         gov_matches = len((words1 & words2) & gov_terms)
         gov_boost = min(gov_matches * 0.05, 0.15)
@@ -321,26 +376,13 @@ class RecommendationResponseMatcher:
     def _has_government_response_language(self, text: str) -> bool:
         text_lower = text.lower()
         indicators = [
-            "government response",
-            "the government supports",
-            "the government accepts",
-            "the government agrees",
-            "the government notes",
-            "the government rejects",
-            "we accept",
-            "we support",
-            "we agree",
-            "we welcome",
-            "accept the recommendation",
-            "support the recommendation",
-            "accept this recommendation",
-            "nhs england has",
-            "nhs england will",
-            "nhs england is",
-            "care quality commission",
-            "nice is",
-            "we have convened",
-            "we are happy to confirm",
+            "government response", "the government supports", "the government accepts",
+            "the government agrees", "the government notes", "the government rejects",
+            "we accept", "we support", "we agree", "we welcome",
+            "accept the recommendation", "support the recommendation",
+            "accept this recommendation", "nhs england has", "nhs england will",
+            "nhs england is", "care quality commission", "nice is",
+            "we have convened", "we are happy to confirm",
         ]
         return any(ind in text_lower for ind in indicators)
 
@@ -366,7 +408,7 @@ class RecommendationResponseMatcher:
         """
         text_lower = text.lower()
         
-        # PRIORITY 1: Check for full rejection (recommendation itself rejected)
+        # PRIORITY 1: Full rejection
         full_rejection_patterns = [
             r"\breject(?:s|ed)?\s+(?:this\s+|the\s+)?recommendation",
             r"\bdoes?\s+not\s+accept\s+(?:this\s+|the\s+)?recommendation",
@@ -378,8 +420,7 @@ class RecommendationResponseMatcher:
             if re.search(pattern, text_lower):
                 return "Rejected", 0.9
         
-        # PRIORITY 2: Check for partial acceptance / partial rejection
-        # This catches "do not support mandating" + "however we expect" patterns
+        # PRIORITY 2: Partial acceptance / rejection
         partial_patterns = [
             r"\baccept(?:s|ed)?\s+(?:this\s+|the\s+)?(?:recommendation\s+)?in\s+(?:part|principle)",
             r"\bpartially\s+accept",
@@ -395,8 +436,7 @@ class RecommendationResponseMatcher:
             if re.search(pattern, text_lower):
                 return "Partial", 0.85
         
-        # Check for partial rejection of approach (not full rejection)
-        # e.g., "do not support mandating how systems review" = Partial
+        # Partial rejection of approach (not full rejection)
         partial_rejection_patterns = [
             r"\bdo(?:es)?\s+not\s+support\s+(?:mandating|requiring|prescribing)\b",
             r"\bwill\s+not\s+(?:be\s+)?mandat(?:ing|e)\b",
@@ -404,11 +444,10 @@ class RecommendationResponseMatcher:
         ]
         for pattern in partial_rejection_patterns:
             if re.search(pattern, text_lower):
-                # Only mark as Partial if there's also positive language
                 if re.search(r"\b(?:recognis|support|expect|however|important)", text_lower):
                     return "Partial", 0.8
         
-        # PRIORITY 3: Check for explicit acceptance
+        # PRIORITY 3: Explicit acceptance
         accepted_patterns = [
             r"\baccept(?:s|ed)?\s+(?:this\s+|the\s+)?recommendation",
             r"\bsupport(?:s|ed)?\s+(?:this\s+|the\s+)?recommendation",
@@ -424,7 +463,7 @@ class RecommendationResponseMatcher:
             if re.search(pattern, text_lower):
                 return "Accepted", 0.9
         
-        # PRIORITY 4: Check for implicit acceptance (taking action)
+        # PRIORITY 4: Implicit acceptance (taking action)
         implicit_acceptance_patterns = [
             r"\bcommitted\s+to\s+(?:working|improving|delivering|ensuring)",
             r"\bconvened\s+(?:a\s+)?(?:working|expert)\s+group",
@@ -440,7 +479,7 @@ class RecommendationResponseMatcher:
             if re.search(pattern, text_lower):
                 return "Accepted", 0.8
         
-        # PRIORITY 5: Check for "noted" patterns
+        # PRIORITY 5: Noted
         noted_patterns = [
             r"\bnote(?:s|d)?\s+(?:this\s+|the\s+)?recommendation",
             r"\backnowledge(?:s|d)?\s+(?:this\s+|the\s+)?recommendation",
@@ -449,7 +488,7 @@ class RecommendationResponseMatcher:
             if re.search(pattern, text_lower):
                 return "Noted", 0.75
         
-        # Fallback - check for positive language
+        # Fallback
         if any(word in text_lower for word in ["support", "accept", "welcome", "agree", "committed", "happy to confirm"]):
             return "Accepted", 0.6
         
@@ -457,428 +496,8 @@ class RecommendationResponseMatcher:
 
 
 # --------------------------------------------------------------------------- #
-# Response extraction helpers
+# Lightweight keyword-based helpers (exposed for UI)
 # --------------------------------------------------------------------------- #
-
-
-def is_recommendation_text(text: str) -> bool:
-    text_lower = text.lower().strip()
-    recommendation_starters = [
-        r"^nhs\s+england\s+should",
-        r"^providers?\s+should",
-        r"^trusts?\s+should",
-        r"^boards?\s+should",
-        r"^icss?\s+should",
-        r"^ics\s+and\s+provider",
-        r"^cqc\s+should",
-        r"^dhsc\s+should",
-        r"^dhsc,?\s+in\s+partnership",
-        r"^every\s+provider",
-        r"^all\s+providers?\s+should",
-        r"^provider\s+boards?\s+should",
-        r"^this\s+multi-professional\s+alliance\s+should",
-        r"^the\s+review\s+should",
-        r"^commissioners?\s+should",
-        r"^regulators?\s+should",
-        r"^recommendation\s+\d+\s+[a-z]",
-        r"^we\s+recommend",
-        r"^hsib\s+recommends",
-        r"^it\s+should\s+also",
-        r"^they\s+should",
-        r"^this\s+forum\s+should",
-        r"^this\s+programme\s+should",
-        r"^these\s+systems\s+should",
-        r"^the\s+digital\s+platforms",
-        r"^the\s+output\s+of\s+the",
-        r"^including,?\s+where\s+appropriate",
-        r"^to\s+facilitate\s+this",
-    ]
-    return any(re.search(pattern, text_lower) for pattern in recommendation_starters)
-
-
-def is_genuine_response(text: str) -> bool:
-    text_lower = text.lower().strip()
-    strong_starters = [
-        r"^government\s+response",
-        r"^the\s+government\s+supports?",
-        r"^the\s+government\s+accepts?",
-        r"^the\s+government\s+agrees?",
-        r"^the\s+government\s+notes?",
-        r"^the\s+government\s+rejects?",
-        r"^the\s+government\s+recognises?",
-        r"^the\s+government\s+is\s+committed",
-        r"^the\s+government\s+will",
-        r"^we\s+support",
-        r"^we\s+accept",
-        r"^we\s+agree",
-        r"^we\s+welcome",
-        r"^we\s+are\s+happy\s+to\s+confirm",
-        r"^dhsc\s+and\s+nhs\s+england\s+support",
-        r"^nhs\s+england\s+(?:has|will|is)",
-        r"^care\s+quality\s+commission\s+(?:is|has|will)",
-        r"^the\s+national\s+institute\s+for\s+health",
-        r"^nice\s+(?:is|has|will)",
-    ]
-    return any(re.search(pattern, text_lower) for pattern in strong_starters)
-
-
-def has_pdf_artifacts(text: str) -> bool:
-    artifacts = [
-        r"\d{1,2}/\d{1,2}/\d{2,4},?\s+\d{1,2}:\d{2}\s*(AM|PM)?",
-        r"GOV\.UK",
-        r"https?://www\.gov\.uk",
-        r"https?://www\.england\.nhs\.uk",
-        r"\d+/\d+\s*$",
-    ]
-    return any(re.search(pattern, text, re.IGNORECASE) for pattern in artifacts)
-
-
-def clean_pdf_artifacts(text: str) -> str:
-    text = re.sub(r"\d{1,2}/\d{1,2}/\d{2,4},?\s+\d{1,2}:\d{2}\s*(AM|PM)?\s*", "", text)
-    text = re.sub(r"https?://[^\s]+", "", text)
-    text = re.sub(r"Government response to the rapid review.*?GOV\.UK[^\n]*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-# --------------------------------------------------------------------------- #
-# HSIB Response Extraction - FIXED with PyPDF2 compatibility
-# --------------------------------------------------------------------------- #
-
-def is_hsib_response_document(text: str) -> bool:
-    """
-    Detect if a document is an HSIB/HSSIB-style response document.
-    
-    v2.5 FIX: Ultra-forgiving detection for PyPDF2 mangled text
-    """
-    if not text:
-        return False
-    
-    # Very forgiving HSIB recommendation patterns
-    # Handles: "R/2024/025", "2018/006", "R / 2024 / 025", "2018 / 006"
-    has_hsib_rec = bool(re.search(r'[Rr]ecommendation\s*[R/]?\s*\d{4}\s*/\s*\d{3}', text))
-    
-    # Very forgiving Response header pattern
-    # Handles: "Response", "Response\n", "ResponseNHS", etc.
-    has_response_header = bool(re.search(r'\bResponse\b', text, re.IGNORECASE))
-    
-    # HSIB/HSSIB mentions
-    has_hsib_mention = bool(re.search(r'\bH[SS]I?B\b', text, re.IGNORECASE))
-    
-    # If we have HSIB-style recommendation IDs, it's definitely HSIB format
-    if has_hsib_rec:
-        logger.info("✅ HSIB format detected: Found HSIB-style recommendation IDs")
-        return True
-    
-    # Or if we have HSIB mentions + Response headers (probably HSIB)
-    if has_hsib_mention and has_response_header:
-        logger.info("✅ HSIB format detected: Found HSIB mentions + Response headers")
-        return True
-    
-    logger.info(f"❌ HSIB format NOT detected (has_rec: {has_hsib_rec}, has_resp: {has_response_header}, has_hsib: {has_hsib_mention})")
-    return False
-     
-def extract_target_org_from_text(text: str) -> Optional[str]:
-    """Extract target organisation from recommendation or response text."""
-    if not text:
-        return None
-    
-    text_lower = text.lower()
-    
-    # Check for specific organisations (order matters - more specific first)
-    if 'national institute for health and care research' in text_lower or 'nihr' in text_lower:
-        return 'nihr'
-    if 'department of health and social care' in text_lower or 'dhsc' in text_lower:
-        return 'dhsc'
-    if 'nhs england' in text_lower:
-        return 'nhs_england'
-    if 'care quality commission' in text_lower or 'cqc' in text_lower:
-        return 'cqc'
-    if 'national institute for health and care excellence' in text_lower or 'nice' in text_lower:
-        return 'nice'
-    if 'royal college' in text_lower:
-        return 'royal_college'
-    
-    return None
-
-
-def extract_hsib_responses(text: str) -> List[Dict]:
-    """
-    Extract responses from HSIB-format response documents.
-    
-    HSIB format uses:
-    - Organisation name as section header
-    - "Response" as standalone header
-    - Responses follow immediately after the recommendation they address
-    
-    v2.1 FIX: Uses multiple patterns for PyPDF2 compatibility
-    v2.2 FIX: Adds organisation extraction for better matching
-    """
-    if not text:
-        return []
-    
-    responses = []
-    
-    # Pattern to find HSIB recommendation markers
-    hsib_rec_patterns = [
-        re.compile(r'Safety\s+recommendation\s+(R/\d{4}/\d{3})[:\s]', re.IGNORECASE),
-        re.compile(r'Recommendation\s+(\d{4}/\d{3})[:\s]', re.IGNORECASE),
-    ]
-    
-    # Find all recommendation positions
-    rec_matches = []
-    for pattern in hsib_rec_patterns:
-        rec_matches.extend(list(pattern.finditer(text)))
-    rec_matches.sort(key=lambda m: m.start())
-    
-    # ==========================================================================
-    # FIX: Multiple patterns to catch all Response headers (PyPDF2 compatibility)
-    # ==========================================================================
-    response_patterns = [
-        re.compile(r'(?:^|\n)\s*Response\s*\n', re.IGNORECASE | re.MULTILINE),  # Standard
-        re.compile(r'Response(?=[A-Z][a-z])', re.IGNORECASE),  # Merged: "ResponseNHS England..."
-    ]
-    
-    response_matches = []
-    for pattern in response_patterns:
-        response_matches.extend(list(pattern.finditer(text)))
-    
-    # Deduplicate by position (within 20 chars)
-    unique_matches = []
-    last_pos = -100
-    for m in sorted(response_matches, key=lambda x: x.start()):
-        if m.start() - last_pos > 20:
-            unique_matches.append(m)
-            last_pos = m.start()
-    response_matches = unique_matches
-    # ==========================================================================
-    
-    # Organisation headers that act as section boundaries
-    org_header_pattern = re.compile(
-        r'(?:^|\n)\s*(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence|National\s+Institute|Royal\s+College\s+of\s+Psychiatrists|Royal\s+College)\s*\n',
-        re.IGNORECASE | re.MULTILINE
-    )
-    org_headers = list(org_header_pattern.finditer(text))
-    
-    # Other boundary markers
-    boundary_markers = [
-        r'\n\s*Actions\s+planned\s+to\s+deliver',
-        r'\n\s*Safety\s+(?:observation|action)',
-        r'\n\s*Response\s+received\s+on',
-    ]
-    
-    logger.info(f"HSIB: Found {len(rec_matches)} recommendations and {len(response_matches)} response headers")
-    
-    # Extract response text for each "Response" header
-    for idx, resp_match in enumerate(response_matches):
-        start = resp_match.end()
-        end = len(text)
-        
-        # Check for next "Response" header
-        if idx + 1 < len(response_matches):
-            end = min(end, response_matches[idx + 1].start())
-        
-        # Check for organisation headers
-        for org_match in org_headers:
-            if org_match.start() > start and org_match.start() < end:
-                end = org_match.start()
-                break
-        
-        # Check for other boundary markers
-        for boundary in boundary_markers:
-            boundary_match = re.search(boundary, text[start:end], re.IGNORECASE)
-            if boundary_match:
-                potential_end = start + boundary_match.start()
-                if potential_end > start + 50:
-                    end = min(end, potential_end)
-        
-        response_text = text[start:end].strip()
-        response_text = re.sub(r'\s+', ' ', response_text)
-        
-        if len(response_text) < 30:
-            continue
-        
-        # Find the org header that precedes this response
-        prev_org_pos = 0
-        for org_match in org_headers:
-            if org_match.start() < resp_match.start():
-                prev_org_pos = org_match.start()
-            else:
-                break
-        
-        # Find recommendation between prev_org_pos and this response
-        rec_id = None
-        for rec_match in rec_matches:
-            if prev_org_pos <= rec_match.start() < resp_match.start():
-                rec_id = rec_match.group(1)
-        
-        # Extract organisation from response text
-        source_org = extract_target_org_from_text(response_text)
-        
-        responses.append({
-            'text': response_text,
-            'position': start,
-            'response_type': 'hsib_structured',
-            'confidence': 0.95,
-            'rec_number': rec_id,
-            'rec_id': rec_id,
-            'source_org': source_org,
-        })
-    
-    logger.info(f"Extracted {len(responses)} HSIB responses")
-    return responses
-
-
-# --------------------------------------------------------------------------- #
-# Main Response Extraction Function
-# --------------------------------------------------------------------------- #
-
-def extract_response_sentences(text: str) -> List[Dict]:
-    """
-    Extract sentences that are government responses.
-    Auto-detects HSIB vs standard government format.
-    """
-    if not text:
-        return []
-
-    # Check for HSIB format first
-    if is_hsib_response_document(text):
-        logger.info("Detected HSIB response document format")
-        return extract_hsib_responses(text)
-
-    # Standard government format extraction
-    logger.info("Using standard government response extraction")
-    
-    text = clean_pdf_artifacts(text)
-    responses: List[Dict] = []
-    seen_responses = set()
-
-    gov_resp_starts = []
-    for match in re.finditer(r"Government\s+response\s+to\s+recommendation\s+(\d+)", text, re.IGNORECASE):
-        gov_resp_starts.append({"pos": match.start(), "end": match.end(), "rec_num": match.group(1)})
-
-    rec_positions = []
-    for match in re.finditer(r"Recommendation\s+(\d+)\s+([A-Z])", text):
-        rec_positions.append({"pos": match.start(), "rec_num": match.group(1)})
-
-    logger.info(f"Found {len(gov_resp_starts)} government response headers")
-    logger.info(f"Found {len(rec_positions)} recommendation markers")
-
-    structured_spans: List[Tuple[int, int]] = []
-    structured_texts: List[str] = []
-
-    for i, gov_resp in enumerate(gov_resp_starts):
-        start_pos = gov_resp["end"]
-        rec_num = gov_resp["rec_num"]
-        end_pos = len(text)
-
-        if i + 1 < len(gov_resp_starts):
-            next_gov = gov_resp_starts[i + 1]["pos"]
-            if next_gov < end_pos:
-                end_pos = next_gov
-
-        for rec_pos in rec_positions:
-            if rec_pos["pos"] > start_pos and rec_pos["pos"] < end_pos:
-                end_pos = rec_pos["pos"]
-                break
-
-        resp_content = text[start_pos:end_pos].strip()
-        if not resp_content:
-            continue
-        resp_content = clean_pdf_artifacts(resp_content)
-
-        responses.append(
-            {
-                "text": resp_content,
-                "position": start_pos,
-                "response_type": "structured",
-                "confidence": 0.95,
-                "rec_number": rec_num,
-            }
-        )
-        structured_spans.append((start_pos, end_pos))
-        structured_texts.append(resp_content)
-
-    # Sentence-level responses
-    sentence_spans = []
-    start_idx = 0
-    for match in re.finditer(r"(?<=[.!?])\s+", text):
-        end_idx = match.end()
-        sentence_spans.append((start_idx, end_idx))
-        start_idx = end_idx
-    if start_idx < len(text):
-        sentence_spans.append((start_idx, len(text)))
-
-    for idx, (start_idx, end_idx) in enumerate(sentence_spans):
-        sentence_raw = text[start_idx:end_idx]
-        sentence_clean = clean_pdf_artifacts(sentence_raw.strip())
-        if len(sentence_clean) < 40 or len(sentence_clean) > 500:
-            continue
-        if is_recommendation_text(sentence_clean):
-            continue
-        if not is_genuine_response(sentence_clean):
-            continue
-        if any(start <= start_idx < end for start, end in structured_spans):
-            continue
-
-        sent_norm = re.sub(r"\s+", " ", sentence_clean.lower()).strip()
-        is_struct_dup = False
-        for struct_text in structured_texts:
-            struct_norm = re.sub(r"\s+", " ", struct_text.lower()).strip()
-            if not struct_norm:
-                continue
-            if sent_norm and sent_norm in struct_norm:
-                is_struct_dup = True
-                break
-            sent_tokens = set(sent_norm.split())
-            if not sent_tokens:
-                continue
-            overlap = len(sent_tokens & set(struct_norm.split())) / len(sent_tokens)
-            if overlap >= 0.8:
-                is_struct_dup = True
-                break
-        if is_struct_dup:
-            continue
-
-        resp_key = sentence_clean[:100].lower()
-        if resp_key in seen_responses:
-            continue
-        seen_responses.add(resp_key)
-        rec_ref = re.search(r"recommendation\s+(\d+)", sentence_clean.lower())
-        responses.append(
-            {
-                "text": sentence_clean,
-                "position": idx,
-                "response_type": "sentence",
-                "confidence": 0.85,
-                "rec_number": rec_ref.group(1) if rec_ref else None,
-            }
-        )
-
-    logger.info(f"Extracted {len(responses)} genuine responses")
-    return responses
-
-
-__all__ = [
-    "RecommendationResponseMatcher",
-    "is_recommendation_text",
-    "is_genuine_response",
-    "has_pdf_artifacts",
-    "clean_pdf_artifacts",
-    "extract_response_sentences",
-    "is_hsib_response_document",
-    "extract_hsib_responses",
-    "find_pattern_matches",
-    "align_recommendations_with_responses",
-    "determine_alignment_status",
-    "calculate_simple_similarity",
-    "classify_content_type",
-]
-
-# --------------------------------------------------------------------------- #
-# Lightweight keyword-based response finding and alignment (exposed for UI)
-# --------------------------------------------------------------------------- #
-
 
 def classify_content_type(sentence: str) -> str:
     """Classify sentence content type based on common policy categories."""
@@ -916,16 +535,14 @@ def find_pattern_matches(documents: List[Dict[str, Any]], patterns: List[str], m
             sentence_lower = sentence_clean.lower()
             if any(pat in sentence_lower for pat in normalized):
                 pos = text.find(sentence_clean)
-                matches.append(
-                    {
-                        "sentence": sentence_clean,
-                        "document": doc,
-                        "pattern": match_type,
-                        "position": pos,
-                        "page_number": max(1, pos // 2000 + 1) if pos >= 0 else 1,
-                        "content_type": classify_content_type(sentence_clean),
-                    }
-                )
+                matches.append({
+                    "sentence": sentence_clean,
+                    "document": doc,
+                    "pattern": match_type,
+                    "position": pos,
+                    "page_number": max(1, pos // 2000 + 1) if pos >= 0 else 1,
+                    "content_type": classify_content_type(sentence_clean),
+                })
 
     return matches
 
@@ -957,14 +574,12 @@ def align_recommendations_with_responses(
             if resp.get("document", {}).get("filename") == rec_doc and resp.get("position", 0) > rec.get("position", 0):
                 similarity *= 1.1
             if similarity >= similarity_threshold:
-                best_responses.append(
-                    {
-                        "response": resp,
-                        "combined_score": min(similarity, 1.0),
-                        "similarity_score": similarity,
-                        "same_document": resp["document"]["filename"] == rec_doc,
-                    }
-                )
+                best_responses.append({
+                    "response": resp,
+                    "combined_score": min(similarity, 1.0),
+                    "similarity_score": similarity,
+                    "same_document": resp["document"]["filename"] == rec_doc,
+                })
         best_responses.sort(key=lambda x: x["combined_score"], reverse=True)
         alignment = {
             "recommendation": rec,
@@ -989,3 +604,25 @@ def calculate_simple_similarity(text1: str, text2: str) -> float:
     intersection = len(words1 & words2)
     union = len(words1 | words2)
     return intersection / union if union > 0 else 0.0
+
+
+# Re-export everything for backwards compatibility
+__all__ = [
+    # Main class
+    "RecommendationResponseMatcher",
+    # Re-exported from response_extractor
+    "is_recommendation_text",
+    "is_genuine_response",
+    "has_pdf_artifacts",
+    "clean_pdf_artifacts",
+    "is_hsib_response_document",
+    "extract_target_org_from_text",
+    "extract_hsib_responses",
+    "extract_response_sentences",
+    # Helper functions
+    "find_pattern_matches",
+    "align_recommendations_with_responses",
+    "determine_alignment_status",
+    "calculate_simple_similarity",
+    "classify_content_type",
+]
