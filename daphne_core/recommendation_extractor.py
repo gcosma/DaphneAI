@@ -1,14 +1,36 @@
 """
-Recommendation Extractor v3.5
+Recommendation Extractor v3.8
 Extracts recommendation blocks from government and health sector documents.
 
-v3.5 Changes:
-- FIXED: Numbered subsection detection (4.2.1, 4.3.3, etc.) now properly ends recommendations
-- FIXED: HSSIB "Safety observation" and "HSSIB makes the following" patterns detected
-- FIXED: Report 7 style "Recommendation N:" with colon now detected
-- FIXED: Better handling of "lessons learned" and "good practice" section boundaries
-- ADDED: More robust detection for Trust-specific recommendations (TEWV must ensure...)
-- ADDED: Explicit stop patterns for findings sections
+v3.8 Changes:
+- FIXED: Remaining contamination in Reports 3, 4, 6
+- ADDED: Three-level paragraph detection (4.1.33, 4.2.11) as hard boundaries
+- ADDED: HSIB finding starters ("While national guidance", "Current research only")
+- ADDED: "HSSIB proposes" as boundary marker
+- ADDED: Investigation narrative markers ("The investigation visited/found")
+- ADDED: Staff/expert input markers ("Staff told", "Subject matter advisors")
+- IMPROVED: Section header detection now works without leading newlines
+
+v3.7 Changes (preserved):
+- PDF merge issues where "toWhile" or "toCurrent" have no space
+- More HSSIB section headers - "first episode of psychosis pathway"
+- "HSSIB proposes the following safety" as boundary marker
+- "Impact of built environments" section marker
+
+v3.6 Changes (preserved):
+- FIXED: Numbered subsection detection now works WITHOUT newlines (PDF extraction issue)
+- FIXED: Patterns like ". 4.2 What" and ". 4.2.1 Subject" now properly end recommendations
+- ADDED: HSSIB content markers - "This section considers", "The investigation found/visited"
+- ADDED: "Staff told", "Hospital environment", "New builds" as boundary markers
+- ADDED: More robust sentence-end detection for numbered sections
+
+v3.5 Changes (preserved):
+- Numbered subsection detection (4.2.1, 4.3.3, etc.) with newline prefix
+- HSSIB "Safety observation" and "HSSIB makes the following" patterns detected
+- Report 7 style "Recommendation N:" with colon now detected
+- Better handling of "lessons learned" and "good practice" section boundaries
+- More robust detection for Trust-specific recommendations (TEWV must ensure...)
+- Explicit stop patterns for findings sections
 
 v3.4 Changes (preserved):
 - Section markers now require newline prefix to avoid matching within text
@@ -20,6 +42,7 @@ v3.3 Changes (preserved):
 - Added explicit markers for "Our vision" and similar post-recommendations sections
 - HSIB deduplication by rec_number (keeps longest version)
 - MAX_RECOMMENDATION_LENGTH increased to 2500 for longer government recs
+
 
 Supported Formats:
 - HSIB 2018 format: "Recommendation 2018/006:", "Recommendation 2018/007:"
@@ -269,18 +292,68 @@ class StrictRecommendationExtractor:
         Returns True if position appears to be at a major section break.
         
         v3.5: Added detection for numbered subsections (4.2.1, 4.3.3)
+        v3.8: Added HSIB/HSSIB-specific boundary patterns for contamination fix
         """
         if position >= len(text):
             return True
         
         # Look at text from this position
-        remaining = text[position:position + 200]
+        remaining = text[position:position + 300]
+        remaining_stripped = remaining.lstrip()
         
-        # v3.5: Check for numbered subsection headers: "4.2.1", "4.3.3 The hospital"
+        # =====================================================================
+        # v3.8: HSIB/HSSIB-SPECIFIC BOUNDARY PATTERNS
+        # These patterns indicate findings/analysis sections, not recommendations
+        # =====================================================================
+        
+        # Pattern: Numbered paragraphs like "4.1.33 The latest" or "4.2.11 Mental"
+        # Three-level numbering = findings paragraph (HARD BOUNDARY)
+        if re.match(r'^\d+\.\d+\.\d+\s', remaining_stripped):
+            return True
+        
+        # Pattern: Section headers like "4.2 What competencies" or "4.3 The first"
+        # Two-level numbering followed by text (HARD BOUNDARY)
+        if re.match(r'^\d+\.\d+\s+[A-Z]', remaining_stripped):
+            return True
+        
+        # Pattern: HSSIB safety response separator
+        if remaining_stripped.startswith('HSSIB proposes'):
+            return True
+        
+        # Pattern: Common HSIB finding starters (at sentence boundary)
+        hsib_finding_starters = [
+            'While national guidance',
+            'Current research only',
+            'The investigation',
+            'During the investigation',
+            'In the following sections',
+            'This section considers',
+            'This section explores',
+            'Staff told the investigation',
+            'Subject matter advisors',
+            'Mental health practitioners told',
+        ]
+        for starter in hsib_finding_starters:
+            if remaining_stripped.startswith(starter):
+                return True
+        
+        # Pattern: "New builds and" or similar subsection titles in HSSIB
+        if re.match(r'^New builds and', remaining_stripped):
+            return True
+        
+        # Pattern: "Infrastructure - " subsection headers
+        if re.match(r'^Infrastructure\s*[-–]', remaining_stripped):
+            return True
+        
+        # =====================================================================
+        # ORIGINAL v3.5 PATTERNS (preserved)
+        # =====================================================================
+        
+        # Check for numbered subsection headers: "4.2.1", "4.3.3 The hospital"
         if re.match(r'^\s*\d+\.\d+(?:\.\d+)?\s+[A-Z]', remaining):
             return True
         
-        # Check for numbered section headers: "1 Background", "2. Analysis", "1.1 Introduction"
+        # Check for numbered section headers: "1 Background", "2. Analysis"
         if re.match(r'^\s*\d+\.?\d*\.?\s+[A-Z][a-z]+', remaining):
             return True
         
@@ -388,16 +461,20 @@ class StrictRecommendationExtractor:
             r'\bSafety\s+observation\s+[A-Z]/\d{4}/\d{3}\b',
             r'\bProposed\s+(?:ICB|safety)\s+(?:response|action)\b',
             
-            # v3.5: Numbered subsections (critical for reports 3, 4, 6)
-            r'\n\s*\d+\.\d+\.\d+\s+[A-Z]',  # 4.2.1 Section
-            r'\n\s*\d+\.\d+\s+[A-Z][a-z]+',  # 4.2 Section
+            # v3.6 FIX: Numbered subsections - match after sentence end OR newline
+            # PDF extraction often removes newlines, so we catch both patterns
+            r'(?<=[.!?])\s+\d+\.\d+\.\d+\s+[A-Z]',  # ". 4.2.1 Section"
+            r'(?<=[.!?])\s+\d+\.\d+\s+[A-Z][a-z]',   # ". 4.2 What"
+            r'\n\s*\d+\.\d+\.\d+\s+[A-Z]',           # "\n4.2.1 Section" (original)
+            r'\n\s*\d+\.\d+\s+[A-Z][a-z]+',          # "\n4.2 Section" (original)
             
             # v3.5: Report 7 specific - lessons learned sections
             r'\bLessons\s+(?:learned|learnt)\b',
             r'\bGood\s+practice\b',
             r'\bAreas?\s+(?:of|for)\s+(?:good\s+practice|improvement)\b',
             
-            # Generic numbered sections
+            # v3.6 FIX: Generic numbered sections - also catch after sentence end
+            r'(?<=[.!?])\s+\d+\.?\s+[A-Z][a-z]+(?:\s+[a-z]+){0,3}(?=\s)',
             r'\n\s*\d+\.?\s+[A-Z][a-z]+(?:\s+[a-z]+){0,3}\s*\n',
         ]
         
@@ -406,6 +483,24 @@ class StrictRecommendationExtractor:
             r'\bWhy\'?s?\s+diagram\b',  # Report 7 specific
             r'\bFigure\s+\d+[:\s]',
             r'\bTable\s+\d+[:\s]',
+            
+            # v3.7 FIX: PDF merge issues where spaces are lost
+            r'(?:to|\.)\s*While\s+(?:national|there\s+is)',  # "toWhile national" or ". While"
+            r'(?:to|\.)\s*Current\s+research\s+only',        # PDF merge at "toCurrent research"
+            
+            # v3.8 FIX: HSIB finding paragraph starters (cause contamination in Reports 3, 4, 6)
+            r'\b\d+\.\d+\.\d+\s+(?:The|A|In|Staff|Subject|Mental|While|Current)',  # "4.1.33 The latest"
+            r'\b\d+\.\d+\s+(?:What|The|How|Why|Where|When|Impact|Capability|Awareness)',  # "4.2 What competencies"
+            r'(?<=[.!?])\s+While\s+national\s+guidance',     # Finding starter after sentence
+            r'(?<=[.!?])\s+Current\s+research\s+only',       # Finding starter after sentence
+            r'(?<=[.!?])\s+The\s+investigation\s+(?:was|visited|observed|found|\'s)',  # Investigation narrative
+            r'(?<=[.!?])\s+Staff\s+(?:told|said|reported|also)',  # Interview content
+            r'(?<=[.!?])\s+Subject\s+matter\s+advisors',     # Expert input marker
+            r'(?<=[.!?])\s+Mental\s+health\s+practitioners\s+told',  # Interview content
+            r'\bHSSIB\s+proposes\s+the\s+following\b',       # Safety response separator
+            r'(?<=[.!?])\s+In\s+the\s+following\s+sections', # Section intro marker
+            r'(?<=[.!?])\s+New\s+builds\s+and',              # HSSIB subsection
+            r'(?<=[.!?])\s+Infrastructure\s*[-–]',           # HSSIB subsection header
         ]
         
         # v3.4: Section headers that could appear as phrases within text
@@ -422,6 +517,23 @@ class StrictRecommendationExtractor:
             r'(?:^|[.!?]\s+)Data\s+on\s+deaths\b',
             r'(?:^|[.!?]\s+)Poor\s+safety\s+outcomes\b',
             r'(?:^|[.!?]\s+)Conclusion(?:s)?(?:\s+and\s+next\s+steps)?\b',
+            
+            # v3.6: HSSIB report content markers - indicate we've left recommendation text
+            r'(?:^|[.!?]\s+)This\s+section\s+(?:considers|explores|examines|discusses|looks\s+at)\b',
+            r'(?:^|[.!?]\s+)The\s+investigation(?:\'s)?\s+(?:found|visited|observed|focus)\b',
+            r'(?:^|[.!?]\s+)(?:Staff|Interviewees|Those\s+interviewed)\s+(?:told|said|reported)\b',
+            r'(?:^|[.!?]\s+)Hospital\s+environment\b',
+            r'(?:^|[.!?]\s+)The\s+reference\s+investigation\b',
+            r'(?:^|[.!?]\s+)New\s+builds\s+and\s+the\s+New\s+Hospital\s+Programme\b',
+            r'(?:^|[.!?]\s+)Infrastructure\s+-\s+digital\b',
+            r'(?:^|[.!?]\s+)Awareness\s+of\s+women\'?s?\s+health\b',
+            r'(?:^|[.!?]\s+)Capability\s+to\s+provide\b',
+            
+            # v3.7: Additional HSSIB section headers from Reports 3, 4, 6
+            r'(?:^|[.!?]\s+)The\s+first\s+episode\s+of\s+psychosis\s+pathway\b',
+            r'(?:^|[.!?]\s+)Mental\s+health\s+practitioners\s+told\b',
+            r'(?:^|[.!?]\s+)HSSIB\s+proposes\s+the\s+following\s+safety\b',
+            r'(?:^|[.!?]\s+)Impact\s+of\s+built\s+environments\b',
         ]
         
         earliest_boundary = search_limit
