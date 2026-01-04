@@ -193,6 +193,8 @@ def is_trust_response_document(text: str) -> bool:
     Detect if a document is a Trust response document (Report 7 style).
     
     Format: "Recommendation N" followed by "TEWV response:" or "[Trust] response:"
+    
+    v2.7: Updated to handle PDFs with no line breaks
     """
     if not text:
         return False
@@ -200,9 +202,11 @@ def is_trust_response_document(text: str) -> bool:
     # Normalise line endings
     text = normalise_line_endings(text)
     
-    # Check for Trust response patterns
+    # Check for Trust response patterns - more flexible (no newline required)
     has_trust_response = bool(re.search(r'(?:TEWV|Trust)\s+response[:\s]', text, re.IGNORECASE))
-    has_recommendation_headers = bool(re.search(r'Recommendation\s+\d+\s*\n', text))
+    
+    # Check for recommendation headers - flexible pattern (newline OR followed by text)
+    has_recommendation_headers = bool(re.search(r'Recommendation\s+\d+\s*(?:\n|[A-Z])', text))
     
     logger.info(f"Trust detection: has_trust_response={has_trust_response}, has_recommendation_headers={has_recommendation_headers}")
     
@@ -219,6 +223,8 @@ def is_org_based_hsib_response(text: str) -> bool:
     
     Format: Organisation headers (NHS England, CQC, etc.) followed by 
     "HSIB recommends..." then "Response" header, but NO rec IDs like R/2023/220
+    
+    v2.7: Updated to handle PDFs with no line breaks - uses context patterns
     """
     if not text:
         return False
@@ -229,13 +235,38 @@ def is_org_based_hsib_response(text: str) -> bool:
     # Must have "HSIB recommends" pattern
     has_hsib_recommends = bool(re.search(r'HSIB\s+recommends', text, re.IGNORECASE))
     
-    # Must have standalone "Response" headers (on their own line)
-    # More forgiving pattern that handles various whitespace
-    has_response_headers = bool(re.search(r'(?:^|\n)\s*Response\s*(?:\n|$)', text, re.MULTILINE))
+    # Check for "Response" followed by org starting their response
+    # Pattern: "Response" followed by org name or response-starting words
+    # e.g., "Response NHS England has begun..." or "Response We are happy to confirm..."
+    response_followed_by_content = bool(re.search(
+        r'\bResponse\b\s*(?:NHS\s+England|Care\s+Quality\s+Commission|The\s+National|We\s+(?:are|have|welcome)|NICE\s+is)',
+        text, re.IGNORECASE
+    ))
     
-    # Must have org headers
-    org_pattern = r'(?:^|\n)\s*(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute|Royal\s+College|NICE|DHSC|The\s+Shelford\s+Group)\s*(?:\n|$)'
-    has_org_headers = bool(re.search(org_pattern, text, re.IGNORECASE | re.MULTILINE))
+    # Also check for standalone Response on its own line (if newlines exist)
+    has_response_on_line = bool(re.search(r'(?:^|\n)\s*Response\s*(?:\n|$)', text, re.MULTILINE))
+    
+    has_response_headers = response_followed_by_content or has_response_on_line
+    
+    # Check for org headers - either on own line OR as section starters after recommendations text
+    # Pattern 1: Org on its own line
+    org_on_line = bool(re.search(
+        r'(?:^|\n)\s*(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute|Royal\s+College|NICE|DHSC|The\s+Shelford\s+Group)\s*(?:\n|$)',
+        text, re.IGNORECASE | re.MULTILINE
+    ))
+    # Pattern 2: Org appearing after recommendation section markers (for no-newline PDFs)
+    org_after_section = bool(re.search(
+        r'(?:process|planning|guidance|services|management)[.\s]+(?:Response\s+)?(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute|Royal\s+College)',
+        text, re.IGNORECASE
+    ))
+    # Pattern 3: Check if document has multiple distinct org names (suggests org-based structure)
+    org_names = re.findall(
+        r'\b(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence|Royal\s+College\s+of\s+Psychiatrists)\b',
+        text, re.IGNORECASE
+    )
+    has_multiple_orgs = len(set(org.lower() for org in org_names)) >= 2
+    
+    has_org_headers = org_on_line or org_after_section or has_multiple_orgs
     
     # Should NOT have HSIB rec IDs (otherwise use standard HSIB extraction)
     has_hsib_rec_ids = bool(re.search(r'R/\d{4}/\d{3}', text))
@@ -253,7 +284,7 @@ def is_org_based_hsib_response(text: str) -> bool:
     if not has_hsib_recommends:
         logger.info("❌ Org-based HSIB: Missing 'HSIB recommends' pattern")
     if not has_response_headers:
-        logger.info("❌ Org-based HSIB: Missing standalone 'Response' headers")
+        logger.info("❌ Org-based HSIB: Missing 'Response' headers")
     if not has_org_headers:
         logger.info("❌ Org-based HSIB: Missing organisation headers")
     if has_hsib_rec_ids:
@@ -302,6 +333,8 @@ def extract_trust_responses(text: str) -> List[Dict]:
     Extract responses from Trust response documents (Report 7 style).
     
     Format: "Recommendation N" followed by "[Trust] response:" then response text
+    
+    v2.7: Updated to handle PDFs with no line breaks
     """
     if not text:
         return []
@@ -311,8 +344,8 @@ def extract_trust_responses(text: str) -> List[Dict]:
     
     responses = []
     
-    # Find all "Recommendation N" headers
-    rec_pattern = re.compile(r'Recommendation\s+(\d+)\s*\n', re.IGNORECASE)
+    # Find all "Recommendation N" headers - flexible (with or without newline)
+    rec_pattern = re.compile(r'Recommendation\s+(\d+)\s*(?:\n|(?=[A-Z]))', re.IGNORECASE)
     rec_matches = list(rec_pattern.finditer(text))
     
     # Find all "[Trust] response:" markers
@@ -363,6 +396,8 @@ def extract_org_based_hsib_responses(text: str) -> List[Dict]:
     Extract responses from org-based HSIB response documents (Report 4 style).
     
     Format: [Org Header] -> [HSIB recommends...] -> "Response" -> [Response text]
+    
+    v2.7: Updated to handle PDFs with no line breaks - uses "Response [Org]" pattern
     """
     if not text:
         return []
@@ -372,50 +407,50 @@ def extract_org_based_hsib_responses(text: str) -> List[Dict]:
     
     responses = []
     
-    # Find organisation headers
-    org_pattern = re.compile(
-        r'(?:^|\n)\s*(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence|Royal\s+College\s+of\s+Psychiatrists|NICE|DHSC|The\s+Shelford\s+Group)\s*(?:\n|$)',
-        re.IGNORECASE | re.MULTILINE
-    )
-    org_matches = list(org_pattern.finditer(text))
+    # Strategy: Find "HSIB recommends" blocks, then find "Response" after each
+    # Each "HSIB recommends" is a recommendation, "Response" starts the response
     
-    # Find "Response" headers
-    resp_pattern = re.compile(r'(?:^|\n)\s*Response\s*(?:\n|$)', re.IGNORECASE | re.MULTILINE)
+    # Find all "HSIB recommends" positions (these mark recommendations)
+    hsib_rec_pattern = re.compile(r'HSIB\s+recommends\s+that\s+(?:the\s+)?(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute[^.]*|Royal\s+College[^.]*|NICE|DHSC)', re.IGNORECASE)
+    hsib_matches = list(hsib_rec_pattern.finditer(text))
+    
+    # Find all "Response" positions
+    resp_pattern = re.compile(r'\bResponse\b', re.IGNORECASE)
     resp_matches = list(resp_pattern.finditer(text))
     
-    logger.info(f"Org-based HSIB: Found {len(org_matches)} org headers and {len(resp_matches)} response headers")
+    logger.info(f"Org-based HSIB: Found {len(hsib_matches)} 'HSIB recommends' and {len(resp_matches)} 'Response' markers")
     
-    # Match each Response header to the preceding org section
-    for idx, resp_match in enumerate(resp_matches):
-        # Find which org section this response belongs to
-        prev_org = None
-        for org_match in org_matches:
-            if org_match.start() < resp_match.start():
-                prev_org = org_match
-            else:
+    # For each HSIB recommendation, find the Response that follows it
+    for idx, hsib_match in enumerate(hsib_matches):
+        org_name = hsib_match.group(1).strip()
+        rec_start = hsib_match.start()
+        
+        # Find the end of this recommendation section (next HSIB recommends or end)
+        if idx + 1 < len(hsib_matches):
+            section_end = hsib_matches[idx + 1].start()
+        else:
+            section_end = len(text)
+        
+        # Find the "Response" within this section
+        resp_start = None
+        for resp_match in resp_matches:
+            if rec_start < resp_match.start() < section_end:
+                resp_start = resp_match.end()
                 break
         
-        if not prev_org:
+        if resp_start is None:
+            logger.warning(f"No Response found for recommendation {idx + 1} ({org_name})")
             continue
         
-        # Response starts after the "Response" header
-        resp_start = resp_match.end()
+        # Extract response text (from after "Response" to next HSIB recommends or boundary)
+        resp_end = section_end
         
-        # Response ends at next org header or next Response or end
-        resp_end = len(text)
-        
-        # Check for next org header
-        for org_match in org_matches:
-            if org_match.start() > resp_start:
-                resp_end = min(resp_end, org_match.start())
-                break
-        
-        # Check for boundary markers
+        # Check for boundary markers within the response
         boundary_patterns = [
-            r'\n\s*Actions\s+planned\s+to\s+deliver',
-            r'\n\s*Response\s+received\s+on',
-            r'\n\s*Safety\s+observation',
-            r'\n\s*Safety\s+action',
+            r'\bActions\s+planned\s+to\s+deliver',
+            r'\bResponse\s+received\s+on',
+            r'\bSafety\s+observation',
+            r'\bSafety\s+action',
         ]
         for boundary in boundary_patterns:
             match = re.search(boundary, text[resp_start:resp_end], re.IGNORECASE)
@@ -428,11 +463,8 @@ def extract_org_based_hsib_responses(text: str) -> List[Dict]:
         if len(resp_text) < 30:
             continue
         
-        # Determine which recommendation number this is (1-based index)
+        # Recommendation number is 1-based index
         rec_num = str(idx + 1)
-        
-        # Get the org name
-        org_name = prev_org.group(1).strip()
         source_org = extract_target_org_from_text(org_name)
         
         responses.append({
