@@ -6,6 +6,12 @@ This module handles:
 - Extraction of responses from PDF text
 - Text cleaning and artifact removal
 
+v2.8 Changes:
+- ADDED: HSSIB org-structured format detection (Report 6 style)
+- ADDED: is_hssib_org_structured_response() function
+- ADDED: extract_hssib_org_structured_responses() function
+- FIXED: Report 6 now correctly extracts responses grouped by organisation
+
 v2.7 Changes:
 - FIXED: Line ending normalisation at start of extract_response_sentences()
 - FIXED: All detection functions now handle \r, \n, and \r\n consistently
@@ -217,6 +223,49 @@ def is_trust_response_document(text: str) -> bool:
     return False
 
 
+def is_hssib_org_structured_response(text: str) -> bool:
+    """
+    Detect if a document is an HSSIB org-structured response (Report 6 style).
+    
+    Format: Organisation headers (Shelford Group, NHS England, DHSC) with
+    "HSSIB recommends" + rec IDs (R/2024/XXX) + "Response" headers +
+    "Actions planned" + "Response received on" markers.
+    
+    This differs from standard HSIB format because responses are grouped by ORG,
+    not just by rec ID sequence.
+    
+    v2.8: NEW - handles Report 6 format
+    """
+    if not text:
+        return False
+    
+    # Normalise line endings
+    text = normalise_line_endings(text)
+    
+    # Must have HSSIB recommendation pattern with rec IDs
+    has_hssib_rec = bool(re.search(r'HSSIB\s+recommends', text, re.IGNORECASE))
+    has_rec_ids = bool(re.search(r'R/\d{4}/\d{3}', text))
+    
+    # Must have standalone "Response" headers (not just "Response received")
+    has_response_headers = bool(re.search(r'(?:^|\n)Response\n', text, re.MULTILINE))
+    
+    # Must have org headers (including The Shelford Group)
+    org_pattern = r'(?:^|\n)(The\s+Shelford\s+Group|NHS\s+England|Department\s+of\s+Health\s+and\s+Social\s+Care|DHSC|Care\s+Quality\s+Commission|NICE)\s*\n'
+    has_org_headers = bool(re.search(org_pattern, text, re.IGNORECASE | re.MULTILINE))
+    
+    # Must have "Actions planned" or "Response received on" markers (HSSIB specific)
+    has_hssib_markers = bool(re.search(r'Actions\s+planned\s+to\s+deliver|Response\s+received\s+on', text, re.IGNORECASE))
+    
+    logger.info(f"HSSIB org-structured detection: hssib_rec={has_hssib_rec}, rec_ids={has_rec_ids}, "
+                f"response_headers={has_response_headers}, org_headers={has_org_headers}, hssib_markers={has_hssib_markers}")
+    
+    if has_hssib_rec and has_rec_ids and has_response_headers and has_org_headers and has_hssib_markers:
+        logger.info("✅ HSSIB org-structured response format detected (Report 6 style)")
+        return True
+    
+    return False
+
+
 def is_org_based_hsib_response(text: str) -> bool:
     """
     Detect if a document is an org-based HSIB response (Report 4 style).
@@ -268,7 +317,7 @@ def is_org_based_hsib_response(text: str) -> bool:
     
     has_org_headers = org_on_line or org_after_section or has_multiple_orgs
     
-    # Should NOT have HSIB rec IDs (otherwise use standard HSIB extraction)
+    # Should NOT have HSIB rec IDs (otherwise use HSSIB org-structured or standard HSIB)
     has_hsib_rec_ids = bool(re.search(r'R/\d{4}/\d{3}', text))
     
     # Log all conditions for debugging
@@ -288,7 +337,7 @@ def is_org_based_hsib_response(text: str) -> bool:
     if not has_org_headers:
         logger.info("❌ Org-based HSIB: Missing organisation headers")
     if has_hsib_rec_ids:
-        logger.info("❌ Org-based HSIB: Has R/YYYY/NNN rec IDs (use standard HSIB instead)")
+        logger.info("❌ Org-based HSIB: Has R/YYYY/NNN rec IDs (use HSSIB org-structured or standard HSIB)")
     
     return False
 
@@ -457,6 +506,109 @@ def extract_trust_responses(text: str) -> List[Dict]:
                 break
     
     logger.info(f"Extracted {len(responses)} Trust responses")
+    return responses
+
+
+def extract_hssib_org_structured_responses(text: str) -> List[Dict]:
+    """
+    Extract responses from HSSIB org-structured response documents (Report 6 style).
+    
+    Format: [Org Header] -> "HSSIB recommends..." -> "Safety recommendation R/YYYY/NNN"
+            -> "Response" -> [Response text] -> "Actions planned..." -> "Response received on..."
+    
+    Key difference from standard HSIB: responses are grouped by ORGANISATION,
+    and we need to extract the rec_id from each section.
+    
+    v2.8: NEW - handles Report 6 format
+    """
+    if not text:
+        return []
+    
+    # Normalise line endings
+    text = normalise_line_endings(text)
+    
+    responses = []
+    
+    # Find organisation headers (including The Shelford Group)
+    org_pattern = re.compile(
+        r'(?:^|\n)(The\s+Shelford\s+Group|NHS\s+England|Department\s+of\s+Health\s+and\s+Social\s+Care|DHSC|Care\s+Quality\s+Commission|National\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence|NICE|Royal\s+College[^\n]*)\s*\n',
+        re.IGNORECASE | re.MULTILINE
+    )
+    org_matches = list(org_pattern.finditer(text))
+    
+    logger.info(f"HSSIB org-structured: Found {len(org_matches)} org headers")
+    
+    for i, org_match in enumerate(org_matches):
+        org_name = org_match.group(1).strip()
+        org_start = org_match.end()
+        
+        # Find end of this org's section (next org header or end)
+        if i + 1 < len(org_matches):
+            section_end = org_matches[i + 1].start()
+        else:
+            section_end = len(text)
+        
+        section_text = text[org_start:section_end]
+        
+        # Find the rec_id from "Safety recommendation R/YYYY/NNN" in this section
+        rec_id_match = re.search(r'Safety\s+recommendation\s+(R/\d{4}/\d{3})', section_text, re.IGNORECASE)
+        if not rec_id_match:
+            # Try alternate pattern
+            rec_id_match = re.search(r'recommendation\s+(R/\d{4}/\d{3})', section_text, re.IGNORECASE)
+        
+        rec_id = rec_id_match.group(1) if rec_id_match else str(i + 1)
+        
+        # Find "Response" header in this section (standalone on its own line)
+        resp_header_match = re.search(r'\nResponse\n', section_text, re.IGNORECASE)
+        if not resp_header_match:
+            # Try alternate: Response followed by text starting with org acceptance
+            resp_header_match = re.search(r'\nResponse\s*(?=The|NHS|We|DHSC|NICE|Care)', section_text, re.IGNORECASE)
+        
+        if not resp_header_match:
+            logger.warning(f"No Response header found for org section: {org_name}")
+            continue
+        
+        resp_start = resp_header_match.end()
+        
+        # Find end boundary (Actions planned, Response received, or end of section)
+        boundary_match = re.search(
+            r'Actions\s+planned\s+to\s+deliver|Response\s+received\s+on',
+            section_text[resp_start:],
+            re.IGNORECASE
+        )
+        if boundary_match:
+            resp_end = resp_start + boundary_match.start()
+        else:
+            resp_end = len(section_text)
+        
+        resp_text = section_text[resp_start:resp_end].strip()
+        resp_text = re.sub(r'\s+', ' ', resp_text)
+        
+        if len(resp_text) < 30:
+            logger.warning(f"Response too short for {org_name}: {len(resp_text)} chars")
+            continue
+        
+        # Determine source org key
+        source_org = extract_target_org_from_text(org_name)
+        if 'shelford' in org_name.lower():
+            source_org = 'shelford_group'
+        elif 'department of health' in org_name.lower():
+            source_org = 'dhsc'
+        
+        responses.append({
+            'text': resp_text[:2000],
+            'position': org_start + resp_start,
+            'response_type': 'hssib_org_structured',
+            'confidence': 0.95,
+            'rec_number': rec_id,
+            'rec_id': rec_id,
+            'source_org': source_org,
+            'org_name': org_name,
+        })
+        
+        logger.info(f"Extracted response for {rec_id} from {org_name}")
+    
+    logger.info(f"Extracted {len(responses)} HSSIB org-structured responses")
     return responses
 
 
@@ -682,14 +834,15 @@ def extract_response_sentences(text: str) -> List[Dict]:
     
     Supported formats:
     - Standard government: "Government response to recommendation N"
+    - HSSIB org-structured (Report 6 style): Org headers + rec IDs + "HSSIB recommends"
     - HSIB with rec IDs: Documents with R/YYYY/NNN or YYYY/NNN patterns
-    - Org-based HSIB (Report 4 style): Org headers + "HSIB recommends" + "Response"
+    - Org-based HSIB (Report 4 style): Org headers + "HSIB recommends" + "Response" (no rec IDs)
     - Trust response (Report 7 style): "Recommendation N" + "[Trust] response:"
     
     Returns a list of response dictionaries with:
     - text: The response text
     - position: Position in document
-    - response_type: 'structured', 'hsib_structured', 'org_based_hsib', 'trust_response', or 'sentence'
+    - response_type: 'structured', 'hsib_structured', 'hssib_org_structured', 'org_based_hsib', 'trust_response', or 'sentence'
     - confidence: Extraction confidence score
     - rec_number: Associated recommendation number (if detected)
     """
@@ -711,13 +864,20 @@ def extract_response_sentences(text: str) -> List[Dict]:
         logger.info("✅ Detected Trust response document format")
         return extract_trust_responses(text)
     
-    # Check for org-based HSIB format (Report 4 style)
+    # v2.8: Check for HSSIB org-structured format (Report 6 style) BEFORE standard HSIB
+    # This format has BOTH org headers AND rec IDs
+    logger.info("Checking for HSSIB org-structured format...")
+    if is_hssib_org_structured_response(text):
+        logger.info("✅ Detected HSSIB org-structured response format")
+        return extract_hssib_org_structured_responses(text)
+    
+    # Check for org-based HSIB format (Report 4 style) - no rec IDs
     logger.info("Checking for org-based HSIB format...")
     if is_org_based_hsib_response(text):
         logger.info("✅ Detected org-based HSIB response format")
         return extract_org_based_hsib_responses(text)
 
-    # Check for standard HSIB format (with rec IDs)
+    # Check for standard HSIB format (with rec IDs, not org-grouped)
     logger.info("Checking for standard HSIB format...")
     if is_hsib_response_document(text):
         logger.info("✅ Detected HSIB response document format")
@@ -858,12 +1018,14 @@ __all__ = [
     "clean_pdf_artifacts",
     "is_hsib_response_document",
     "is_trust_response_document",
+    "is_hssib_org_structured_response",
     "is_org_based_hsib_response",
     "extract_target_org_from_text",
     "extract_recommendation_target_org",
     "get_response_document_org",
     "extract_hsib_responses",
     "extract_trust_responses",
+    "extract_hssib_org_structured_responses",
     "extract_org_based_hsib_responses",
     "extract_response_sentences",
 ]
