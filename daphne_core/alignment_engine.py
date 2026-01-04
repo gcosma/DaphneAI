@@ -39,10 +39,12 @@ from .response_extractor import (
     is_hsib_response_document,
     is_trust_response_document,
     is_org_based_hsib_response,
+    is_hssib_org_structured_response,
     extract_target_org_from_text,
     extract_hsib_responses,
     extract_trust_responses,
     extract_org_based_hsib_responses,
+    extract_hssib_org_structured_responses,
     extract_response_sentences,
 )
 
