@@ -6,6 +6,10 @@ This module handles:
 - Extraction of responses from PDF text
 - Text cleaning and artifact removal
 
+v2.9 Changes:
+- FIXED: Excludes "Safety observations" and "Safety actions" sections from extraction
+- FIXED: Report 6 no longer matches wrong responses from Safety actions section
+
 v2.8 Changes:
 - ADDED: HSSIB org-structured format detection (Report 6 style)
 - ADDED: is_hssib_org_structured_response() function
@@ -520,12 +524,33 @@ def extract_hssib_org_structured_responses(text: str) -> List[Dict]:
     and we need to extract the rec_id from each section.
     
     v2.8: NEW - handles Report 6 format
+    v2.9: FIXED - excludes Safety observations and Safety actions sections
     """
     if not text:
         return []
     
     # Normalise line endings
     text = normalise_line_endings(text)
+    
+    # v2.9 FIX: Find and exclude "Safety observations" and "Safety actions" sections
+    # These sections appear at the END of HSSIB response documents and should NOT be
+    # treated as responses to recommendations
+    safety_obs_match = re.search(r'\nSafety\s+observations?\s*\n', text, re.IGNORECASE)
+    safety_act_match = re.search(r'\nSafety\s+actions?\s*\n', text, re.IGNORECASE)
+    
+    # Find the earliest boundary (Safety observations or Safety actions)
+    doc_end = len(text)
+    if safety_obs_match:
+        doc_end = min(doc_end, safety_obs_match.start())
+        logger.info(f"Found 'Safety observations' at {safety_obs_match.start()}, truncating")
+    if safety_act_match:
+        doc_end = min(doc_end, safety_act_match.start())
+        logger.info(f"Found 'Safety actions' at {safety_act_match.start()}, truncating")
+    
+    # Truncate text to exclude these sections
+    if doc_end < len(text):
+        logger.info(f"Truncating document from {len(text)} to {doc_end} chars to exclude Safety observations/actions")
+        text = text[:doc_end]
     
     responses = []
     
@@ -714,12 +739,27 @@ def extract_hsib_responses(text: str) -> List[Dict]:
     
     v2.5 FIX: Now properly links responses to rec_ids by looking for the 
     recommendation ID that precedes each Response header.
+    v2.9 FIX: Excludes Safety observations and Safety actions sections.
     """
     if not text:
         return []
     
     # Normalise line endings
     text = normalise_line_endings(text)
+    
+    # v2.9 FIX: Find and exclude "Safety observations" and "Safety actions" sections
+    safety_obs_match = re.search(r'\nSafety\s+observations?\s*\n', text, re.IGNORECASE)
+    safety_act_match = re.search(r'\nSafety\s+actions?\s*\n', text, re.IGNORECASE)
+    
+    doc_end = len(text)
+    if safety_obs_match:
+        doc_end = min(doc_end, safety_obs_match.start())
+    if safety_act_match:
+        doc_end = min(doc_end, safety_act_match.start())
+    
+    if doc_end < len(text):
+        logger.info(f"HSIB: Truncating from {len(text)} to {doc_end} chars to exclude Safety observations/actions")
+        text = text[:doc_end]
     
     responses = []
     
