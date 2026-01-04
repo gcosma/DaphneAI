@@ -37,8 +37,12 @@ from .response_extractor import (
     has_pdf_artifacts,
     clean_pdf_artifacts,
     is_hsib_response_document,
+    is_trust_response_document,
+    is_org_based_hsib_response,
     extract_target_org_from_text,
     extract_hsib_responses,
+    extract_trust_responses,
+    extract_org_based_hsib_responses,
     extract_response_sentences,
 )
 
