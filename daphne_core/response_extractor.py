@@ -528,21 +528,28 @@ def extract_response_sentences(text: str) -> List[Dict]:
     - rec_number: Associated recommendation number (if detected)
     """
     if not text:
+        logger.warning("extract_response_sentences called with empty text")
         return []
+    
+    logger.info(f"extract_response_sentences: Processing {len(text)} chars")
+    logger.info(f"First 200 chars: {text[:200]}")
 
     # Check for Trust response format first (Report 7 style)
+    logger.info("Checking for Trust response format...")
     if is_trust_response_document(text):
-        logger.info("Detected Trust response document format")
+        logger.info("✅ Detected Trust response document format")
         return extract_trust_responses(text)
     
     # Check for org-based HSIB format (Report 4 style)
+    logger.info("Checking for org-based HSIB format...")
     if is_org_based_hsib_response(text):
-        logger.info("Detected org-based HSIB response format")
+        logger.info("✅ Detected org-based HSIB response format")
         return extract_org_based_hsib_responses(text)
 
     # Check for standard HSIB format (with rec IDs)
+    logger.info("Checking for standard HSIB format...")
     if is_hsib_response_document(text):
-        logger.info("Detected HSIB response document format")
+        logger.info("✅ Detected HSIB response document format")
         return extract_hsib_responses(text)
 
     # Standard government format extraction
