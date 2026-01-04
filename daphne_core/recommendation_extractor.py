@@ -488,7 +488,7 @@ class StrictRecommendationExtractor:
             r'(?:to|\.)\s*While\s+(?:national|there\s+is)',  # "toWhile national" or ". While"
             r'(?:to|\.)\s*Current\s+research\s+only',        # PDF merge at "toCurrent research"
             
-            # v3.8 FIX: HSIB finding paragraph starters (cause contamination in Reports 3, 4, 6)
+            # v3.9 FIX: HSIB finding paragraph starters (cause contamination in Reports 3, 4, 6)
             r'\b\d+\.\d+\.\d+\s+(?:The|A|In|Staff|Subject|Mental|While|Current)',  # "4.1.33 The latest"
             r'\b\d+\.\d+\s+(?:What|The|How|Why|Where|When|Impact|Capability|Awareness)',  # "4.2 What competencies"
             r'(?<=[.!?])\s+While\s+national\s+guidance',     # Finding starter after sentence
@@ -501,6 +501,16 @@ class StrictRecommendationExtractor:
             r'(?<=[.!?])\s+In\s+the\s+following\s+sections', # Section intro marker
             r'(?<=[.!?])\s+New\s+builds\s+and',              # HSSIB subsection
             r'(?<=[.!?])\s+Infrastructure\s*[-–]',           # HSSIB subsection header
+            
+            # v3.9 FIX: Report 6 contamination markers
+            r'(?<=[.!?])\s+In\s+some\s+locations',           # Finding narrative
+            r'(?<=[.!?])\s+Inequalities\s+continued',        # Finding narrative
+            r'(?<=[.!?])\s+Some\s+organisational\s+cultures', # Finding narrative
+            r'(?<=[.!?])\s+Availability\s+and\s+access',     # Finding narrative
+            r'\bBuilt\s+mental\s+health\s+inpatient\s+environments\b',  # Section header
+            r'\bSocial\s+and\s+organisational\s+factors\b',  # Section header
+            r'(?<=[.!?])\s+This\s+reduced\s+continuity',     # Finding narrative
+            r'\bHSSIB\s+makes\s+the\s+following\b',          # Safety observation intro
         ]
         
         # v3.4: Section headers that could appear as phrases within text
