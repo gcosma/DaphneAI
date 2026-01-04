@@ -324,6 +324,75 @@ def extract_target_org_from_text(text: str) -> Optional[str]:
         return 'shelford_group'
     if 'tewv' in text_lower or 'tees, esk and wear' in text_lower:
         return 'tewv'
+    if 'middlesbrough council' in text_lower:
+        return 'middlesbrough_council'
+    if 'south tees' in text_lower:
+        return 'south_tees'
+    if 'provider collaborative' in text_lower:
+        return 'provider_collaborative'
+    
+    return None
+
+
+def extract_recommendation_target_org(rec_text: str) -> Optional[str]:
+    """
+    Extract the TARGET organisation that a recommendation is directed TO.
+    
+    This looks for patterns like:
+    - "TEWV must ensure..." -> tewv
+    - "NHS England should..." -> nhs_england
+    - "Middlesbrough Council must respond..." -> middlesbrough_council
+    
+    Returns normalised org key or None.
+    """
+    if not rec_text:
+        return None
+    
+    # Patterns that indicate who the recommendation is directed to
+    # Format: "Org must/should/needs to..."
+    target_patterns = [
+        (r'\bTEWV\s+(?:must|should|needs?\s+to)', 'tewv'),
+        (r'\bTees,?\s+Esk\s+and\s+Wear\s+Valleys?\s+(?:NHS\s+)?(?:Foundation\s+)?Trust\s+(?:must|should)', 'tewv'),
+        (r'\bNHS\s+England\s+(?:must|should|needs?\s+to|and\s+provider|works)', 'nhs_england'),
+        (r'\bMiddlesbrough\s+Council\s+(?:must|should|needs?\s+to|and\s+Health)', 'middlesbrough_council'),
+        (r'\bSouth\s+Tees\s+Safeguarding\s+Children', 'south_tees'),
+        (r'\bCare\s+Quality\s+Commission\s+(?:must|should|evaluates)', 'cqc'),
+        (r'\bNICE\s+(?:must|should|evaluates)', 'nice'),
+        (r'\bNational\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence\s+(?:must|should|evaluates)', 'nice'),
+        (r'\bRoyal\s+College\s+(?:of\s+Psychiatrists\s+)?(?:must|should|forms)', 'royal_college'),
+        (r'\bDHSC\s+(?:must|should)', 'dhsc'),
+        (r'\bprovider\s+collaborative[s]?\s+(?:must|should)', 'provider_collaborative'),
+    ]
+    
+    for pattern, org_key in target_patterns:
+        if re.search(pattern, rec_text, re.IGNORECASE):
+            return org_key
+    
+    return None
+
+
+def get_response_document_org(text: str) -> Optional[str]:
+    """
+    Determine which organisation authored a response document.
+    
+    Looks at document headers and common patterns to identify the responding org.
+    """
+    if not text:
+        return None
+    
+    text_lower = text[:2000].lower()  # Check first 2000 chars
+    
+    # Check for Trust response documents
+    if 'tewv response' in text_lower or 'tees, esk and wear' in text_lower:
+        return 'tewv'
+    
+    # Check for org-based HSIB responses (multiple orgs)
+    if 'hsib recommends that nhs england' in text_lower:
+        return 'multi_org_hsib'
+    
+    # Check for government response
+    if 'government response' in text_lower:
+        return 'government'
     
     return None
 
@@ -791,6 +860,8 @@ __all__ = [
     "is_trust_response_document",
     "is_org_based_hsib_response",
     "extract_target_org_from_text",
+    "extract_recommendation_target_org",
+    "get_response_document_org",
     "extract_hsib_responses",
     "extract_trust_responses",
     "extract_org_based_hsib_responses",
