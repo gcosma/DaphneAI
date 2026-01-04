@@ -154,6 +154,202 @@ def is_hsib_response_document(text: str) -> bool:
     return False
 
 
+def is_trust_response_document(text: str) -> bool:
+    """
+    Detect if a document is a Trust response document (Report 7 style).
+    
+    Format: "Recommendation N" followed by "TEWV response:" or "[Trust] response:"
+    """
+    if not text:
+        return False
+    
+    # Check for Trust response patterns
+    has_trust_response = bool(re.search(r'(?:TEWV|Trust)\s+response[:\s]', text, re.IGNORECASE))
+    has_recommendation_headers = bool(re.search(r'Recommendation\s+\d+\s*[\n\r]', text))
+    
+    if has_trust_response and has_recommendation_headers:
+        logger.info("✅ Trust response format detected")
+        return True
+    
+    return False
+
+
+def is_org_based_hsib_response(text: str) -> bool:
+    """
+    Detect if a document is an org-based HSIB response (Report 4 style).
+    
+    Format: Organisation headers (NHS England, CQC, etc.) followed by 
+    "HSIB recommends..." then "Response" header, but NO rec IDs like R/2023/220
+    """
+    if not text:
+        return False
+    
+    # Must have "HSIB recommends" pattern
+    has_hsib_recommends = bool(re.search(r'HSIB\s+recommends', text, re.IGNORECASE))
+    
+    # Must have standalone "Response" headers
+    has_response_headers = bool(re.search(r'(?:^|\n)\s*Response\s*(?:\n|$)', text, re.MULTILINE))
+    
+    # Must have org headers
+    org_pattern = r'(?:^|\n)\s*(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute|Royal\s+College|NICE|DHSC)\s*(?:\n|$)'
+    has_org_headers = bool(re.search(org_pattern, text, re.IGNORECASE | re.MULTILINE))
+    
+    # Should NOT have HSIB rec IDs (otherwise use standard HSIB extraction)
+    has_hsib_rec_ids = bool(re.search(r'R/\d{4}/\d{3}', text))
+    
+    if has_hsib_recommends and has_response_headers and has_org_headers and not has_hsib_rec_ids:
+        logger.info("✅ Org-based HSIB response format detected (Report 4 style)")
+        return True
+    
+    return False
+
+
+def extract_trust_responses(text: str) -> List[Dict]:
+    """
+    Extract responses from Trust response documents (Report 7 style).
+    
+    Format: "Recommendation N" followed by "[Trust] response:" then response text
+    """
+    if not text:
+        return []
+    
+    responses = []
+    
+    # Find all "Recommendation N" headers
+    rec_pattern = re.compile(r'Recommendation\s+(\d+)\s*[\n\r]', re.IGNORECASE)
+    rec_matches = list(rec_pattern.finditer(text))
+    
+    # Find all "[Trust] response:" markers
+    trust_resp_pattern = re.compile(r'(?:TEWV|Trust)\s+response[:\s]*', re.IGNORECASE)
+    trust_resp_matches = list(trust_resp_pattern.finditer(text))
+    
+    logger.info(f"Trust format: Found {len(rec_matches)} recommendations and {len(trust_resp_matches)} response markers")
+    
+    # For each recommendation, find its corresponding response
+    for i, rec_match in enumerate(rec_matches):
+        rec_num = rec_match.group(1)
+        rec_start = rec_match.start()
+        
+        # Find the end boundary (next recommendation or end of text)
+        if i + 1 < len(rec_matches):
+            rec_end = rec_matches[i + 1].start()
+        else:
+            rec_end = len(text)
+        
+        # Find the Trust response marker within this recommendation's section
+        for resp_match in trust_resp_matches:
+            if rec_start < resp_match.start() < rec_end:
+                # Response starts after the "TEWV response:" marker
+                resp_start = resp_match.end()
+                resp_text = text[resp_start:rec_end].strip()
+                
+                # Clean up the response text
+                resp_text = re.sub(r'\s+', ' ', resp_text)
+                
+                if len(resp_text) > 30:
+                    responses.append({
+                        'text': resp_text[:2000],  # Limit length
+                        'position': resp_start,
+                        'response_type': 'trust_response',
+                        'confidence': 0.95,
+                        'rec_number': rec_num,
+                        'rec_id': rec_num,
+                        'source_org': 'tewv',
+                    })
+                break
+    
+    logger.info(f"Extracted {len(responses)} Trust responses")
+    return responses
+
+
+def extract_org_based_hsib_responses(text: str) -> List[Dict]:
+    """
+    Extract responses from org-based HSIB response documents (Report 4 style).
+    
+    Format: [Org Header] -> [HSIB recommends...] -> "Response" -> [Response text]
+    """
+    if not text:
+        return []
+    
+    responses = []
+    
+    # Find organisation headers
+    org_pattern = re.compile(
+        r'(?:^|\n)\s*(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence|Royal\s+College\s+of\s+Psychiatrists|NICE|DHSC)\s*(?:\n|$)',
+        re.IGNORECASE | re.MULTILINE
+    )
+    org_matches = list(org_pattern.finditer(text))
+    
+    # Find "Response" headers
+    resp_pattern = re.compile(r'(?:^|\n)\s*Response\s*(?:\n|$)', re.IGNORECASE | re.MULTILINE)
+    resp_matches = list(resp_pattern.finditer(text))
+    
+    logger.info(f"Org-based HSIB: Found {len(org_matches)} org headers and {len(resp_matches)} response headers")
+    
+    # Match each Response header to the preceding org section
+    for idx, resp_match in enumerate(resp_matches):
+        # Find which org section this response belongs to
+        prev_org = None
+        for org_match in org_matches:
+            if org_match.start() < resp_match.start():
+                prev_org = org_match
+            else:
+                break
+        
+        if not prev_org:
+            continue
+        
+        # Response starts after the "Response" header
+        resp_start = resp_match.end()
+        
+        # Response ends at next org header or next Response or end
+        resp_end = len(text)
+        
+        # Check for next org header
+        for org_match in org_matches:
+            if org_match.start() > resp_start:
+                resp_end = min(resp_end, org_match.start())
+                break
+        
+        # Check for boundary markers
+        boundary_patterns = [
+            r'\n\s*Actions\s+planned\s+to\s+deliver',
+            r'\n\s*Response\s+received\s+on',
+            r'\n\s*Safety\s+observation',
+        ]
+        for boundary in boundary_patterns:
+            match = re.search(boundary, text[resp_start:resp_end], re.IGNORECASE)
+            if match:
+                resp_end = min(resp_end, resp_start + match.start())
+        
+        resp_text = text[resp_start:resp_end].strip()
+        resp_text = re.sub(r'\s+', ' ', resp_text)
+        
+        if len(resp_text) < 30:
+            continue
+        
+        # Determine which recommendation number this is (1-based index)
+        rec_num = str(idx + 1)
+        
+        # Get the org name
+        org_name = prev_org.group(1).strip()
+        source_org = extract_target_org_from_text(org_name)
+        
+        responses.append({
+            'text': resp_text[:2000],
+            'position': resp_start,
+            'response_type': 'org_based_hsib',
+            'confidence': 0.95,
+            'rec_number': rec_num,
+            'rec_id': rec_num,
+            'source_org': source_org,
+            'org_name': org_name,
+        })
+    
+    logger.info(f"Extracted {len(responses)} org-based HSIB responses")
+    return responses
+
+
 def extract_target_org_from_text(text: str) -> Optional[str]:
     """
     Extract target organisation from recommendation or response text.
@@ -310,19 +506,35 @@ def extract_hsib_responses(text: str) -> List[Dict]:
 def extract_response_sentences(text: str) -> List[Dict]:
     """
     Extract sentences that are government responses.
-    Auto-detects HSIB vs standard government format.
+    Auto-detects document format and uses appropriate extraction method.
+    
+    Supported formats:
+    - Standard government: "Government response to recommendation N"
+    - HSIB with rec IDs: Documents with R/YYYY/NNN or YYYY/NNN patterns
+    - Org-based HSIB (Report 4 style): Org headers + "HSIB recommends" + "Response"
+    - Trust response (Report 7 style): "Recommendation N" + "[Trust] response:"
     
     Returns a list of response dictionaries with:
     - text: The response text
     - position: Position in document
-    - response_type: 'structured', 'hsib_structured', or 'sentence'
+    - response_type: 'structured', 'hsib_structured', 'org_based_hsib', 'trust_response', or 'sentence'
     - confidence: Extraction confidence score
     - rec_number: Associated recommendation number (if detected)
     """
     if not text:
         return []
 
-    # Check for HSIB format first
+    # Check for Trust response format first (Report 7 style)
+    if is_trust_response_document(text):
+        logger.info("Detected Trust response document format")
+        return extract_trust_responses(text)
+    
+    # Check for org-based HSIB format (Report 4 style)
+    if is_org_based_hsib_response(text):
+        logger.info("Detected org-based HSIB response format")
+        return extract_org_based_hsib_responses(text)
+
+    # Check for standard HSIB format (with rec IDs)
     if is_hsib_response_document(text):
         logger.info("Detected HSIB response document format")
         return extract_hsib_responses(text)
