@@ -6,6 +6,12 @@ This module handles:
 - Extraction of responses from PDF text
 - Text cleaning and artifact removal
 
+v2.7 Changes:
+- FIXED: Line ending normalisation at start of extract_response_sentences()
+- FIXED: All detection functions now handle \r, \n, and \r\n consistently
+- ADDED: Comprehensive debug logging for detection failures
+- IMPROVED: is_org_based_hsib_response() now logs why it fails
+
 v2.6 Changes:
 - ADDED: Trust response format detection (Report 7 style - "TEWV response:")
 - ADDED: Org-based HSIB response format (Report 4 style - no rec IDs)
@@ -25,6 +31,25 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------- #
+# Line ending normalisation
+# --------------------------------------------------------------------------- #
+
+def normalise_line_endings(text: str) -> str:
+    """
+    Normalise all line endings to \n for consistent regex matching.
+    
+    Handles:
+    - Windows: \r\n -> \n
+    - Old Mac: \r -> \n
+    - Unix: \n (unchanged)
+    """
+    if not text:
+        return text
+    # First convert \r\n to \n, then convert remaining \r to \n
+    return text.replace('\r\n', '\n').replace('\r', '\n')
 
 
 # --------------------------------------------------------------------------- #
@@ -121,7 +146,7 @@ def clean_pdf_artifacts(text: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# HSIB format detection and extraction
+# Document format detection
 # --------------------------------------------------------------------------- #
 
 def is_hsib_response_document(text: str) -> bool:
@@ -135,6 +160,9 @@ def is_hsib_response_document(text: str) -> bool:
     """
     if not text:
         return False
+    
+    # Normalise line endings
+    text = normalise_line_endings(text)
     
     # Very forgiving HSIB recommendation patterns
     # Handles: "R/2024/025", "2018/006", "R / 2024 / 025", "2018 / 006"
@@ -169,9 +197,14 @@ def is_trust_response_document(text: str) -> bool:
     if not text:
         return False
     
+    # Normalise line endings
+    text = normalise_line_endings(text)
+    
     # Check for Trust response patterns
     has_trust_response = bool(re.search(r'(?:TEWV|Trust)\s+response[:\s]', text, re.IGNORECASE))
-    has_recommendation_headers = bool(re.search(r'Recommendation\s+\d+\s*[\n\r]', text))
+    has_recommendation_headers = bool(re.search(r'Recommendation\s+\d+\s*\n', text))
+    
+    logger.info(f"Trust detection: has_trust_response={has_trust_response}, has_recommendation_headers={has_recommendation_headers}")
     
     if has_trust_response and has_recommendation_headers:
         logger.info("✅ Trust response format detected")
@@ -190,24 +223,78 @@ def is_org_based_hsib_response(text: str) -> bool:
     if not text:
         return False
     
+    # Normalise line endings
+    text = normalise_line_endings(text)
+    
     # Must have "HSIB recommends" pattern
     has_hsib_recommends = bool(re.search(r'HSIB\s+recommends', text, re.IGNORECASE))
     
-    # Must have standalone "Response" headers
+    # Must have standalone "Response" headers (on their own line)
+    # More forgiving pattern that handles various whitespace
     has_response_headers = bool(re.search(r'(?:^|\n)\s*Response\s*(?:\n|$)', text, re.MULTILINE))
     
     # Must have org headers
-    org_pattern = r'(?:^|\n)\s*(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute|Royal\s+College|NICE|DHSC)\s*(?:\n|$)'
+    org_pattern = r'(?:^|\n)\s*(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute|Royal\s+College|NICE|DHSC|The\s+Shelford\s+Group)\s*(?:\n|$)'
     has_org_headers = bool(re.search(org_pattern, text, re.IGNORECASE | re.MULTILINE))
     
     # Should NOT have HSIB rec IDs (otherwise use standard HSIB extraction)
     has_hsib_rec_ids = bool(re.search(r'R/\d{4}/\d{3}', text))
     
+    # Log all conditions for debugging
+    logger.info(f"Org-based HSIB detection: hsib_recommends={has_hsib_recommends}, "
+                f"response_headers={has_response_headers}, org_headers={has_org_headers}, "
+                f"has_rec_ids={has_hsib_rec_ids}")
+    
     if has_hsib_recommends and has_response_headers and has_org_headers and not has_hsib_rec_ids:
         logger.info("✅ Org-based HSIB response format detected (Report 4 style)")
         return True
     
+    # Log why it failed
+    if not has_hsib_recommends:
+        logger.info("❌ Org-based HSIB: Missing 'HSIB recommends' pattern")
+    if not has_response_headers:
+        logger.info("❌ Org-based HSIB: Missing standalone 'Response' headers")
+    if not has_org_headers:
+        logger.info("❌ Org-based HSIB: Missing organisation headers")
+    if has_hsib_rec_ids:
+        logger.info("❌ Org-based HSIB: Has R/YYYY/NNN rec IDs (use standard HSIB instead)")
+    
     return False
+
+
+# --------------------------------------------------------------------------- #
+# Response extraction functions
+# --------------------------------------------------------------------------- #
+
+def extract_target_org_from_text(text: str) -> Optional[str]:
+    """
+    Extract target organisation from recommendation or response text.
+    Returns a normalised org key for matching purposes.
+    """
+    if not text:
+        return None
+    
+    text_lower = text.lower()
+    
+    # Check for specific organisations (order matters - more specific first)
+    if 'national institute for health and care research' in text_lower or 'nihr' in text_lower:
+        return 'nihr'
+    if 'department of health and social care' in text_lower or 'dhsc' in text_lower:
+        return 'dhsc'
+    if 'nhs england' in text_lower:
+        return 'nhs_england'
+    if 'care quality commission' in text_lower or 'cqc' in text_lower:
+        return 'cqc'
+    if 'national institute for health and care excellence' in text_lower or 'nice' in text_lower:
+        return 'nice'
+    if 'royal college' in text_lower:
+        return 'royal_college'
+    if 'the shelford group' in text_lower or 'shelford group' in text_lower:
+        return 'shelford_group'
+    if 'tewv' in text_lower or 'tees, esk and wear' in text_lower:
+        return 'tewv'
+    
+    return None
 
 
 def extract_trust_responses(text: str) -> List[Dict]:
@@ -219,10 +306,13 @@ def extract_trust_responses(text: str) -> List[Dict]:
     if not text:
         return []
     
+    # Normalise line endings
+    text = normalise_line_endings(text)
+    
     responses = []
     
     # Find all "Recommendation N" headers
-    rec_pattern = re.compile(r'Recommendation\s+(\d+)\s*[\n\r]', re.IGNORECASE)
+    rec_pattern = re.compile(r'Recommendation\s+(\d+)\s*\n', re.IGNORECASE)
     rec_matches = list(rec_pattern.finditer(text))
     
     # Find all "[Trust] response:" markers
@@ -277,11 +367,14 @@ def extract_org_based_hsib_responses(text: str) -> List[Dict]:
     if not text:
         return []
     
+    # Normalise line endings
+    text = normalise_line_endings(text)
+    
     responses = []
     
     # Find organisation headers
     org_pattern = re.compile(
-        r'(?:^|\n)\s*(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence|Royal\s+College\s+of\s+Psychiatrists|NICE|DHSC)\s*(?:\n|$)',
+        r'(?:^|\n)\s*(NHS\s+England|Care\s+Quality\s+Commission|National\s+Institute\s+for\s+Health\s+and\s+Care\s+Excellence|Royal\s+College\s+of\s+Psychiatrists|NICE|DHSC|The\s+Shelford\s+Group)\s*(?:\n|$)',
         re.IGNORECASE | re.MULTILINE
     )
     org_matches = list(org_pattern.finditer(text))
@@ -322,6 +415,7 @@ def extract_org_based_hsib_responses(text: str) -> List[Dict]:
             r'\n\s*Actions\s+planned\s+to\s+deliver',
             r'\n\s*Response\s+received\s+on',
             r'\n\s*Safety\s+observation',
+            r'\n\s*Safety\s+action',
         ]
         for boundary in boundary_patterns:
             match = re.search(boundary, text[resp_start:resp_end], re.IGNORECASE)
@@ -356,38 +450,6 @@ def extract_org_based_hsib_responses(text: str) -> List[Dict]:
     return responses
 
 
-def extract_target_org_from_text(text: str) -> Optional[str]:
-    """
-    Extract target organisation from recommendation or response text.
-    
-    Returns a normalised org key for matching purposes.
-    """
-    if not text:
-        return None
-    
-    text_lower = text.lower()
-    
-    # Check for specific organisations (order matters - more specific first)
-    if 'national institute for health and care research' in text_lower or 'nihr' in text_lower:
-        return 'nihr'
-    if 'department of health and social care' in text_lower or 'dhsc' in text_lower:
-        return 'dhsc'
-    if 'nhs england' in text_lower:
-        return 'nhs_england'
-    if 'care quality commission' in text_lower or 'cqc' in text_lower:
-        return 'cqc'
-    if 'national institute for health and care excellence' in text_lower or 'nice' in text_lower:
-        return 'nice'
-    if 'royal college' in text_lower:
-        return 'royal_college'
-    if 'the shelford group' in text_lower or 'shelford group' in text_lower:
-        return 'shelford_group'
-    if 'tewv' in text_lower:
-        return 'tewv'
-    
-    return None
-
-
 def extract_hsib_responses(text: str) -> List[Dict]:
     """
     Extract responses from HSIB-format response documents.
@@ -402,6 +464,9 @@ def extract_hsib_responses(text: str) -> List[Dict]:
     """
     if not text:
         return []
+    
+    # Normalise line endings
+    text = normalise_line_endings(text)
     
     responses = []
     
@@ -530,6 +595,11 @@ def extract_response_sentences(text: str) -> List[Dict]:
     if not text:
         logger.warning("extract_response_sentences called with empty text")
         return []
+    
+    # =========================================================================
+    # CRITICAL: Normalise line endings FIRST before any detection
+    # =========================================================================
+    text = normalise_line_endings(text)
     
     logger.info(f"extract_response_sentences: Processing {len(text)} chars")
     logger.info(f"First 200 chars: {text[:200]}")
@@ -680,12 +750,17 @@ def extract_response_sentences(text: str) -> List[Dict]:
 
 
 __all__ = [
+    "normalise_line_endings",
     "is_recommendation_text",
     "is_genuine_response",
     "has_pdf_artifacts",
     "clean_pdf_artifacts",
     "is_hsib_response_document",
+    "is_trust_response_document",
+    "is_org_based_hsib_response",
     "extract_target_org_from_text",
     "extract_hsib_responses",
+    "extract_trust_responses",
+    "extract_org_based_hsib_responses",
     "extract_response_sentences",
 ]
