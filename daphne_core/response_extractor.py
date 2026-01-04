@@ -2,9 +2,15 @@
 Response extraction from government and HSIB/HSSIB response documents.
 
 This module handles:
-- Detection of document format (standard government vs HSIB)
+- Detection of document format (standard government vs HSIB vs Trust)
 - Extraction of responses from PDF text
 - Text cleaning and artifact removal
+
+v2.6 Changes:
+- ADDED: Trust response format detection (Report 7 style - "TEWV response:")
+- ADDED: Org-based HSIB response format (Report 4 style - no rec IDs)
+- ADDED: extract_trust_responses() function
+- ADDED: extract_org_based_hsib_responses() function
 
 v2.5 Changes:
 - FIXED: HSIB response extraction now segments by recommendation ID
