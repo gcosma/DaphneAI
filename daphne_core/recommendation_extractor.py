@@ -1,8 +1,12 @@
 """
-Recommendation Extractor v3.8
+Recommendation Extractor v3.9
 Extracts recommendation blocks from government and health sector documents.
 
-v3.8 Changes:
+v3.9 Changes:
+- FIXED: Page number artifacts in Report 7 recs 2, 11 ("20", "21" embedded in text)
+- ADDED: 5 new regex patterns to strip standalone page numbers at text boundaries
+
+v3.8 Changes (preserved):
 - FIXED: Remaining contamination in Reports 3, 4, 6
 - ADDED: Three-level paragraph detection (4.1.33, 4.2.11) as hard boundaries
 - ADDED: HSIB finding starters ("While national guidance", "Current research only")
@@ -164,6 +168,14 @@ class StrictRecommendationExtractor:
         # Remove page numbers (but NOT recommendation IDs like 2018/006 or R/2023/220)
         text = re.sub(r'\b(\d{1,2})/(\d{1,3})\b', '', text)
         text = re.sub(r'\bPage\s+\d+\s+(?:of\s+\d+)?', '', text, flags=re.IGNORECASE)
+        
+        # v3.9 FIX: Remove standalone page numbers at text boundaries
+        # Report 7 recs 2, 11 had "20" and "21" embedded in text from PDF extraction
+        text = re.sub(r'\s+\d{1,2}\s*$', '', text)                    # " 20" at end of text
+        text = re.sub(r'^\s*\d{1,2}\s+(?=[A-Z])', '', text)           # "20 " at start before capital
+        text = re.sub(r'\n\s*\d{1,2}\s*\n', '\n', text)               # "20" on its own line
+        text = re.sub(r'(?<=[.!?])\s*\d{1,2}\s*(?=[A-Z])', ' ', text) # "20" between sentences
+        text = re.sub(r'(?<=[a-z])\s+\d{1,2}\s+(?=[a-z])', ' ', text) # "summary 20 and" mid-sentence
         
         # Remove GOV.UK footer artifacts
         text = re.sub(
