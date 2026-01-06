@@ -6,6 +6,12 @@ This module handles:
 - Extraction of responses from PDF text
 - Text cleaning and artifact removal
 
+v3.0 Changes:
+- ADDED: detect_excluded_recommendations() - detects recs addressed to other orgs (Report 7 Recs 4,5,10,12)
+- FIXED: extract_trust_responses() handles asterisks in headers (Report 7 Rec 7: "Recommendation 7 *")
+- FIXED: extract_trust_responses() handles duplicate rec headers - prefers one with "TEWV response:" (Report 7 Rec 9)
+- FIXED: extract_trust_responses() handles spaced digits ("Recommendation 1 1" -> "11")
+
 v2.9 Changes:
 - FIXED: Excludes "Safety observations" and "Safety actions" sections from extraction
 - FIXED: Report 6 no longer matches wrong responses from Safety actions section
@@ -60,6 +66,48 @@ def normalise_line_endings(text: str) -> str:
         return text
     # First convert \r\n to \n, then convert remaining \r to \n
     return text.replace('\r\n', '\n').replace('\r', '\n')
+
+
+# --------------------------------------------------------------------------- #
+# v3.0: Detect excluded recommendations
+# --------------------------------------------------------------------------- #
+
+def detect_excluded_recommendations(text: str) -> List[int]:
+    """
+    Detect recommendations that are explicitly stated as not included.
+    
+    Report 7 example: "Recommendations 4, 5, 10 and 12 relate to other 
+    organisations and are therefore not included in this assurance statement."
+    
+    v3.0: NEW function
+    
+    Returns list of recommendation numbers that should be marked as excluded/N/A.
+    """
+    if not text:
+        return []
+    
+    text = normalise_line_endings(text)
+    excluded = []
+    
+    # Patterns for detecting excluded recommendations
+    patterns = [
+        # "Recommendations 4, 5, 10 and 12 relate to other organisations"
+        r'[Rr]ecommendations?\s+([\d,\s]+(?:and\s+\d+)?)\s+relate\s+to\s+other\s+organi[sz]ations',
+        # "Recommendations 4, 5, 10 and 12 are therefore not included"
+        r'[Rr]ecommendations?\s+([\d,\s]+(?:and\s+\d+)?)\s+(?:are|is)\s+(?:therefore\s+)?not\s+included',
+        # "Recommendations 4, 5, 10 and 12 are for other organisations"
+        r'[Rr]ecommendations?\s+([\d,\s]+(?:and\s+\d+)?)\s+(?:are\s+)?for\s+other\s+organi[sz]ations',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            nums_text = match.group(1)
+            nums = re.findall(r'\d+', nums_text)
+            excluded.extend([int(n) for n in nums])
+            logger.info(f"Found excluded recommendations from pattern: {excluded}")
+    
+    return list(set(excluded))
 
 
 # --------------------------------------------------------------------------- #
@@ -456,6 +504,12 @@ def extract_trust_responses(text: str) -> List[Dict]:
     
     Format: "Recommendation N" followed by "[Trust] response:" then response text
     
+    v3.0 Changes:
+    - Handle asterisks in recommendation headers (e.g., "Recommendation 7 *")
+    - Handle duplicate recommendation headers - prefer ones with "TEWV response:"
+    - Handle spaced digits ("Recommendation 1 1" -> "11")
+    - Detect excluded recommendations (addressed to other orgs)
+    
     v2.7: Updated to handle PDFs with no line breaks
     """
     if not text:
@@ -466,8 +520,17 @@ def extract_trust_responses(text: str) -> List[Dict]:
     
     responses = []
     
-    # Find all "Recommendation N" headers - flexible (with or without newline)
-    rec_pattern = re.compile(r'Recommendation\s+(\d+)\s*(?:\n|(?=[A-Z]))', re.IGNORECASE)
+    # v3.0: Detect excluded recommendations
+    excluded_recs = detect_excluded_recommendations(text)
+    if excluded_recs:
+        logger.info(f"Detected excluded recommendations (other orgs): {excluded_recs}")
+    
+    # v3.0: Updated pattern to handle asterisks and spaced digits
+    # Matches: "Recommendation 1", "Recommendation 7 *", "Recommendation 1 1"
+    rec_pattern = re.compile(
+        r'Recommendation\s+(\d+)\s*(\d)?\s*\*?\s*(?:\n|(?=[A-Z]))',
+        re.IGNORECASE
+    )
     rec_matches = list(rec_pattern.finditer(text))
     
     # Find all "[Trust] response:" markers
@@ -476,38 +539,96 @@ def extract_trust_responses(text: str) -> List[Dict]:
     
     logger.info(f"Trust format: Found {len(rec_matches)} recommendations and {len(trust_resp_matches)} response markers")
     
-    # For each recommendation, find its corresponding response
+    # v3.0: Build a map of rec_num -> best section (prefer one with TEWV response:)
+    rec_sections = {}
+    
     for i, rec_match in enumerate(rec_matches):
+        # Handle spaced digits: "Recommendation 1 1" -> "11"
         rec_num = rec_match.group(1)
+        if rec_match.group(2):
+            rec_num = rec_num + rec_match.group(2)
+        
+        rec_num_int = int(rec_num)
         rec_start = rec_match.start()
         
-        # Find the end boundary (next recommendation or end of text)
+        # Find end boundary (next recommendation or end)
         if i + 1 < len(rec_matches):
             rec_end = rec_matches[i + 1].start()
         else:
             rec_end = len(text)
         
-        # Find the Trust response marker within this recommendation's section
-        for resp_match in trust_resp_matches:
-            if rec_start < resp_match.start() < rec_end:
-                # Response starts after the "TEWV response:" marker
-                resp_start = resp_match.end()
-                resp_text = text[resp_start:rec_end].strip()
-                
-                # Clean up the response text
-                resp_text = re.sub(r'\s+', ' ', resp_text)
-                
-                if len(resp_text) > 30:
-                    responses.append({
-                        'text': resp_text[:2000],  # Limit length
-                        'position': resp_start,
-                        'response_type': 'trust_response',
-                        'confidence': 0.95,
-                        'rec_number': rec_num,
-                        'rec_id': rec_num,
-                        'source_org': 'tewv',
-                    })
-                break
+        section_text = text[rec_start:rec_end]
+        
+        # Check if this section has a "TEWV response:" marker
+        has_response_marker = bool(trust_resp_pattern.search(section_text))
+        
+        # v3.0: Only keep the section that has the response marker (for duplicates)
+        if rec_num_int not in rec_sections:
+            rec_sections[rec_num_int] = {
+                'start': rec_start,
+                'end': rec_end,
+                'has_response': has_response_marker,
+                'section_text': section_text
+            }
+        elif has_response_marker and not rec_sections[rec_num_int]['has_response']:
+            # Replace with the version that has the response
+            logger.info(f"Rec {rec_num_int}: Found better section with TEWV response marker")
+            rec_sections[rec_num_int] = {
+                'start': rec_start,
+                'end': rec_end,
+                'has_response': has_response_marker,
+                'section_text': section_text
+            }
+    
+    logger.info(f"Trust format: {len(rec_sections)} unique recommendation sections")
+    
+    # Extract responses from each section
+    for rec_num, section_info in sorted(rec_sections.items()):
+        # v3.0: Handle excluded recommendations
+        if rec_num in excluded_recs:
+            responses.append({
+                'text': f"N/A - Recommendation {rec_num} is addressed to another organisation and not included in this response document",
+                'position': section_info['start'],
+                'response_type': 'trust_excluded',
+                'confidence': 1.0,
+                'rec_number': str(rec_num),
+                'rec_id': str(rec_num),
+                'source_org': None,
+                'excluded': True,
+            })
+            logger.info(f"Rec {rec_num}: Marked as excluded (other organisation)")
+            continue
+        
+        section_text = section_info['section_text']
+        
+        # Find "TEWV response:" marker in this section
+        resp_marker = trust_resp_pattern.search(section_text)
+        if not resp_marker:
+            logger.warning(f"Rec {rec_num}: No 'TEWV response:' marker found in section")
+            continue
+        
+        # Response starts after the marker
+        resp_start_local = resp_marker.end()
+        resp_text = section_text[resp_start_local:].strip()
+        
+        # Clean up
+        resp_text = re.sub(r'\s+', ' ', resp_text)
+        
+        if len(resp_text) < 30:
+            logger.warning(f"Rec {rec_num}: Response too short ({len(resp_text)} chars)")
+            continue
+        
+        responses.append({
+            'text': resp_text[:2000],  # Limit length
+            'position': section_info['start'] + resp_start_local,
+            'response_type': 'trust_response',
+            'confidence': 0.95,
+            'rec_number': str(rec_num),
+            'rec_id': str(rec_num),
+            'source_org': 'tewv',
+            'excluded': False,
+        })
+        logger.info(f"Rec {rec_num}: Extracted {len(resp_text)} chars")
     
     logger.info(f"Extracted {len(responses)} Trust responses")
     return responses
@@ -1068,4 +1189,5 @@ __all__ = [
     "extract_hssib_org_structured_responses",
     "extract_org_based_hsib_responses",
     "extract_response_sentences",
+    "detect_excluded_recommendations",
 ]
