@@ -37,18 +37,33 @@ import re
 from typing import Dict, List, Tuple
 
 # Import detection functions from format_detection module
-from .format_detection import (
-    normalise_line_endings,
-    detect_excluded_recommendations,
-    is_recommendation_text,
-    is_genuine_response,
-    clean_pdf_artifacts,
-    is_hsib_response_document,
-    is_trust_response_document,
-    is_hssib_org_structured_response,
-    is_org_based_hsib_response,
-    extract_target_org_from_text,
-)
+try:
+    from .format_detection import (
+        normalise_line_endings,
+        detect_excluded_recommendations,
+        is_recommendation_text,
+        is_genuine_response,
+        clean_pdf_artifacts,
+        is_hsib_response_document,
+        is_trust_response_document,
+        is_hssib_org_structured_response,
+        is_org_based_hsib_response,
+        extract_target_org_from_text,
+    )
+except ImportError:
+    # Fallback for standalone use (e.g., Streamlit)
+    from format_detection import (
+        normalise_line_endings,
+        detect_excluded_recommendations,
+        is_recommendation_text,
+        is_genuine_response,
+        clean_pdf_artifacts,
+        is_hsib_response_document,
+        is_trust_response_document,
+        is_hssib_org_structured_response,
+        is_org_based_hsib_response,
+        extract_target_org_from_text,
+    )
 
 logger = logging.getLogger(__name__)
 
