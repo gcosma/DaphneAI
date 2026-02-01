@@ -5,8 +5,12 @@ This module handles:
 1. Matching recommendations to their corresponding responses
 2. Classifying acceptance status (Accepted, Partial, Rejected)
 3. Confidence scoring for matches
+4. Content type classification
+5. Pattern matching for document analysis
 
-v4.0 Changes:
+v4.1 Changes:
+- RESTORED: calculate_simple_similarity, classify_content_type, 
+  determine_alignment_status, find_pattern_matches functions
 - FIXED: Status classification now handles partial acceptance language properly
 - FIXED: "will give careful consideration" now classified as Partial, not Accepted
 - ADDED: More comprehensive partial acceptance patterns
@@ -16,10 +20,315 @@ v4.0 Changes:
 
 import logging
 import re
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------- #
+# Stop Words for text processing
+# --------------------------------------------------------------------------- #
+
+STOP_WORDS = {
+    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'has',
+    'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the', 'to', 'was',
+    'were', 'will', 'with', 'the', 'this', 'but', 'they', 'have', 'had',
+    'what', 'when', 'where', 'who', 'which', 'why', 'how', 'all', 'each',
+    'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no',
+    'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'can',
+    'just', 'should', 'now', 'i', 'you', 'we', 'our', 'your', 'their', 'would',
+    'could', 'may', 'might', 'must', 'shall', 'into', 'if', 'then', 'because',
+    'while', 'although', 'though', 'after', 'before', 'above', 'below', 'between',
+    'under', 'again', 'further', 'once', 'here', 'there', 'these', 'those', 'am',
+    'been', 'being', 'do', 'does', 'did', 'doing', 'having', 'her', 'him', 'his',
+    'herself', 'himself', 'itself', 'me', 'my', 'myself', 'ourselves', 'she',
+    'them', 'themselves', 'us', 'whom', 'yours', 'yourself', 'yourselves',
+}
+
+
+# --------------------------------------------------------------------------- #
+# Utility Functions (RESTORED)
+# --------------------------------------------------------------------------- #
+
+def calculate_simple_similarity(text1: str, text2: str) -> float:
+    """
+    Calculate simple text similarity between two strings.
+    
+    Uses word overlap (Jaccard similarity) for efficiency.
+    
+    Args:
+        text1: First text string
+        text2: Second text string
+        
+    Returns:
+        Similarity score between 0.0 and 1.0
+    """
+    if not text1 or not text2:
+        return 0.0
+    
+    # Tokenise and normalise
+    words1 = set(text1.lower().split())
+    words2 = set(text2.lower().split())
+    
+    # Remove stop words
+    words1 = words1 - STOP_WORDS
+    words2 = words2 - STOP_WORDS
+    
+    if not words1 or not words2:
+        return 0.0
+    
+    # Jaccard similarity
+    intersection = len(words1 & words2)
+    union = len(words1 | words2)
+    
+    return intersection / union if union > 0 else 0.0
+
+
+def classify_content_type(text: str) -> str:
+    """
+    Classify the type of content in the text.
+    
+    Args:
+        text: Text to classify
+        
+    Returns:
+        Content type string: 'Recommendation', 'Response', 'Policy', 
+        'Procedural', 'Financial', or 'General'
+    """
+    if not text:
+        return 'General'
+    
+    text_lower = text.lower()
+    
+    # Check for recommendation indicators
+    rec_patterns = [
+        r'\brecommend(?:s|ed|ation|ations)?\b',
+        r'\bshould\b',
+        r'\bmust\b',
+        r'\badvise[sd]?\b',
+        r'\bsuggest(?:s|ed|ion|ions)?\b',
+        r'\burge[sd]?\b',
+        r'\bpropose[sd]?\b',
+    ]
+    
+    for pattern in rec_patterns:
+        if re.search(pattern, text_lower):
+            return 'Recommendation'
+    
+    # Check for response indicators
+    resp_patterns = [
+        r'\baccept(?:s|ed)?\b',
+        r'\breject(?:s|ed)?\b',
+        r'\bagree[sd]?\b',
+        r'\bdisagree[sd]?\b',
+        r'\bgovernment\s+(?:will|has|is)\b',
+        r'\bwe\s+(?:will|have|are)\b',
+        r'\bresponse\b',
+        r'\bimplement(?:s|ed|ing|ation)?\b',
+    ]
+    
+    for pattern in resp_patterns:
+        if re.search(pattern, text_lower):
+            return 'Response'
+    
+    # Check for policy indicators
+    policy_patterns = [
+        r'\bpolic(?:y|ies)\b',
+        r'\bframework\b',
+        r'\bguideline[s]?\b',
+        r'\bprotocol[s]?\b',
+        r'\bstrateg(?:y|ies)\b',
+        r'\blegislat(?:ion|ive)\b',
+    ]
+    
+    for pattern in policy_patterns:
+        if re.search(pattern, text_lower):
+            return 'Policy'
+    
+    # Check for procedural indicators
+    proc_patterns = [
+        r'\bprocedure[s]?\b',
+        r'\bprocess(?:es)?\b',
+        r'\bstep[s]?\b',
+        r'\bmethod(?:s|ology)?\b',
+        r'\bapproach(?:es)?\b',
+    ]
+    
+    for pattern in proc_patterns:
+        if re.search(pattern, text_lower):
+            return 'Procedural'
+    
+    # Check for financial indicators
+    fin_patterns = [
+        r'\bbudget[s]?\b',
+        r'\bfund(?:s|ing|ed)?\b',
+        r'\bcost[s]?\b',
+        r'\bexpenditure[s]?\b',
+        r'\bfinancial\b',
+        r'\b£\d',
+        r'\bmillion\b',
+        r'\bbillion\b',
+    ]
+    
+    for pattern in fin_patterns:
+        if re.search(pattern, text_lower):
+            return 'Financial'
+    
+    return 'General'
+
+
+def determine_alignment_status(
+    recommendation: Dict[str, Any],
+    response: Optional[Dict[str, Any]]
+) -> Tuple[str, float]:
+    """
+    Determine the alignment status between a recommendation and response.
+    
+    Args:
+        recommendation: Recommendation dictionary
+        response: Response dictionary (or None if no response)
+        
+    Returns:
+        Tuple of (status, confidence)
+    """
+    if not response:
+        return 'No Response', 0.0
+    
+    response_text = response.get('text', '') or response.get('sentence', '')
+    
+    classifier = StatusClassifier()
+    status, confidence, _ = classifier.classify(response_text)
+    
+    return status, confidence
+
+
+def find_pattern_matches(
+    documents: List[Dict[str, Any]],
+    patterns: List[str],
+    content_type: str = 'general'
+) -> List[Dict[str, Any]]:
+    """
+    Find sentences matching given patterns in documents.
+    
+    Args:
+        documents: List of document dictionaries with 'text' field
+        patterns: List of pattern strings to search for
+        content_type: Type label for matched content
+        
+    Returns:
+        List of match dictionaries with sentence, document, position info
+    """
+    matches = []
+    
+    for doc in documents:
+        text = doc.get('text', '')
+        if not text:
+            continue
+        
+        # Split into sentences
+        sentences = re.split(r'[.!?]+', text)
+        
+        for i, sentence in enumerate(sentences):
+            sentence = sentence.strip()
+            if not sentence or len(sentence) < 20:
+                continue
+            
+            sentence_lower = sentence.lower()
+            
+            # Check each pattern
+            for pattern in patterns:
+                pattern_lower = pattern.lower()
+                if pattern_lower in sentence_lower:
+                    # Calculate position
+                    pos = text.find(sentence)
+                    if pos == -1:
+                        pos = i * 100
+                    
+                    # Get context (surrounding sentences)
+                    context_start = max(0, i - 1)
+                    context_end = min(len(sentences), i + 2)
+                    context = ' '.join(
+                        s.strip() for s in sentences[context_start:context_end]
+                        if s.strip()
+                    )
+                    
+                    matches.append({
+                        'sentence': sentence,
+                        'context': context,
+                        'document': doc,
+                        'position': pos,
+                        'page_number': max(1, pos // 2000 + 1),
+                        'pattern': pattern,
+                        'content_type': content_type,
+                        'recommendation_type': classify_content_type(sentence),
+                    })
+                    break  # Only match once per sentence
+    
+    return matches
+
+
+def extract_response_sentences(text: str) -> List[Dict[str, Any]]:
+    """
+    Extract response sentences from text.
+    
+    Looks for government response patterns and extracts relevant sentences.
+    
+    Args:
+        text: Document text to search
+        
+    Returns:
+        List of response dictionaries
+    """
+    responses = []
+    
+    if not text:
+        return responses
+    
+    # Split into sentences
+    sentences = re.split(r'[.!?]+', text)
+    
+    # Response indicator patterns
+    response_patterns = [
+        r'\bgovernment\s+(?:accepts?|agrees?|supports?|rejects?|notes?)\b',
+        r'\bwe\s+(?:accept|agree|support|reject|note)\b',
+        r'\bthis\s+recommendation\s+(?:is|has\s+been)\b',
+        r'\b(?:accept|reject|agree|implement)(?:s|ed|ing)?\s+(?:this|the)\s+recommendation\b',
+        r'\bresponse\s+to\s+recommendation\b',
+    ]
+    
+    for i, sentence in enumerate(sentences):
+        sentence = sentence.strip()
+        if not sentence or len(sentence) < 20:
+            continue
+        
+        sentence_lower = sentence.lower()
+        
+        for pattern in response_patterns:
+            if re.search(pattern, sentence_lower):
+                # Get context
+                context_start = max(0, i - 1)
+                context_end = min(len(sentences), i + 2)
+                context = ' '.join(
+                    s.strip() for s in sentences[context_start:context_end]
+                    if s.strip()
+                )
+                
+                # Classify status
+                classifier = StatusClassifier()
+                status, confidence, patterns_matched = classifier.classify(sentence)
+                
+                responses.append({
+                    'text': sentence,
+                    'sentence': sentence,
+                    'context': context,
+                    'status': status,
+                    'confidence': confidence,
+                    'patterns_matched': patterns_matched,
+                })
+                break
+    
+    return responses
 
 
 # --------------------------------------------------------------------------- #
@@ -581,6 +890,108 @@ class AlignmentEngine:
 
 
 # --------------------------------------------------------------------------- #
+# Semantic Matching Support
+# --------------------------------------------------------------------------- #
+
+class RecommendationResponseMatcher:
+    """
+    Matcher class for UI integration.
+    
+    Provides semantic matching when sentence-transformers is available,
+    falls back to keyword matching otherwise.
+    """
+    
+    def __init__(self):
+        """Initialise matcher with optional transformer support."""
+        self.use_transformer = False
+        self.model = None
+        
+        try:
+            from sentence_transformers import SentenceTransformer
+            self.model = SentenceTransformer('all-MiniLM-L6-v2')
+            self.use_transformer = True
+            logger.info("Initialised with sentence-transformers")
+        except ImportError:
+            logger.info("sentence-transformers not available, using keyword matching")
+    
+    def find_best_matches(
+        self,
+        recommendations: List[Dict],
+        responses: List[Dict],
+        threshold: float = 0.3
+    ) -> List[Dict]:
+        """
+        Find best response matches for each recommendation.
+        
+        Returns list of alignment results with recommendation, response,
+        similarity score, and status classification.
+        """
+        results = []
+        classifier = StatusClassifier()
+        
+        for rec in recommendations:
+            rec_text = rec.get('text', '') or rec.get('sentence', '')
+            
+            best_match = None
+            best_score = threshold
+            
+            for resp in responses:
+                resp_text = resp.get('text', '') or resp.get('sentence', '')
+                
+                if self.use_transformer and self.model:
+                    # Use semantic similarity
+                    score = self._semantic_similarity(rec_text, resp_text)
+                else:
+                    # Use keyword similarity
+                    score = calculate_simple_similarity(rec_text, resp_text)
+                
+                if score > best_score:
+                    best_score = score
+                    best_match = resp
+            
+            if best_match:
+                resp_text = best_match.get('text', '') or best_match.get('sentence', '')
+                status, confidence, patterns = classifier.classify(resp_text)
+                
+                results.append({
+                    'recommendation': rec,
+                    'response': {
+                        **best_match,
+                        'similarity': best_score,
+                        'status': status,
+                        'status_confidence': confidence,
+                        'match_method': 'semantic' if self.use_transformer else 'keyword',
+                    },
+                    'has_response': True,
+                    'score': best_score,
+                })
+            else:
+                results.append({
+                    'recommendation': rec,
+                    'response': None,
+                    'has_response': False,
+                    'score': 0.0,
+                })
+        
+        return results
+    
+    def _semantic_similarity(self, text1: str, text2: str) -> float:
+        """Calculate semantic similarity using sentence transformers."""
+        if not self.model or not text1 or not text2:
+            return 0.0
+        
+        try:
+            embeddings = self.model.encode([text1, text2])
+            # Cosine similarity
+            from numpy import dot
+            from numpy.linalg import norm
+            return float(dot(embeddings[0], embeddings[1]) / (norm(embeddings[0]) * norm(embeddings[1])))
+        except Exception as e:
+            logger.error(f"Semantic similarity error: {e}")
+            return calculate_simple_similarity(text1, text2)
+
+
+# --------------------------------------------------------------------------- #
 # Convenience functions
 # --------------------------------------------------------------------------- #
 
@@ -591,9 +1002,39 @@ def align_recommendations_responses(
 ) -> List[Dict]:
     """
     Convenience function to align recommendations with responses.
+    
+    This version returns data in format expected by UI components.
     """
     engine = AlignmentEngine()
-    return engine.align(recommendations, responses, method)
+    aligned = engine.align(recommendations, responses, method)
+    
+    # Transform to UI-expected format
+    results = []
+    for item in aligned:
+        rec = item.get('recommendation', {})
+        resp = item.get('response')
+        
+        # Build alignment result in UI format
+        result = {
+            'recommendation': rec,
+            'responses': [],
+            'action_verb': rec.get('verb', rec.get('pattern', '')),
+            'detection_method': rec.get('method', 'unknown'),
+            'detection_confidence': rec.get('confidence', 0.5),
+            'alignment_status': item.get('status', 'Unknown'),
+            'alignment_confidence': item.get('match_confidence', 0.0),
+        }
+        
+        if resp:
+            result['responses'].append({
+                'response': resp,
+                'combined_score': item.get('match_confidence', 0.0),
+                'status': item.get('status', 'Unknown'),
+            })
+        
+        results.append(result)
+    
+    return results
 
 
 def classify_response_status(response_text: str) -> Tuple[str, float]:
@@ -615,5 +1056,37 @@ def get_status_classification_details(response_text: str) -> Dict:
     return classifier.get_status_summary(response_text)
 
 
-# Backward compatibility alias
+# --------------------------------------------------------------------------- #
+# Backward compatibility aliases
+# --------------------------------------------------------------------------- #
+
+# Alias for different naming convention
 align_recommendations_with_responses = align_recommendations_responses
+
+
+# --------------------------------------------------------------------------- #
+# Module exports
+# --------------------------------------------------------------------------- #
+
+__all__ = [
+    # Classes
+    'StatusClassifier',
+    'AlignmentEngine',
+    'RecommendationResponseMatcher',
+    
+    # Main functions
+    'align_recommendations_responses',
+    'align_recommendations_with_responses',  # Alias
+    'classify_response_status',
+    'get_status_classification_details',
+    
+    # Utility functions (RESTORED)
+    'calculate_simple_similarity',
+    'classify_content_type',
+    'determine_alignment_status',
+    'find_pattern_matches',
+    'extract_response_sentences',
+    
+    # Constants
+    'STOP_WORDS',
+]
