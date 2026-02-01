@@ -613,3 +613,6 @@ def get_status_classification_details(response_text: str) -> Dict:
     """
     classifier = StatusClassifier()
     return classifier.get_status_summary(response_text)
+
+# Backward compatibility alias
+align_recommendations_with_responses = align_recommendations_responses
